@@ -7,7 +7,7 @@ namespace GraphIO {
 
     void readStandard();
     void readGFA();
-    void drawGraph(const ogdf::Graph& G, const std::string& file);
+    void drawGraph(const ogdf::Graph& G, const std::string& file);;
 
     void writeSuperbubbles();
 }

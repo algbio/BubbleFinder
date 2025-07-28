@@ -12,8 +12,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ─────────────────────────── 1. per-config flags ──────────────────────────────
 set(BASE_FLAGS "-fno-omit-frame-pointer")
 
-set(RELEASE_FLAGS      "-O3 -march=native -flto")
-set(RELWITHDEBINFO_FLAGS "${RELEASE_FLAGS} -g")
+set(RELEASE_FLAGS      "-O3 -march=native")
+set(RELWITHDEBINFO_FLAGS "-O2 -g")
 set(DEBUG_FLAGS        "-O0 -g")
 
 foreach(cfg RELEASE RELWITHDEBINFO DEBUG)

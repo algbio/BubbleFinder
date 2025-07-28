@@ -8,6 +8,7 @@ Context::Context()
     , graphPath ("")
     , outputPath("")
     , gfaInput(false)
+    , doubleGraph(false)
     , logLevel(Context::LOG_INFO)
     , timingEnabled(true)
 {}

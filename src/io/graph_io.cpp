@@ -39,7 +39,10 @@ void readStandard()
                 C.name2node[v] = C.G.newNode();
                 C.node2name[C.name2node[v]] = v;
             }
-            C.G.newEdge(C.name2node[u], C.name2node[v]);
+            if(!C._edges.count({C.name2node[u]->index(), C.name2node[v]->index()})) {
+                C.G.newEdge(C.name2node[u], C.name2node[v]);
+                C._edges.insert({C.name2node[u]->index(), C.name2node[v]->index()});
+            }
         }
     } else {
         if (!(std::cin >> n >> m))
@@ -59,7 +62,12 @@ void readStandard()
                 C.name2node[v] = C.G.newNode();
                 C.node2name[C.name2node[v]] = v;
             }
-            C.G.newEdge(C.name2node[u], C.name2node[v]);
+
+            if(!C._edges.count({C.name2node[u]->index(), C.name2node[v]->index()})) {
+                C.G.newEdge(C.name2node[u], C.name2node[v]);
+                C._edges.insert({C.name2node[u]->index(), C.name2node[v]->index()});
+            }
+
         }
     }
 }
@@ -82,24 +90,78 @@ void readGFA()
 
         if (token == "S") {
             std::string id, seq; iss >> id >> seq;
-            if (!C.name2node.count(id))
-                C.name2node[id] = C.G.newNode();
+            // if (!C.name2node.count(id))
+            //     C.name2node[id] = C.G.newNode();
         }
         else if (token == "L") {
             std::string from, o1, to, o2, ovl;
             iss >> from >> o1 >> to >> o2 >> ovl;
-            if (o1 != o2) continue;
-            if (o1 == "-") std::swap(from, to);
+            // if (o1 != o2) continue;
 
-            if (!C.name2node.count(from)) {
-                C.name2node[from] = C.G.newNode();
-                C.node2name[C.name2node[from]] = from;
+            auto flip = [&](string c) {
+                return (c == "+" ? "-" : "+");
+            };
+
+            // bool from_start = (o1 == "-"), to_end = (o2 == "-"); 
+
+
+
+
+            // if (o1 == "-") std::swap(from, to);
+
+
+            // if(from_start && to_end) {
+                
+            // }
+
+            if (!C.name2node.count(from + "-")) {
+                string name = from + "-";
+                C.name2node[name] = C.G.newNode();
+                C.node2name[C.name2node[name]] = name;
             }
-            if (!C.name2node.count(to)) {
-                C.name2node[to]  = C.G.newNode();
-                C.node2name[C.name2node[to]]  = to;
+
+            if (!C.name2node.count(from + "+")) {
+                string name = from + "+";
+                C.name2node[name] = C.G.newNode();
+                C.node2name[C.name2node[name]] = name;
             }
-            C.G.newEdge(C.name2node[from], C.name2node[to]);
+
+            if (!C.name2node.count(to + "-")) {
+                string name = to + "-";
+                C.name2node[name] = C.G.newNode();
+                C.node2name[C.name2node[name]] = name;
+            }
+
+            if (!C.name2node.count(to + "+")) {
+                string name = to + "+";
+                C.name2node[name] = C.G.newNode();
+                C.node2name[C.name2node[name]] = name;
+            }
+
+
+            {
+                if(C._edges.count({C.name2node[from + o1]->index(), C.name2node[to + o2]->index()})) {
+                    C.G.newEdge(C.name2node[from + o1], C.name2node[to + o2]);
+                    C._edges.insert({C.name2node[from + o1]->index(), C.name2node[to + o2]->index()});
+                }
+            }
+            {
+                if(C._edges.count({C.name2node[to + flip(o2)]->index(), C.name2node[from + flip(o1)]->index()})) {
+                    C.G.newEdge(C.name2node[to + flip(o2)], C.name2node[from + flip(o1)]);
+                    C._edges.insert({C.name2node[to + flip(o2)]->index(), C.name2node[from + flip(o1)]->index()});
+                }
+            }
+
+            // if(!C._edges.count({C.name2node[u], C.name2node[v]})) {
+            //     C.G.newEdge(C.name2node[u], C.name2node[v]);
+            //     C._edges.insert({C.name2node[u], C.name2node[v]});
+            // }
+
+
+
+
+            // C.G.newEdge(C.name2node[from + o1], C.name2node[to + o2]);
+            // C.G.newEdge(C.name2node[to + flip(o2)], C.name2node[from + flip(o1)]);   
         }
     }
 }

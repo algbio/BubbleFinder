@@ -159,7 +159,8 @@ namespace solver {
 
 
 
-        NodeArray<int>  disc(G, 0), finish(G, 0), dfsNum(G, 0);
+        // finish(G, 0)
+        NodeArray<int>  disc(G, 0), dfsNum(G, 0);
         NodeArray<node> parent(G, nullptr);
         NodeArray<char> colour(G, 0);
         EdgeArray<EdgeType> etype(G);   
@@ -196,7 +197,7 @@ namespace solver {
                 
             }
             colour[u] = 2;
-            finish[u] = ++time;
+            // finish[u] = ++time;
         };
         
         node root = G.firstNode();
@@ -321,6 +322,8 @@ namespace solver {
 
         // std::cout << "y:" << y << " z:" << z << std::endl;
 
+        // std::cout << G.firstNode() << std::endl;
+        // std::cout << y << ", " << z << std::endl;
         if(dfsNum[y]>dfsNum[z]) {
             // std::cout << "y > z, no feedback vertices" << std::endl;
             return;
@@ -476,6 +479,8 @@ namespace solver {
             maxitest=std::max(maxitest, maxi[dfsNumInverse[i]]);
         }
 
+        // assert(maxitest >= dfsNum[y]);
+
         // step 4
         while(true) {
             if(loop[v] == true) {
@@ -495,7 +500,12 @@ namespace solver {
                     node v2  = adj->twinNode();
                     
                     if(dfsNum[v]+1 == dfsNum[v2]) {
-                        if(etype[e] == EdgeType::TREE) edgeToAdd=e;
+                        // if(etype[e] == EdgeType::TREE) edgeToAdd=e;
+                        if(edgeToAdd!=nullptr) {
+                            edgeToAdd = nullptr;
+                            break;
+                        } 
+                        edgeToAdd = e;
                         cntVnext++;
                     }
                 }
@@ -610,7 +620,7 @@ namespace solver {
         };
 
 
-        void printAllStates(ogdf::EdgeArray<EdgeDP> &edge_dp, ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
+        void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
             auto& C = ctx();
 
 
@@ -669,6 +679,16 @@ namespace solver {
             }
         }
 
+        std::string nodeTypeToString(SPQRTree::NodeType t) {
+            switch (t) {
+                case SPQRTree::NodeType::SNode: return "SNode";
+                case SPQRTree::NodeType::PNode: return "PNode";
+                case SPQRTree::NodeType::RNode: return "RNode";
+                default: return "Unknown";
+            }
+        }
+
+
         void dfsSPQR_order(
             SPQRTree &spqr,
             std::vector<ogdf::edge> &edge_order, // order of edges to process
@@ -683,6 +703,10 @@ namespace solver {
                 dfsSPQR_order(spqr, edge_order, node_order, curr, parent);
                 return;
             }
+
+
+
+            // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
             node_order.push_back(curr);
             for (adjEntry adj : curr->adjEntries) {
                 node child = adj->twinNode();
@@ -977,6 +1001,7 @@ namespace solver {
             EdgeArray<node> edgeChild(newGraph, nullptr);
 
 
+            std::vector<edge> virtualEdges;
 
 
             auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
@@ -1055,6 +1080,8 @@ namespace solver {
                     
                     isVirtual[newEdge] = true;
 
+                    virtualEdges.push_back(newEdge);
+
                     edgeToDp[newEdge] = edgeToUpdate;
                     edgeToDpR[newEdge] = child;
                     edgeChild[newEdge] = B;
@@ -1062,6 +1089,9 @@ namespace solver {
                     newEdge = newGraph.newEdge(nT, nS);
                     
                     isVirtual[newEdge] = true;
+                    
+                    virtualEdges.push_back(newEdge);
+                    
                     edgeToDpR[newEdge] = child;
                     edgeToDp[newEdge] = edgeToUpdate;
                     edgeChild[newEdge] = B;
@@ -1070,6 +1100,10 @@ namespace solver {
                 } else {
                     newEdge = newGraph.newEdge(nS, nT);
                     isVirtual[newEdge] = true;
+
+                    virtualEdges.push_back(newEdge);
+
+
                     edgeChild[newEdge] = B;
                     edgeToDpR[newEdge] = child;
 
@@ -1162,8 +1196,7 @@ namespace solver {
 
             // Computing acyclicity
             if(curr_state.outgoingCyclesCount>=2) {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
                     if(edgeToDp[e]->acyclic) {
                         node_dp[edgeChild[e]].outgoingCyclesCount++;
                         node_dp[edgeChild[e]].lastCycleNode = curr_node;
@@ -1171,13 +1204,7 @@ namespace solver {
                     edgeToDp[e]->acyclic &= false;
                 }
             } else if(node_dp[curr_node].outgoingCyclesCount == 1) {
-
-                std::vector<edge> virt;
-                for (edge e : newGraph.edges)
-                    if (isVirtual[e])
-                        virt.push_back(e);
-
-                for (edge e : virt) {
+                for (edge e : virtualEdges) {
                     if(edgeChild[e] != curr_state.lastCycleNode) {
                         if(edgeToDp[e]->acyclic) {
                             node_dp[edgeChild[e]].outgoingCyclesCount++;
@@ -1225,8 +1252,7 @@ namespace solver {
                 }
 
                 if (nonTrivial >= 2){
-                    for (edge e : newGraph.edges) {
-                        if(!isVirtual[e]) continue;
+                    for (edge e : virtualEdges) {
                         if(edgeToDp[e]->acyclic) {
                             node_dp[edgeChild[e]].outgoingCyclesCount++;
                             node_dp[edgeChild[e]].lastCycleNode = curr_node;
@@ -1245,9 +1271,7 @@ namespace solver {
                     EdgeArray<bool> isFas(newGraph, 0);
                     for (edge e : fas) isFas[e] = true;
 
-                    for (edge e : newGraph.edges) {
-                        if (!isVirtual[e]) continue;
-
+                    for (edge e : virtualEdges) {
 
                         if(edgeToDp[e]->acyclic && !isFas[e]) {
                             node_dp[edgeChild[e]].outgoingCyclesCount++;
@@ -1264,9 +1288,7 @@ namespace solver {
             // computing global sources/sinks
             if(curr_state.outgoingSourceSinkCount >= 2) {
                 // all ingoing have source
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
-
+                for(edge e : virtualEdges) {
                     if(!edgeToDp[e]->globalSourceSink) {
                         node_dp[edgeChild[e]].outgoingSourceSinkCount++;
                         node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
@@ -1276,8 +1298,8 @@ namespace solver {
                     edgeToDp[e]->globalSourceSink |= true;
                 }
             } else if(curr_state.outgoingSourceSinkCount == 1) {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
+                    // if(!isVirtual[e]) continue;
                     if(edgeChild[e] != curr_state.lastSourceSinkNode) {
                         if(!edgeToDp[e]->globalSourceSink) {
                             node_dp[edgeChild[e]].outgoingSourceSinkCount++;
@@ -1298,8 +1320,8 @@ namespace solver {
                     }
                 }
             } else {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
+                    // if(!isVirtual[e]) continue;
                     node vN = e->source(), uN = e->target();
                     if((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
                         if(!edgeToDp[e]->globalSourceSink) {
@@ -1316,8 +1338,8 @@ namespace solver {
 
             // computing leakage
             if(curr_state.outgoingLeakageCount >= 2) {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
+                    // if(!isVirtual[e]) continue;
 
                     if(!edgeToDp[e]->hasLeakage) {
                         node_dp[edgeChild[e]].outgoingLeakageCount++;
@@ -1327,8 +1349,8 @@ namespace solver {
                     edgeToDp[e]->hasLeakage |= true;
                 }
             } else if(curr_state.outgoingLeakageCount == 1) {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
+                    // if(!isVirtual[e]) continue;
 
                     if(edgeChild[e] != curr_state.lastLeakageNode) {
                         if(!edgeToDp[e]->hasLeakage) {
@@ -1348,8 +1370,8 @@ namespace solver {
                     }
                 }
             } else {
-                for(edge e : newGraph.edges) {
-                    if(!isVirtual[e]) continue;
+                for(edge e : virtualEdges) {
+                    // if(!isVirtual[e]) continue;
 
                     node vN = e->source(), uN = e->target();
                     if((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
@@ -1364,8 +1386,8 @@ namespace solver {
 
 
             // updating local degrees of poles of states going into A
-            for(edge e:newGraph.edges) {
-                if(!isVirtual[e]) continue;
+            for(edge e:virtualEdges) {
+                // if(!isVirtual[e]) continue;
                 node vN = e->source();
                 node uN = e->target();
 
@@ -1384,18 +1406,89 @@ namespace solver {
         
         void tryBubble(const EdgeDPState &curr,
                const EdgeDPState &back,
-               bool swap
+               bool swap, 
+               bool additionalCheck
         ) {
             node S = swap ? curr.t : curr.s;
             node T = swap ? curr.s : curr.t;
 
+            // std::cout << ctx().node2name[S] << " " << ctx().node2name[T] << " " << (additionalCheck) << std::endl;
+
             
             /* take the counts from the current direction … */
-            int outS = swap ? curr.localOutT : curr.localOutS;
+
+            int outS = swap ? curr.localOutT  : curr.localOutS;
             int outT = swap ? curr.localOutS : curr.localOutT;
             int inS  = swap ? curr.localInT  : curr.localInS;
-            int inT  = swap ? curr.localInS  : curr.localInT;
+            int inT  = swap ? curr.localInS : curr.localInT;
 
+
+            // if(curr.s && curr.t) {
+            //     std::cout << "s = " << ctx().node2name[curr.s] << ", ";
+            //     std::cout << "t = " << ctx().node2name[curr.t] << ", ";
+            //     std::cout << "acyclic = " << curr.acyclic << ", ";
+            //     std::cout << "global source = " << curr.globalSourceSink << ", ";
+            //     std::cout << "hasLeakage = " << curr.hasLeakage << ", ";
+            //     std::cout << "localInS = " << curr.localInS << ", ";
+            //     std::cout << "localOutS = " << curr.localOutS << ", ";
+            //     std::cout << "localInT = " << curr.localInT << ", ";
+            //     std::cout << "localOutT = " << curr.localOutT << ", ";
+            //     std::cout << "directST = " << curr.directST << ", ";
+            //     std::cout << "directTS = " << curr.directTS << ", ";
+                
+            //     std::cout << std::endl;
+            // }
+
+            // if(back.s && back.t) {
+            //     std::cout << "s = " << ctx().node2name[back.s] << ", ";
+            //     std::cout << "t = " << ctx().node2name[back.t] << ", ";
+            //     std::cout << "acyclic = " << back.acyclic << ", ";
+            //     std::cout << "global source = " << back.globalSourceSink << ", ";
+            //     std::cout << "hasLeakage = " << back.hasLeakage << ", ";
+            //     std::cout << "localInS = " << back.localInS << ", ";
+            //     std::cout << "localOutS = " << back.localOutS << ", ";
+            //     std::cout << "localInT = " << back.localInT << ", ";
+            //     std::cout << "localOutT = " << back.localOutT << ", ";
+            //     std::cout << "directST = " << back.directST << ", ";
+            //     std::cout << "directTS = " << back.directTS << ", ";
+                
+            //     std::cout << std::endl;
+            // }
+
+
+
+            // int outS = swap ? curr.localOutT + (int)back.directST : curr.localOutS + (int)back.directTS;
+            // int outT = swap ? curr.localOutS + (int)back.directTS : curr.localOutT + (int)back.directST;
+            // int inS  = swap ? curr.localInT + (int)back.directTS : curr.localInS + (int)back.directST;
+            // int inT  = swap ? curr.localInS + (int)back.directST: curr.localInT + (int)back.directTS;
+            // std::cout << "before: " << std::endl;
+            // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl; 
+
+            
+
+            if(back.directST) {
+                // std::cout << " added because back.directST" << std::endl;
+                if(!swap) {
+                    outS++;
+                    inT++;
+                } else {
+                    inS++;
+                    outT++;
+                }
+            } 
+            if(back.directTS){
+                // std::cout << " added because back.directTS" << std::endl;
+                if(!swap) {
+                    inS++;
+                    outT++;    
+                } else {
+                    outS++;
+                    inT++;
+                }
+            }
+
+            // std::cout << "after" << std::endl;
+            // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl; 
 
             bool backGood = true;
 
@@ -1416,28 +1509,51 @@ namespace solver {
                 outS > 0 &&
                 inT > 0 &&
                 ctx().outDeg[S] == outS &&
-                ctx().inDeg [T] == inT  &&
+                ctx().inDeg [T] == inT &&
                 !ctx().isEntry[S] &&
                 !ctx().isExit [T])
             {
-                addSuperbubble(S, T);
+                if(additionalCheck) {
+                    if(!swap) {
+                        if(back.directST) addSuperbubble(S, T);
+                    } else {
+                        if(back.directTS) addSuperbubble(S, T);
+                    }
+                } else {
+                    addSuperbubble(S, T);
+                }
             }
 
         }
 
 
 
-        void collectSuperbubbles(const BlockData &blk, EdgeArray<EdgeDP> &edge_dp) {
+        void collectSuperbubbles(const BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp) {
             const Graph &T = blk.spqr->tree();
+            // printAllStates(edge_dp, node_dp, T);
             for(edge e : T.edges) {
+                // std::cout << "CHECKING FOR " << e->source() << " " << e->target() << std::endl;
                 const EdgeDPState &down = edge_dp[e].down;
                 const EdgeDPState &up   = edge_dp[e].up;
+                
 
-                tryBubble(down, up, false);
-                tryBubble(down, up, true);
+                // if(blk.spqr->typeOf(e->target()) != SPQRTree::NodeType::SNode) {
+                //     std::cout << "DOWN" << std::endl;
+                bool additionalCheck;
 
-                tryBubble(up, down, false);
-                tryBubble(up, down, true);
+                additionalCheck = (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
+                tryBubble(down, up, false, additionalCheck);
+                tryBubble(down, up, true, additionalCheck);
+                // }
+                
+                // if(blk.spqr->typeOf(e->source()) != SPQRTree::NodeType::SNode) {
+                    // std::cout << "UP" << std::endl;
+                additionalCheck = (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
+
+                    tryBubble(up, down, false, additionalCheck);
+                    tryBubble(up, down, true, additionalCheck);
+                // }
+
             }
         }
 
@@ -1493,7 +1609,7 @@ namespace solver {
         if(!reach) { return; }
 
         node srcG = blk.toOrig[src], snkG = blk.toOrig[snk];
-        addSuperbubble(srcG,snkG);
+        addSuperbubble(srcG, snkG);
     }
 
 
@@ -1528,7 +1644,9 @@ namespace solver {
             SPQRsolve::processNode(v, dp, node_dp, cc, blk);
         }
 
-        SPQRsolve::collectSuperbubbles(blk, dp);
+        SPQRsolve::collectSuperbubbles(blk, dp, node_dp);
+
+        // printAllStates(dp, node_dp, T);
 
     }
 
@@ -1558,63 +1676,71 @@ namespace solver {
                         break;
                     }
                 }
-
+                
                 if(ok) {
                     addSuperbubble(a, b);
                 } 
             }
         }
+
+
         logger::info("Checked for mini-superbubbles");
-
-
     }
 
 
-    static Graph scratch;
-    static NodeArray<node> toCc  {scratch};
-    static NodeArray<node> toOrig{scratch};
-    static NodeArray<int>  inDeg {scratch};
-    static NodeArray<int>  outDeg{scratch};
+    // static Graph scratch;
+    // static NodeArray<node> toCc  {scratch};
+    // static NodeArray<node> toOrig{scratch};
+    // static NodeArray<int>  inDeg {scratch};
+    // static NodeArray<int>  outDeg{scratch};
 
 
     // BEST
-    static void buildBlockData(const std::vector<node>& verts,
+    static void buildBlockData(
+        // const std::vector<node>& verts,
+            const std::unordered_set<node> &verts,
             CcData& cc,
-            BlockData& blk) {
+            BlockData& blk) {        
+        blk.Gblk = std::make_unique<Graph>();
 
-        scratch.clear();
-            toCc .init(scratch, nullptr);
-            toOrig.init(scratch, nullptr);
-            inDeg .init(scratch, 0);
-            outDeg.init(scratch, 0);
+        // NodeArray<node> toCc  {*blk.Gblk};
+        // NodeArray<node> toOrig{*blk.Gblk};
+        // NodeArray<int>  inDeg {*blk.Gblk};
+        // NodeArray<int>  outDeg{*blk.Gblk};
+
+        blk.toCc.init(*blk.Gblk, nullptr);
+        blk.toOrig.init(*blk.Gblk, nullptr);
+        blk.inDeg .init(*blk.Gblk, 0);
+        blk.outDeg.init(*blk.Gblk, 0);
 
 
         for (node vCc : verts) {
-            node vB = scratch.newNode();
+            node vB = blk.Gblk->newNode();
             cc.toBlk[vCc] = vB;
-            toCc[vB] = vCc;
-            toOrig[vB] = cc.toOrig[vCc];
+            blk.toCc[vB] = vCc;
+            blk.toOrig[vB] = cc.toOrig[vCc];
         }
 
         for (edge hE : cc.bc->hEdges(blk.bNode)) {
             edge eCc = cc.bc->original(hE);
             auto src = cc.toBlk[eCc->source()];
             auto tgt = cc.toBlk[eCc->target()];
-            edge e = scratch.newEdge(src, tgt);
-            outDeg[e->source()]++;
-            inDeg[e->target()]++;
+            edge e = blk.Gblk->newEdge(src, tgt);
+            blk.outDeg[e->source()]++;
+            blk.inDeg[e->target()]++;
         }
 
-        blk.Gblk   = std::make_unique<Graph>(std::move(scratch));
-        blk.toCc   = std::move(toCc);
-        blk.toOrig = std::move(toOrig);
-        blk.inDeg  = std::move(inDeg);
-        blk.outDeg = std::move(outDeg);
+        // blk.Gblk   = std::make_unique<Graph>(std::move(scratch));
+        // blk.toCc   = std::move(toCc);
+        // blk.toOrig = std::move(toOrig);
+        // blk.inDeg  = std::move(inDeg);
+        // blk.outDeg = std::move(outDeg);
 
         if (blk.Gblk->numberOfNodes() >= 3) {
             blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
 
             const Graph& T = blk.spqr->tree();
+            blk.skel2tree.reserve(2*T.edges.size());
             for (edge te : T.edges) {
                 if (auto eSrc = blk.spqr->skeletonEdgeSrc(te)) {
                     blk.skel2tree[eSrc] = te;
@@ -1688,19 +1814,19 @@ namespace solver {
             
             NodeArray<node> toBlk(*cc.Gcc, nullptr);
             cc.toBlk = toBlk;
-
+            std::unordered_set<node> verts;
             for (node bNode : cc.bc->bcTree().nodes) {
                 if (cc.bc->typeOfBNode(bNode) != BCTree::BNodeType::BComp)
                     continue;
 
-                std::vector<node> verts;
-                std::unordered_set<node> verts_set;
+                verts.clear();
+                // std::vector<node> verts;
+                // std::unordered_set<node> verts_set;
+
                 for (edge hE : cc.bc->hEdges(bNode)) {
                     edge eC = cc.bc->original(hE);
-                    if (verts_set.insert(eC->source()).second)
-                        verts.push_back(eC->source());
-                    if (verts_set.insert(eC->target()).second)
-                        verts.push_back(eC->target());
+                    verts.insert(eC->source());
+                    verts.insert(eC->target());
                 }
 
                 BlockData blk;
@@ -1711,16 +1837,136 @@ namespace solver {
                 checkBlockByCutVertices(blk, cc);
 
                 if (blk.Gblk->numberOfNodes() >= 3) {
-                    try {
+                    // try {
                         solveSPQR(blk, cc);
-                    } catch (const std::exception& e) {
-                        logger::error("SPQR processing failed: {}", e.what());
-                    }
+                    // } catch (const std::exception& e) {
+                    //     logger::error("SPQR processing failed: {}", e.what());
+                    // }
                 }
             }
-            logger::info("Processed component {}/{}", cid, nCC);
+            logger::info("Processed component {}/{}", cid+1, nCC);
         }
     }
+
+//     void solveStreaming() {
+//     auto totalStart = std::chrono::steady_clock::now();
+//     auto& C = ctx();
+//     Graph& G = C.G;
+
+//     auto ccStart = std::chrono::steady_clock::now();
+//     NodeArray<int> compIdx(G);
+//     const int nCC = connectedComponents(G, compIdx);
+
+//     std::vector<std::vector<node>> bucket(nCC);
+//     for (node v : G.nodes) {
+//         bucket[compIdx[v]].push_back(v);
+//     }
+
+//     std::vector<std::vector<edge>> edgeBuckets(nCC);
+//     for (edge e : G.edges) {
+//         edgeBuckets[compIdx[e->source()]].push_back(e);
+//     }
+//     logger::info("timing connectedComponents+bucketing {} us",
+//                  std::chrono::duration_cast<std::chrono::microseconds>(
+//                      std::chrono::steady_clock::now() - ccStart)
+//                      .count());
+
+//     NodeArray<node> orig_to_cc(G, nullptr);
+
+//     logger::info("Streaming over {} components", nCC);
+//     CcData cc;
+//     cc.toCopy.init(G, nullptr);
+
+//     for (int cid = 0; cid < nCC; ++cid) {
+//         auto compStart = std::chrono::steady_clock::now();
+
+//         cc.Gcc = std::make_unique<Graph>();
+//         cc.toOrig.init(*cc.Gcc, nullptr);
+
+//         auto buildStart = std::chrono::steady_clock::now();
+//         for (node vG : bucket[cid]) {
+//             node vC = cc.Gcc->newNode();
+//             cc.toCopy[vG] = vC;
+//             cc.toOrig[vC] = vG;
+//             orig_to_cc[vG] = vC;
+//         }
+
+//         for (edge e : edgeBuckets[cid]) {
+//             cc.Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
+//         }
+//         logger::info("timing buildCcGraph comp {} {} us", cid + 1,
+//                      std::chrono::duration_cast<std::chrono::microseconds>(
+//                          std::chrono::steady_clock::now() - buildStart)
+//                          .count());
+
+//         auto bcStart = std::chrono::steady_clock::now();
+//         cc.bc = std::make_unique<BCTree>(*cc.Gcc);
+//         logger::info("timing bcTree comp {} {} us", cid + 1,
+//                      std::chrono::duration_cast<std::chrono::microseconds>(
+//                          std::chrono::steady_clock::now() - bcStart)
+//                          .count());
+
+//         NodeArray<node> toBlk(*cc.Gcc, nullptr);
+//         cc.toBlk = toBlk;
+
+//         for (node bNode : cc.bc->bcTree().nodes) {
+//             if (cc.bc->typeOfBNode(bNode) != BCTree::BNodeType::BComp)
+//                 continue;
+
+//             auto blkStart = std::chrono::steady_clock::now();
+//             std::unordered_set<node> verts;
+
+//             for (edge hE : cc.bc->hEdges(bNode)) {
+//                 edge eC = cc.bc->original(hE);
+//                 verts.insert(eC->source());
+//                 verts.insert(eC->target());
+//             }
+
+//             BlockData blk;
+//             blk.bNode = bNode;
+
+//             auto buildBlkStart = std::chrono::steady_clock::now();
+//             buildBlockData(verts, cc, blk);
+//             logger::info("timing buildBlockData comp {} {} us", cid + 1,
+//                          std::chrono::duration_cast<std::chrono::microseconds>(
+//                              std::chrono::steady_clock::now() - buildBlkStart)
+//                              .count());
+
+//             auto cutStart = std::chrono::steady_clock::now();
+//             checkBlockByCutVertices(blk, cc);
+//             logger::info("timing checkBlockByCutVertices comp {} {} us", cid + 1,
+//                          std::chrono::duration_cast<std::chrono::microseconds>(
+//                              std::chrono::steady_clock::now() - cutStart)
+//                              .count());
+
+//             if (blk.Gblk->numberOfNodes() >= 3) {
+//                 auto spqrStart = std::chrono::steady_clock::now();
+//                 try {
+//                     solveSPQR(blk, cc);
+//                 } catch (const std::exception& e) {
+//                     logger::error("SPQR processing failed: {}", e.what());
+//                 }
+//                 logger::info("timing solveSPQR comp {} {} us", cid + 1,
+//                              std::chrono::duration_cast<std::chrono::microseconds>(
+//                                  std::chrono::steady_clock::now() - spqrStart)
+//                                  .count());
+//             }
+//             logger::info("timing blockProcessing comp {} {} us, ({}, {})", cid + 1,
+//                          std::chrono::duration_cast<std::chrono::microseconds>(
+//                              std::chrono::steady_clock::now() - blkStart)
+//                              .count(), blk.Gblk->nodes.size(), blk.Gblk->edges.size());
+//         }
+//         logger::info("Processed component {}/{}", cid + 1, nCC);
+//         logger::info("timing componentTotal comp {} {} us", cid + 1,
+//                      std::chrono::duration_cast<std::chrono::microseconds>(
+//                          std::chrono::steady_clock::now() - compStart)
+//                          .count());
+//     }
+//     logger::info("timing solveStreamingTotal {} us",
+//                  std::chrono::duration_cast<std::chrono::microseconds>(
+//                      std::chrono::steady_clock::now() - totalStart)
+//                      .count());
+// }
 
 
 
@@ -1728,6 +1974,7 @@ namespace solver {
     void solve() {                
         TIME_BLOCK("Finding superbubbles");
         findMiniSuperbubbles();
+        GraphIO::drawGraph(ctx().G, "movedMinis");
         solveStreaming();
     }
 }
@@ -1744,6 +1991,16 @@ int main(int argc, char** argv) {
     GraphIO::readGraph();
     GraphIO::drawGraph(ctx().G, "input_graph");
 
+
+    // std::vector<edge> res;
+    // solver::run_fas(ctx().G, res);
+
+
+    // for(auto &e:res) {
+    //     std::cout << e->source() << " " << e->target() << std::endl;
+    // }
+
+    // return 0;
 
 
     solver::solve();
