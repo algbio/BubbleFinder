@@ -27,10 +27,13 @@
 #include <regex>
 #include <cassert>
 #include <omp.h>
+#include <typeinfo>
 
 #include "io/graph_io.hpp"
 #include "util/timer.hpp"
 #include "util/logger.hpp"
+#include "util/profiling.hpp"
+#include "fas.h"
 
 
 using namespace ogdf;
@@ -77,6 +80,10 @@ void readArgs(int argc, char** argv) {
         }
     }
 }
+
+
+
+
 
 
 
@@ -141,422 +148,6 @@ namespace solver {
         // std::cout << "----------------------------------------\n";
     }
 
-
-
-
-
-    enum EdgeType { TREE, BACK, FORWARD, CROSS };
-
-
-
-    void run_fas(Graph G, 
-        std::vector<edge> &result
-        // std::vector<node> &toRemove
-    ) {
-        // remove nodes that are in trivial SSCs to run only on non-trivial(trivial cannot be FAS)
-        // for (node v : toRemove)
-        //     G.delNode(v);                                    
-
-
-
-        // finish(G, 0)
-        NodeArray<int>  disc(G, 0), dfsNum(G, 0);
-        NodeArray<node> parent(G, nullptr);
-        NodeArray<char> colour(G, 0);
-        EdgeArray<EdgeType> etype(G);   
-        int time = 0, dfsTime=0;
-        std::vector<node> dfsNumInverse(G.maxNodeIndex()+1, nullptr);
-        edge singleBackEdge = nullptr;
-
-        
-        // Building dfs tree and classifying edges
-        std::function<void(node)> dfs1 = [&](node u)
-        {
-            colour[u] = 1;
-            disc[u]  = ++time;
-            if(dfsNum[u] == 0) {
-                dfsNum[u] = dfsTime;
-                dfsNumInverse[dfsTime] = u;
-                dfsTime++;
-            }
-            
-            for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-            {
-                if (!adj->isSource()) continue;                   
-                edge e = adj->theEdge();
-                node v = adj->twinNode();
-                
-                if (colour[v] == 0) {
-                    etype[e] = TREE;
-                    dfs1(v);
-                } else if (colour[v] == 1) {
-                    etype[e] = BACK;
-                } else {
-                    etype[e] = (disc[u] < disc[v]) ? FORWARD : CROSS;
-                }
-                
-            }
-            colour[u] = 2;
-            // finish[u] = ++time;
-        };
-        
-        node root = G.firstNode();
-        dfs1(root);
-        
-        
-        
-        Graph T;
-        NodeArray<node> map(G, nullptr);
-        NodeArray<node> mapInverse(T, nullptr);
-        for (node v : G.nodes) {
-            auto newNode = T.newNode();
-            map[v] = newNode;
-            mapInverse[newNode] = v;
-        }
-
-        
-        // for(auto e:G.edges) {
-        //     node u = e->source();
-        //     node v = e->target();
-            
-        //     std::cout << dfsNum[u] << " -> " << dfsNum[v] << ": ";
-        //     if(etype[e] == TREE) {
-        //         std::cout << "Tree edge: " << u->index() << " -> " << v->index() << std::endl;
-        //     } else if(etype[e] == BACK) {
-        //         std::cout << "Back edge: " << u->index() << " -> " << v->index() << std::endl;
-        //     } else if(etype[e] == FORWARD) {
-        //         std::cout << "Forward edge: " << u->index() << " -> " << v->index() << std::endl;
-        //     } else if(etype[e] == CROSS) {
-        //         std::cout << "Cross edge: " << u->index() << " -> " << v->index() << std::endl;
-        //     }
-        // }
-        
-        NodeArray<int> backedgeTailSubtreeCount(G, 0);
-        int backEdgeCount = 0;
-
-
-
-        node y = nullptr;
-
-        for(auto &e:G.edges) {
-            node u = e->source();
-            node v = e->target();
-            
-            if(etype[e] == TREE) {
-                T.newEdge(map[u], map[v]);
-                // std::cout << "Adding tree edge: " << map[u]->index() << " -> " << map[v]->index() << std::endl;
-            } else if(etype[e] == BACK) {
-                singleBackEdge = e;
-                backEdgeCount++;
-                backedgeTailSubtreeCount[map[u]]++;
-                if(y == nullptr || dfsNum[v]>dfsNum[y]) {
-                    y=v;
-                }
-            }
-        }
-
-
-        if(backEdgeCount == 1) {
-            result.push_back(singleBackEdge);
-        }
-
-
-        // std::cout << "Total back edges: " << backEdgeCount << std::endl;
-        // for(auto &u:G.nodes) {
-        //     std::cout << "Node " << u->index() << ": back edges = " << backedgeTailSubtreeCount[u] << std::endl;
-        // }
-        // return;
-        // 
-
-
-        // drawGraph(G, "input");
-        // drawGraph(T, "treeWithTreeEdges");
-        node z = G.firstNode(); 
-        {
-
-            std::function<void(node, node)> dfsSubtree = [&](node u, node prev=nullptr) {
-                for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-                    node v = adj->twinNode();
-                    if (v == prev) continue;
-                    dfsSubtree(v, u);
-                    backedgeTailSubtreeCount[u] += backedgeTailSubtreeCount[v];  // accumulate back edges from child
-                }
-            };
-
-            dfsSubtree(map[root], nullptr);
-
-            // for(auto &u:G.nodes) {
-            //     std::cout << "Node " << u->index() << ": back edges in subtree = " << backedgeTailSubtreeCount[u] << std::endl;
-            // }   
-
-            std::function<void(node, node)> dfs2 = [&](node u, node prev=nullptr) -> void {
-                int c = backedgeTailSubtreeCount[u];
-                if (c == backEdgeCount) {
-                    z = mapInverse[u];
-                    // std::cout << mapInverse[u]->index() << " is a candidate for deepest node in back edges." << std::endl;
-                }
-                for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-                    if (adj->isSource()) {
-                        node v = adj->twinNode();
-                        if(v == prev) continue;
-                        dfs2(v, u);
-                    }
-                // std::cout << "Visiting node " << u->index() << ": back edges in subtree = " << c << std::endl;
-                // return c;
-            };
-
-
-            dfs2(map[root], nullptr);
-
-            // std:: cout << "Done" << std::endl;
-
-            assert(z != nullptr);
-            
-            // std::cout << "Deepest node in back edges: " << z->index() << " with " << backedgeTailSubtreeCount[z] << " back edges in its subtree." << std::endl;
-            
-
-
-            // std::cout << "Deepest node in back edges: " << z << " with " << backedgeTailSubtreeCount[z] << " back edges in its subtree." << std::endl;
-        }
-
-        // std::cout << "y:" << y << " z:" << z << std::endl;
-
-        // std::cout << G.firstNode() << std::endl;
-        // std::cout << y << ", " << z << std::endl;
-        if(dfsNum[y]>dfsNum[z]) {
-            // std::cout << "y > z, no feedback vertices" << std::endl;
-            return;
-        }
-
-        // removing [y,z] and checking acyclicity
-        {
-            std::function<bool(node)> inInterval = [&](node u) -> bool {
-                return dfsNum[y] <= dfsNum[u] && dfsNum[u] <= dfsNum[z];
-            };
-            Graph Gp;
-            NodeArray<node> map(G, nullptr);
-            for (node v : G.nodes)
-                map[v] = Gp.newNode();
-
-
-            for (edge e : G.edges) {
-                node u = e->source(), v = e->target();
-                // std::cout << u << " -> " << v << std::endl;
-                // std::cout << (inInterval(u)) << " " << (inInterval(v)) << std::endl; 
-                if(inInterval(u) && inInterval(v) && etype[e]==EdgeType::TREE) continue;
-                // std::cout << "added" << std::endl;
-                // if(!inInterval(u) && !inInterval(v)) 
-                Gp.newEdge(map[u], map[v]);
-            }
-
-            GraphIO::drawGraph(Gp, "removed_input"+to_string(G.nodes.size()));
-
-            if(!isAcyclic(Gp)) {
-                // std::cout << "Graph without interval is not acylic, so there is no feedback set" << std::endl;
-                return;
-            }
-        }
-
-
-        NodeArray<bool> loop(G, false);
-        NodeArray<int> maxi(G, 0);
-        {
-            NodeArray<int> disc(G), fin(G);
-            int time=0;
-            std::function<bool(node, node)> isDescendant = [&](node ancestor, node v) -> bool {
-                return ancestor != v && disc[ancestor] < disc[v] && fin[v] < fin[ancestor];
-            };
-
-
-            NodeArray<bool> vis(G, false);
-            std::function<void(node)> dfsTime = [&](node u) {
-                vis[u] = true;
-                disc[u] = ++time;
-                // std::cout << "at " << u << std::endl;
-                for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-                    if (adj->isSource()) {            // follow children only
-                        node v = adj->twinNode();
-                        if (vis[v]) continue;
-                        dfsTime(v);
-                    }
-                fin[u] = ++time;
-                
-            };
-            
-            dfsTime(root);
-            // return ;
-
-            vis = NodeArray<bool>(G, false);
-
-            std::vector<node> stk;
-            stk.reserve(G.nodes.size());
-            std::function<void(node)> dfsOrder = [&](node u) {
-                vis[u] = true;
-                for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (adj->isSource()) {
-                        edge e = adj->theEdge();
-                        node v = adj->twinNode();
-                        if (!vis[v]) dfsOrder(v);
-                    }
-                }
-                stk.push_back(u);
-            };
-
-            dfsOrder(root);
-            // std::cout << stk.size() << " size "<< std::endl;
-
-            std::reverse(stk.begin(), stk.end());
-            while(!stk.empty()) {
-                node u = stk.back();
-                stk.pop_back();
-                // std::cout << "at " << u << std::endl;
-
-                
-                // maxi computation
-                for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-
-                    edge e = adj->theEdge();
-                    node v  = adj->twinNode();
-
-                    // std::cout << dfsNum[u] << " -> " << dfsNum[v] << ": ";
-                    if(etype[e]==EdgeType::BACK) {
-                        // std::cout << "backedge" << std::endl;
-                        continue;
-                    }
-                    // if(dfsNum[y]<=dfsNum[v] && 
-                    //     dfsNum[v]<=dfsNum[z] && 
-                    //     dfsNum[y]<=dfsNum[u] && 
-                    //     dfsNum[u]<dfsNum[z] && 
-                    //     etype[e] == EdgeType::TREE) {
-                    //     std::cout << "tree edge, ignore" << std::endl;
-                    //     continue;
-                    // }
-
-                    if(dfsNum[y]<=dfsNum[u] && 
-                        dfsNum[u]<dfsNum[z] &&
-                        dfsNum[u]+1 == dfsNum[v]) {
-                            continue;
-                        }
-
-                    if(dfsNum[v]<=dfsNum[z]) {
-                        maxi[u] = std::max(maxi[u], dfsNum[v]);
-                        // std::cout << dfsNum[v] << std::endl;
-                    } else if(dfsNum[v]>dfsNum[z]) {
-                        maxi[u] = std::max(maxi[u], maxi[v]);
-                        // std::cout << maxi[v] << std::endl;
-                    }
-
-                }
-
-
-                // loop computation
-                if(isDescendant(z, u)) {
-                    loop[u] = true;
-                    // std::cout << " it is proper desc of z" << std::endl; 
-                } else {
-                    for (adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                        if (!adj->isSource()) continue;
-
-                        edge e = adj->theEdge();
-                        node v  = adj->twinNode();
-
-                        if(etype[e]!=EdgeType::BACK) {
-                            loop[u] |= (dfsNum[v]>dfsNum[z] && loop[v]);
-                        }
-                    }
-                }
-            }
-        }
-
-        
-        
-        // init
-        node v=y;
-        int maxitest=-1;
-        for (int i = 0; i < dfsNum[y]; i++) {
-            maxitest=std::max(maxitest, maxi[dfsNumInverse[i]]);
-        }
-
-        // assert(maxitest >= dfsNum[y]);
-
-        // step 4
-        while(true) {
-            if(loop[v] == true) {
-                break;
-            }
-
-            maxitest = std::max(maxitest, maxi[v]);
-
-
-            if(maxitest<=dfsNum[v]) {
-                int cntVnext=0;
-                edge edgeToAdd=nullptr;
-                for (adjEntry adj = v->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-                    
-                    edge e = adj->theEdge();
-                    node v2  = adj->twinNode();
-                    
-                    if(dfsNum[v]+1 == dfsNum[v2]) {
-                        // if(etype[e] == EdgeType::TREE) edgeToAdd=e;
-                        if(edgeToAdd!=nullptr) {
-                            edgeToAdd = nullptr;
-                            break;
-                        } 
-                        edgeToAdd = e;
-                        cntVnext++;
-                    }
-                }
-                if(cntVnext == 1 && edgeToAdd != nullptr) {
-                    result.push_back(edgeToAdd);
-                }
-            }
-            if(dfsNum[v]<dfsNum[z]-1) {
-                v = dfsNumInverse[dfsNum[v] + 1];
-            } else {
-                break;
-            }
-        }
-
-        return;
-    }
-
-
-    // Given a graph G and possible to remove nodes(to make it trivial SSCs),
-    // find all edges that if removed, would make the graph acyclic.
-    // O(n + m) time complexity.
-    void find_feedback_arcs(const Graph &Gorig,
-                        std::vector<edge> &result,
-                        const std::vector<node> &toRemove)
-    {
-        Graph G;
-        NodeArray<node> orig2copy (Gorig, nullptr);
-        NodeArray<node> copy2orig (G,     nullptr);
-        EdgeArray<edge> copy2origE(G,     nullptr);
-
-        for (node v : Gorig.nodes) {
-            node w = G.newNode();
-            orig2copy[v] = w;
-            copy2orig[w] = v;
-        }
-        for (edge e : Gorig.edges) {
-            edge f = G.newEdge(orig2copy[e->source()], orig2copy[e->target()]);
-            copy2origE[f] = e;
-        }
-
-        for (node vOrig : toRemove)
-            if (orig2copy[vOrig]) G.delNode(orig2copy[vOrig]);
-
-        std::vector<edge> copyResult;
-        run_fas(G, copyResult);
-
-        result.clear();
-        result.reserve(copyResult.size());
-        for (edge f : copyResult)
-            result.push_back(copy2origE[f]);
-    }
 
 
     
@@ -679,6 +270,55 @@ namespace solver {
             }
         }
 
+        void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const Graph &T) {
+            auto& C = ctx();
+
+
+            std::cout << "Edge dp states:" << std::endl;
+            for(auto &e:T.edges) {
+                {
+                    EdgeDPState state = edge_dp[e].down;
+                    if(state.s && state.t) {
+                        std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
+                        std::cout << "s = " << C.node2name[state.s] << ", ";
+                        std::cout << "t = " << C.node2name[state.t] << ", ";
+                        std::cout << "acyclic = " << state.acyclic << ", ";
+                        std::cout << "global source = " << state.globalSourceSink << ", ";
+                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                        std::cout << "localInS = " << state.localInS << ", ";
+                        std::cout << "localOutS = " << state.localOutS << ", ";
+                        std::cout << "localInT = " << state.localInT << ", ";
+                        std::cout << "localOutT = " << state.localOutT << ", ";
+                        std::cout << "directST = " << state.directST << ", ";
+                        std::cout << "directTS = " << state.directTS << ", ";
+                        
+                        std::cout << std::endl;
+                    }
+                }
+
+                {
+                    EdgeDPState state = edge_dp[e].up;
+                    if(state.s && state.t) {
+                        std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
+                        std::cout << "s = " << C.node2name[state.s] << ", ";
+                        std::cout << "t = " << C.node2name[state.t] << ", ";
+                        std::cout << "acyclic = " << state.acyclic << ", ";
+                        std::cout << "global source = " << state.globalSourceSink << ", ";
+                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                        std::cout << "localInS = " << state.localInS << ", ";
+                        std::cout << "localOutS = " << state.localOutS << ", ";
+                        std::cout << "localInT = " << state.localInT << ", ";
+                        std::cout << "localOutT = " << state.localOutT << ", ";
+                        std::cout << "directST = " << state.directST << ", ";
+                        std::cout << "directTS = " << state.directTS << ", ";
+                        
+                        std::cout << std::endl;
+                    }
+                }
+            }
+
+        }
+
         std::string nodeTypeToString(SPQRTree::NodeType t) {
             switch (t) {
                 case SPQRTree::NodeType::SNode: return "SNode";
@@ -697,6 +337,7 @@ namespace solver {
             node parent = nullptr,
             edge e = nullptr 
         ) {
+            PROFILE_FUNCTION();
             if(curr == nullptr) {
                 curr = spqr.rootNode();
                 parent = curr;
@@ -721,6 +362,7 @@ namespace solver {
         // process edge in the direction of parent to child
         // Computing A->B (curr_edge)
         void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
+            PROFILE_FUNCTION();
             auto& C = ctx();
 
             const ogdf::NodeArray<int> &globIn  = C.inDeg;
@@ -955,6 +597,7 @@ namespace solver {
 
 
         void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
+            PROFILE_FUNCTION();
             auto& C = ctx();
 
             const ogdf::NodeArray<int> &globIn  = C.inDeg;
@@ -1238,49 +881,69 @@ namespace solver {
                 }
 
             } else {
-                NodeArray<int> comp(newGraph);
-                int sccs = strongComponents(newGraph, comp);
 
-                std::vector<int> size(sccs, 0);
-                for (node v : newGraph.nodes) ++size[comp[v]];
+                FeedbackArcSet FAS(newGraph);
+                std::vector<edge> fas = FAS.run();
+                // find_feedback_arcs(newGraph, fas, toRemove);
 
-                int trivial = 0, nonTrivial = 0, ntIdx = -1;
+                EdgeArray<bool> isFas(newGraph, 0);
+                for (edge e : fas) isFas[e] = true;
 
-                for (int i = 0; i < sccs; ++i) {
-                    if (size[i] > 1) { ++nonTrivial; ntIdx = i; }
-                    else ++trivial;
+                for (edge e : virtualEdges) {
+
+                    if(edgeToDp[e]->acyclic && !isFas[e]) {
+                        node_dp[edgeChild[e]].outgoingCyclesCount++;
+                        node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                    }
+
+                    edgeToDp[e]->acyclic &= isFas[e];
                 }
 
-                if (nonTrivial >= 2){
-                    for (edge e : virtualEdges) {
-                        if(edgeToDp[e]->acyclic) {
-                            node_dp[edgeChild[e]].outgoingCyclesCount++;
-                            node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                        }
 
-                        edgeToDp[e]->acyclic &= false;
-                    }
-                } else if (nonTrivial == 1) {
-                    std::vector<node> toRemove;
-                    for (node v : newGraph.nodes)
-                        if (comp[v] != ntIdx) toRemove.push_back(v);
+                // NodeArray<int> comp(newGraph);
+                // int sccs = strongComponents(newGraph, comp);
 
-                    std::vector<edge> fas;
-                    find_feedback_arcs(newGraph, fas, toRemove);
+                // std::vector<int> size(sccs, 0);
+                // for (node v : newGraph.nodes) ++size[comp[v]];
 
-                    EdgeArray<bool> isFas(newGraph, 0);
-                    for (edge e : fas) isFas[e] = true;
+                // int trivial = 0, nonTrivial = 0, ntIdx = -1;
 
-                    for (edge e : virtualEdges) {
+                // for (int i = 0; i < sccs; ++i) {
+                //     if (size[i] > 1) { ++nonTrivial; ntIdx = i; }
+                //     else ++trivial;
+                // }
 
-                        if(edgeToDp[e]->acyclic && !isFas[e]) {
-                            node_dp[edgeChild[e]].outgoingCyclesCount++;
-                            node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                        }
+                // if (nonTrivial >= 2){
+                //     for (edge e : virtualEdges) {
+                //         if(edgeToDp[e]->acyclic) {
+                //             node_dp[edgeChild[e]].outgoingCyclesCount++;
+                //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                //         }
 
-                        edgeToDp[e]->acyclic &= isFas[e];
-                    }
-                }
+                //         edgeToDp[e]->acyclic &= false;
+                //     }
+                // } else if (nonTrivial == 1) {
+                //     // std::vector<node> toRemove;
+                //     // for (node v : newGraph.nodes)
+                //     //     if (comp[v] != ntIdx) toRemove.push_back(v);
+
+                //     FeedbackArcSet FAS(newGraph);
+                //     std::vector<edge> fas = FAS.run();
+                //     // find_feedback_arcs(newGraph, fas, toRemove);
+
+                //     EdgeArray<bool> isFas(newGraph, 0);
+                //     for (edge e : fas) isFas[e] = true;
+
+                //     for (edge e : virtualEdges) {
+
+                //         if(edgeToDp[e]->acyclic && !isFas[e]) {
+                //             node_dp[edgeChild[e]].outgoingCyclesCount++;
+                //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                //         }
+
+                //         edgeToDp[e]->acyclic &= isFas[e];
+                //     }
+                // }
             }
 
 
@@ -1403,6 +1066,131 @@ namespace solver {
         }
 
 
+
+        void tryBubblePNodeGrouping(
+            const node &A,
+            const CcData &cc,
+            const BlockData &blk,
+            const EdgeArray<EdgeDP> &edge_dp
+        ) {    
+            if(blk.spqr->typeOf(A) != SPQRTree::NodeType::PNode) return;
+
+            const Skeleton &skel = blk.spqr->skeleton(A);
+            const Graph &skelGraph = skel.getGraph();
+
+
+            node s, t;
+            {
+                auto it = skelGraph.nodes.begin();
+                if (it != skelGraph.nodes.end()) s = skel.original(*it++);
+                if (it != skelGraph.nodes.end()) t = skel.original(*it);
+            }
+
+
+
+            int directST = 0, directTS = 0;
+            for(auto &e:skelGraph.edges) {
+                if(skel.isVirtual(e)) continue;
+
+                node a = skel.original(e->source()), b = skel.original(e->target());
+                
+                if(a == s && b == t) directST++;
+                else directTS++; 
+            }
+
+
+            // printAllEdgeStates(edge_dp, blk.spqr->tree());
+
+            for(int q=0; q<2; q++) {       
+                // s -> t
+                
+                // std::cout << "s: " << ctx().node2name[s] << ", t: " << ctx().node2name[t] << std::endl;
+                std::vector<const EdgeDPState*> goodS, goodT;
+                
+                int localOutSSum=directST, localInTSum=directST;
+                
+                // std::cout << " at " << A << std::endl;
+
+                for (adjEntry adj : A->adjEntries) {
+                    auto e = adj->theEdge();
+                    // std::cout << e->source() << " -> " << e->target() << std::endl;
+                    auto& state = (e->source() == A ? edge_dp[e].down : edge_dp[e].up);
+                    // directST = (state.s == s ? state.directST : state.directTS);
+                    // directTS = (state.s == s ? state.directTS : state.directST);
+                
+
+                    
+                    int localOutS = (state.s==cc.toOrig[blk.toCc[s]] ? state.localOutS : state.localOutT), localInT = (state.t==cc.toOrig[blk.toCc[t]] ? state.localInT : state.localInS);
+
+                    localOutSSum += localOutS;
+                    localInTSum += localInT;
+                    // std::cout << adj->twinNode() << " has outS" <<  localOutS << " and outT " << localInT << std::endl; 
+
+                    if(localOutS > 0) {
+                        // std::cout << "PUSHING TO GOODs" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                        goodS.push_back(&state);
+                    }
+
+                    if(localInT > 0) {
+                        // std::cout << "PUSHING TO GOODt" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                        goodT.push_back(&state);
+                    }
+                }
+
+                // if(q == 1) std::swap(goodS, goodT);
+                // std::cout << "directST: " << directST << ", directTS: " << directTS << std::endl;
+
+                
+
+                // std::cout << ctx().node2name[cc.toOrig[blk.toCc[s]]] << ", " << ctx().node2name[cc.toOrig[blk.toCc[t]]] << " has s:" << goodS.size() << " and t:" << goodT.size() << std::endl;
+                bool good = true;
+                for(auto &state:goodS) {
+                    if((state->s==cc.toOrig[blk.toCc[s]] && state->localInS > 0) || (state->s==cc.toOrig[blk.toCc[t]] && state->localInT > 0)) {
+                        // std::cout << "BAD 1" << std::endl;
+                        good = false;
+                    } 
+
+                    good &= state->acyclic;
+                    good &= !state->globalSourceSink;
+                    good &= !state->hasLeakage;
+                }
+
+                for(auto &state:goodT) {
+                    if((state->t==cc.toOrig[blk.toCc[t]] && state->localOutT > 0) || (state->t==cc.toOrig[blk.toCc[s]] && state->localOutS > 0)) {
+                        // std::cout << "BAD 2" << std::endl;
+                        good = false;
+                    }
+                    
+                    
+                    good &= state->acyclic;
+                    good &= !state->globalSourceSink;
+                    good &= !state->hasLeakage;
+                }
+
+                good &= directTS == 0;
+                good &= goodS == goodT;
+                good &= goodS.size() > 0;
+
+                good &= (localOutSSum == ctx().outDeg[cc.toOrig[blk.toCc[s]]] && localInTSum == ctx().inDeg[cc.toOrig[blk.toCc[t]]]);
+
+                // std::cout << "localOutSSum: " << localOutSSum << ", localInTSum: " << localInTSum << std::endl;
+
+                // std::cout << ctx().outDeg[cc.toOrig[blk.toCc[s]]] << ", " << 
+
+                // std::cout << "SETS ARE SAME: " << (goodS == goodT) << std::endl;
+
+                if(good) {
+                    // std::cout << "ADDING SUPERBUBBLE " << ctx().node2name[s] << ", " << ctx().node2name[t] << std::endl;
+                    addSuperbubble(cc.toOrig[blk.toCc[s]], cc.toOrig[blk.toCc[t]]);
+                }
+
+                std::swap(directST, directTS);
+                std::swap(s, t);
+                
+            }
+
+        }
+
         
         void tryBubble(const EdgeDPState &curr,
                const EdgeDPState &back,
@@ -1502,6 +1290,7 @@ namespace solver {
             bool noLeakage = !curr.hasLeakage;
             bool noGSource = !curr.globalSourceSink;
 
+
             if (acyclic &&
                 noGSource &&
                 noLeakage &&
@@ -1528,9 +1317,11 @@ namespace solver {
 
 
 
-        void collectSuperbubbles(const BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp) {
+        void collectSuperbubbles(const CcData &cc, const BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp) {
+            PROFILE_FUNCTION();
             const Graph &T = blk.spqr->tree();
             // printAllStates(edge_dp, node_dp, T);
+
             for(edge e : T.edges) {
                 // std::cout << "CHECKING FOR " << e->source() << " " << e->target() << std::endl;
                 const EdgeDPState &down = edge_dp[e].down;
@@ -1555,12 +1346,16 @@ namespace solver {
                 // }
 
             }
+            for(node v : T.nodes) {
+                tryBubblePNodeGrouping(v, cc, blk, edge_dp);
+            } 
         }
 
     }
 
     void checkBlockByCutVertices(const BlockData &blk, const CcData &cc)    
     {
+        PROFILE_FUNCTION();
         auto &C      = ctx();
         const Graph &G = *blk.Gblk;
 
@@ -1573,6 +1368,12 @@ namespace solver {
 
             bool isSrc = (inL  == 0 && outL == outG);
             bool isSnk = (outL == 0 && inL == inG);
+
+
+            // std::cout << ctx().node2name[vG] << ": " << (isSrc) << ", " << (isSnk) << std::endl;
+            // std::cout << "IN: " << inL << " out of " << inG << std::endl;
+            // std::cout << "OUT: " << inL << " out of " << inG << std::endl;
+            
 
             if (isSrc ^ isSnk) {
                 if (isSrc) { 
@@ -1618,6 +1419,7 @@ namespace solver {
 
 
     void solveSPQR(BlockData &blk, const CcData &cc) {
+        PROFILE_FUNCTION();
         auto T = blk.spqr->tree();
 
         GraphIO::drawGraph(T, "spqrTree");
@@ -1644,7 +1446,7 @@ namespace solver {
             SPQRsolve::processNode(v, dp, node_dp, cc, blk);
         }
 
-        SPQRsolve::collectSuperbubbles(blk, dp, node_dp);
+        SPQRsolve::collectSuperbubbles(cc, blk, dp, node_dp);
 
         // printAllStates(dp, node_dp, T);
 
@@ -1655,6 +1457,7 @@ namespace solver {
 
 
     void findMiniSuperbubbles() {
+        PROFILE_FUNCTION();
         // TIME_BLOCK("Finding mini-superbubbles");
 
         auto& C = ctx();
@@ -1695,53 +1498,76 @@ namespace solver {
     // static NodeArray<int>  outDeg{scratch};
 
 
-    // BEST
+    // // BEST
     static void buildBlockData(
         // const std::vector<node>& verts,
             const std::unordered_set<node> &verts,
             CcData& cc,
             BlockData& blk) {        
-        blk.Gblk = std::make_unique<Graph>();
+        PROFILE_FUNCTION();
 
+        {
+            PROFILE_BLOCK("buildBlockData:: create clear graph");
+            blk.Gblk = std::make_unique<Graph>();
+        }
         // NodeArray<node> toCc  {*blk.Gblk};
         // NodeArray<node> toOrig{*blk.Gblk};
         // NodeArray<int>  inDeg {*blk.Gblk};
         // NodeArray<int>  outDeg{*blk.Gblk};
 
-        blk.toCc.init(*blk.Gblk, nullptr);
-        blk.toOrig.init(*blk.Gblk, nullptr);
-        blk.inDeg .init(*blk.Gblk, 0);
-        blk.outDeg.init(*blk.Gblk, 0);
+        {
+            PROFILE_BLOCK("buildBlockData:: blk mappings inits");
 
-
-        for (node vCc : verts) {
-            node vB = blk.Gblk->newNode();
-            cc.toBlk[vCc] = vB;
-            blk.toCc[vB] = vCc;
-            blk.toOrig[vB] = cc.toOrig[vCc];
+            blk.toCc.init(*blk.Gblk, nullptr);
+            blk.toOrig.init(*blk.Gblk, nullptr);
+            blk.inDeg.init(*blk.Gblk, 0);
+            blk.outDeg.init(*blk.Gblk, 0);
         }
 
-        for (edge hE : cc.bc->hEdges(blk.bNode)) {
-            edge eCc = cc.bc->original(hE);
-            auto src = cc.toBlk[eCc->source()];
-            auto tgt = cc.toBlk[eCc->target()];
-            edge e = blk.Gblk->newEdge(src, tgt);
-            blk.outDeg[e->source()]++;
-            blk.inDeg[e->target()]++;
+        {
+            PROFILE_BLOCK("buildBlockData:: create nodes in Gblk");
+
+            for (node vCc : verts) {
+                node vB = blk.Gblk->newNode();
+                cc.toBlk[vCc] = vB;
+                blk.toCc[vB] = vCc;
+                blk.toOrig[vB] = cc.toOrig[vCc];
+            }
         }
 
-        // blk.Gblk   = std::make_unique<Graph>(std::move(scratch));
-        // blk.toCc   = std::move(toCc);
-        // blk.toOrig = std::move(toOrig);
-        // blk.inDeg  = std::move(inDeg);
-        // blk.outDeg = std::move(outDeg);
+        {
+            PROFILE_BLOCK("buildBlockData:: create edges in Gblk");
+
+            for (edge hE : cc.bc->hEdges(blk.bNode)) {
+                edge eCc = cc.bc->original(hE);
+                auto src = cc.toBlk[eCc->source()];
+                auto tgt = cc.toBlk[eCc->target()];
+                edge e = blk.Gblk->newEdge(src, tgt);
+                blk.outDeg[e->source()]++;
+                blk.inDeg[e->target()]++;
+            }
+        }
 
         if (blk.Gblk->numberOfNodes() >= 3) {
+            PROFILE_BLOCK("buildBlockData:: spqr building and parent");
+
             blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
 
             const Graph& T = blk.spqr->tree();
             blk.skel2tree.reserve(2*T.edges.size());
+            blk.parent.init(T, nullptr);
+
+            node root = blk.spqr->rootNode();
+            blk.parent[root] = root;
+
             for (edge te : T.edges) {
+
+                {
+                    node u = te->source();
+                    node v = te->target();
+                    blk.parent[v] = u;
+                }
+
                 if (auto eSrc = blk.spqr->skeletonEdgeSrc(te)) {
                     blk.skel2tree[eSrc] = te;
                 }
@@ -1749,42 +1575,40 @@ namespace solver {
                     blk.skel2tree[eTgt] = te;
                 }
             }
-
-            blk.parent.init(T, nullptr);
-            node root = blk.spqr->rootNode();
-            std::vector<node> stack;
-            stack.reserve(T.numberOfNodes());
-            blk.parent[root] = root;
-            stack.push_back(root);
-            while (!stack.empty()) {
-                node u = stack.back(); stack.pop_back();
-                for (adjEntry adj : u->adjEntries) {
-                    node v = adj->twinNode();
-                    if (!blk.parent[v]) {
-                        blk.parent[v] = u;
-                        stack.push_back(v);
-                    }
-                }
-            }
         }
     }
 
+
+
+
     // BEST NOW
     void solveStreaming() {
+        PROFILE_FUNCTION();
         auto& C = ctx();
         Graph& G = C.G;
 
         NodeArray<int> compIdx(G);
-        const int nCC = connectedComponents(G, compIdx);
+        int nCC;
+        {
+            PROFILE_BLOCK("solveStreaming:: ComputeCC");
+            nCC = connectedComponents(G, compIdx);
+        }
 
         std::vector<std::vector<node>> bucket(nCC);
-        for (node v : G.nodes) {
-            bucket[compIdx[v]].push_back(v);
+        {
+            PROFILE_BLOCK("solveStreaming:: bucket nodes");
+            for (node v : G.nodes) {
+                bucket[compIdx[v]].push_back(v);
+            }
         }
 
         std::vector<std::vector<edge>> edgeBuckets(nCC);
-        for (edge e : G.edges) {
-            edgeBuckets[compIdx[e->source()]].push_back(e);
+
+        {
+            PROFILE_BLOCK("solveStreaming:: bucket edges");
+            for (edge e : G.edges) {
+                edgeBuckets[compIdx[e->source()]].push_back(e);
+            }
         }
 
 
@@ -1794,24 +1618,49 @@ namespace solver {
         CcData cc;
         cc.toCopy.init(G, nullptr);
 
-        // #pragma omp parallel for schedule(dynamic)
         for (int cid = 0; cid < nCC; ++cid) {
-            cc.Gcc = std::make_unique<Graph>();
-            cc.toOrig.init(*cc.Gcc, nullptr);
-
-            for (node vG : bucket[cid]) {
-                node vC = cc.Gcc->newNode();
-                cc.toCopy[vG] = vC;
-                cc.toOrig[vC] = vG;
-                orig_to_cc[vG] = vC;
-            }
-
-            for (edge e : edgeBuckets[cid]) {
-                cc.Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
-            }
-
-            cc.bc = std::make_unique<BCTree>(*cc.Gcc);
+            {
+                {
+                    PROFILE_BLOCK("solveStreaming:: rebuild cc graph");
             
+                    cc.Gcc = std::make_unique<Graph>();
+                    cc.toOrig.init(*cc.Gcc, nullptr);
+
+                    for (node vG : bucket[cid]) {
+                        node vC = cc.Gcc->newNode();
+                        cc.toCopy[vG] = vC;
+                        cc.toOrig[vC] = vG;
+                        orig_to_cc[vG] = vC;
+                    }
+
+                    for (edge e : edgeBuckets[cid]) {
+                        cc.Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
+                    }
+                }
+
+                {                    
+                    PROFILE_BLOCK("solveStreaming:: building bc tree");
+                    cc.bc = std::make_unique<BCTree>(*cc.Gcc);
+                }
+                
+                // {
+                //     PROFILE_BLOCK("solveStreaming:: augmenting graph to make biconnected");
+                //     connectGlobalToLeafBlocksInComponent(cc);
+                //     std::cout << "made connected " << std::endl;
+                // }
+
+                // std::cout << "isBiconnected: " << (isBiconnected(*cc.Gcc)) << std::endl;
+
+                // if(cc.Gcc->numberOfNodes()>1){
+                //     PROFILE_BLOCK("solveStreaming:: getting spqr tree");
+
+                //     std::cout << " making spqr tree.." << std::endl;
+                //     StaticSPQRTree t = StaticSPQRTree(*cc.Gcc);
+                //     // auto tree = std::make_unique<StaticSPQRTree>(*cc.Gcc);
+                //     std::cout << t.numberOfPNodes() << std::endl;
+                // }
+            }
+
             NodeArray<node> toBlk(*cc.Gcc, nullptr);
             cc.toBlk = toBlk;
             std::unordered_set<node> verts;
@@ -1832,6 +1681,7 @@ namespace solver {
                 BlockData blk;
                 blk.bNode = bNode;
 
+                
                 buildBlockData(verts, cc, blk);
 
                 checkBlockByCutVertices(blk, cc);
@@ -1844,11 +1694,184 @@ namespace solver {
                     // }
                 }
             }
-            logger::info("Processed component {}/{}", cid+1, nCC);
+            if(cid+1%5000 == 0) logger::info("Processed component {}/{}", cid+1, nCC);
         }
     }
 
-//     void solveStreaming() {
+
+                        // ---------- helper: build one block directly from BC auxiliary graph ----------
+// static void buildBlockData_fromAux(
+//     CcData &cc,
+//     BlockData &blk,
+//     NodeArray<node> &H2B // NodeArray on cc.bc->auxiliaryGraph(), shared by all blocks
+// ) {
+//     PROFILE_FUNCTION();
+
+//     const Graph &H = cc.bc->auxiliaryGraph();
+
+//     {
+//         PROFILE_BLOCK("buildBlockData:: create clear graph");
+//         blk.Gblk = std::make_unique<Graph>();
+//     }
+//     {
+//         PROFILE_BLOCK("buildBlockData:: blk mappings inits");
+//         blk.toCc.init(*blk.Gblk, nullptr);
+//         blk.toOrig.init(*blk.Gblk, nullptr);
+//         blk.inDeg.init(*blk.Gblk, 0);
+//         blk.outDeg.init(*blk.Gblk, 0);
+//     }
+
+//     // Track which H-nodes we touched so we can clear H2B afterward.
+//     std::vector<node> touched; touched.reserve(64);
+
+//     auto getB = [&](node vH) -> node {
+//         // vH MUST belong to H:
+//         // OGDF_ASSERT(vH->graphOf() == &H);
+//         node vB = H2B[vH];
+//         if (vB == nullptr) {
+//             vB = blk.Gblk->newNode();
+//             H2B[vH] = vB;
+//             touched.push_back(vH);
+
+//             node vCc = cc.bc->original(vH);   // H -> cc.Gcc
+//             // OGDF_ASSERT(vCc->graphOf() == cc.Gcc.get());
+//             blk.toCc[vB]   = vCc;
+//             blk.toOrig[vB] = cc.toOrig[vCc];  // cc.Gcc -> original G
+//         }
+//         return vB;
+//     };
+
+//     {
+//         PROFILE_BLOCK("buildBlockData:: create edges in Gblk");
+//         // Edges of this block live in H and are exactly the hEdges of the B-node.
+//         for (edge eH : cc.bc->hEdges(blk.bNode)) {
+//             node a = getB(eH->source());
+//             node b = getB(eH->target());
+//             edge e = blk.Gblk->newEdge(a, b);
+//             blk.outDeg[e->source()]++;
+//             blk.inDeg[e->target()]++;
+//         }
+//     }
+
+//     if (blk.Gblk->numberOfNodes() >= 3) {
+//         PROFILE_BLOCK("buildBlockData:: spqr building and parent");
+//         blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
+
+//         const Graph &T = blk.spqr->tree();
+//         blk.skel2tree.reserve(2 * T.edges.size());
+//         blk.parent.init(T, nullptr);
+
+//         node root = blk.spqr->rootNode();
+//         blk.parent[root] = root;
+
+//         for (edge te : T.edges) {
+//             node u = te->source();
+//             node v = te->target();
+//             blk.parent[v] = u;
+
+//             if (auto eSrc = blk.spqr->skeletonEdgeSrc(te)) blk.skel2tree[eSrc] = te;
+//             if (auto eTgt = blk.spqr->skeletonEdgeTgt(te)) blk.skel2tree[eTgt] = te;
+//         }
+//     }
+
+//     // Clear only what we touched so H2B stays reusable and clean.
+//     for (node vH : touched) H2B[vH] = nullptr;
+// }
+
+
+// // --------------------------------- solveStreaming ---------------------------------
+// void solveStreaming() {
+//     PROFILE_FUNCTION();
+//     auto &C = ctx();
+//     Graph &G = C.G;
+
+//     NodeArray<int> compIdx(G);
+//     int nCC;
+//     {
+//         PROFILE_BLOCK("solveStreaming:: ComputeCC");
+//         nCC = connectedComponents(G, compIdx);
+//     }
+
+//     std::vector<std::vector<node>> bucket(nCC);
+//     {
+//         PROFILE_BLOCK("solveStreaming:: bucket nodes");
+//         for (node v : G.nodes)
+//             bucket[compIdx[v]].push_back(v);
+//     }
+
+//     std::vector<std::vector<edge>> edgeBuckets(nCC);
+//     {
+//         PROFILE_BLOCK("solveStreaming:: bucket edges");
+//         for (edge e : G.edges)
+//             edgeBuckets[compIdx[e->source()]].push_back(e);
+//     }
+
+//     NodeArray<node> orig_to_cc(G, nullptr);
+
+//     logger::info("Streaming over {} components", nCC);
+//     CcData cc;
+//     cc.toCopy.init(G, nullptr);
+
+//     for (int cid = 0; cid < nCC; ++cid) {
+//         // ----- rebuild cc graph -----
+//         {
+//             PROFILE_BLOCK("solveStreaming:: rebuild cc graph");
+
+//             cc.Gcc = std::make_unique<Graph>();
+//             cc.toOrig.init(*cc.Gcc, nullptr);
+
+//             for (node vG : bucket[cid]) {
+//                 node vC = cc.Gcc->newNode();
+//                 cc.toCopy[vG] = vC;
+//                 cc.toOrig[vC] = vG;
+//                 orig_to_cc[vG] = vC;
+//             }
+//             for (edge e : edgeBuckets[cid])
+//                 cc.Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
+//         }
+
+//         // ----- BC-tree -----
+//         {
+//             PROFILE_BLOCK("solveStreaming:: building bc tree");
+//             cc.bc = std::make_unique<BCTree>(*cc.Gcc);
+//         }
+
+//         // Collect B-nodes (blocks) of this component
+//         std::vector<node> bnodes;
+//         bnodes.reserve(cc.bc->bcTree().numberOfNodes());
+//         for (node x : cc.bc->bcTree().nodes)
+//             if (cc.bc->typeOfBNode(x) == BCTree::BNodeType::BComp)
+//                 bnodes.push_back(x);
+
+//         // One dense map on the auxiliary graph, shared across threads.
+//         // Safe: each block occupies a disjoint H-component.
+//         const Graph &H = cc.bc->auxiliaryGraph();
+//         NodeArray<node> H2B(H, nullptr);
+
+//         // ----- parallel over blocks (NO cc.toBlk reads/writes here!) -----
+//         #pragma omp parallel for schedule(dynamic,1)
+//         for (size_t i = 0; i < bnodes.size(); ++i) {
+//             BlockData blk;
+//             blk.bNode = bnodes[i];
+
+//             buildBlockData_fromAux(cc, blk, H2B);
+
+//             checkBlockByCutVertices(blk, cc);
+
+//             if (blk.Gblk->numberOfNodes() >= 3)
+//                 solveSPQR(blk, cc);
+//         }
+
+//         if (((cid + 1) % 5000) == 0)
+//             logger::info("Processed component {}/{}", cid + 1, nCC);
+//     }
+// }
+
+
+
+
+
+    //     void solveStreaming() {
 //     auto totalStart = std::chrono::steady_clock::now();
 //     auto& C = ctx();
 //     Graph& G = C.G;
@@ -1971,7 +1994,7 @@ namespace solver {
 
 
 
-    void solve() {                
+    void solve() {
         TIME_BLOCK("Finding superbubbles");
         findMiniSuperbubbles();
         GraphIO::drawGraph(ctx().G, "movedMinis");
@@ -1984,6 +2007,8 @@ namespace solver {
 
 
 int main(int argc, char** argv) {
+    PROFILE_BLOCK("Total run");
+    PROFILE_FUNCTION();
     TIME_BLOCK("Starting graph reading...");
     logger::init();
 
@@ -2008,7 +2033,7 @@ int main(int argc, char** argv) {
     std::cout << "Superbubbles found:\n";
     std::cout << ctx().superbubbles.size() << std::endl;
     // return 0;
-    if(false)
+    if(true)
     std::sort(ctx().superbubbles.begin(), ctx().superbubbles.end(), [&](std::pair<node, node> &a, std::pair<node, node> &b) {
         if(std::stoi(ctx().node2name[a.first]) < std::stoi(ctx().node2name[b.first])) return true;
         else if(std::stoi(ctx().node2name[a.first]) == std::stoi(ctx().node2name[b.first])) {
@@ -2019,6 +2044,9 @@ int main(int argc, char** argv) {
 
     
     GraphIO::writeSuperbubbles();
+
+
+    PROFILING_REPORT();
 
     // for(auto &sb:ctx().superbubbles) {
     //     std::cout << ctx().node2name[sb.first] << " " << ctx().node2name[sb.second] << '\n';

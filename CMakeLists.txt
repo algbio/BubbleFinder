@@ -10,10 +10,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ─────────────────────────── 1. per-config flags ──────────────────────────────
-set(BASE_FLAGS "-fno-omit-frame-pointer")
+#set(BASE_FLAGS "-fno-omit-frame-pointer")
+set(BASE_FLAGS "")
 
-set(RELEASE_FLAGS      "-O3 -march=native")
-set(RELWITHDEBINFO_FLAGS "-O2 -g")
+#set(RELEASE_FLAGS      "-O3 -march=native")
+set(RELEASE_FLAGS "-O3 -DNDEBUG -march=native -flto")
+
+set(RELWITHDEBINFO_FLAGS "-O2 -g -DENABLE_PROFILING -pg")
 set(DEBUG_FLAGS        "-O0 -g")
 
 foreach(cfg RELEASE RELWITHDEBINFO DEBUG)
@@ -79,7 +82,7 @@ add_subdirectory(src/util)   # ⇒ target sbutil
 add_subdirectory(src/io)     # ⇒ target sbio
 
 # ─────────────────────────── 5. main executable ───────────────────────────────
-add_executable(sbfind src/main.cpp)
+add_executable(sbfind src/main.cpp src/fas.cpp)
 target_include_directories(sbfind PRIVATE src)
 
 target_link_libraries(sbfind PRIVATE

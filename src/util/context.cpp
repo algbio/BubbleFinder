@@ -14,9 +14,6 @@ Context::Context()
 {}
 
 
-
-
-/* “Magic static” – initialised once, thread-safe since C++11.   */
 Context& ctx() {
     static Context instance;
     return instance;
