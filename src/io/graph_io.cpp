@@ -326,9 +326,9 @@ void readGraph() {
     else readStandard();
 
     C.isEntry = NodeArray<bool>(C.G, false);
-    C.isExit  = NodeArray<bool>(C.G, false);
-    C.inDeg   = NodeArray<int >(C.G, 0);
-    C.outDeg  = NodeArray<int >(C.G, 0);
+    C.isExit = NodeArray<bool>(C.G, false);
+    C.inDeg = NodeArray<int>(C.G, 0);
+    C.outDeg = NodeArray<int>(C.G, 0);
 
     for (edge e : C.G.edges) {
         C.outDeg(e->source())++;

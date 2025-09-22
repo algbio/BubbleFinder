@@ -1690,8 +1690,14 @@ namespace solver {
                     //     logger::error("SPQR processing failed: {}", e.what());
                     // }
                 }
+
+                blk.Gblk.reset();
+                blk.spqr.reset();
             }
-            if(cid+1%5000 == 0) logger::info("Processed component {}/{}", cid+1, nCC);
+
+
+
+            if((cid+1)%5000 == 0) logger::info("Processed component {}/{}", cid+1, nCC);
         }
     }
 

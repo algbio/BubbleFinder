@@ -3,3 +3,5 @@ graphs/*
 .vscode/*
 build/*
 build_asan/*
+log.log
+src/mainBad.cpp
