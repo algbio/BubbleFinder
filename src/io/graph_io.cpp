@@ -75,9 +75,8 @@ void readGFA()
     std::ifstream in(C.graphPath);
     if (!in) throw std::runtime_error("Cannot open " + C.graphPath);
 
-    // ---- pass 1: collect S, create oriented nodes, stash L lines ----
-    std::unordered_set<std::string> have_segment;   // IDs that had an S line
-    std::vector<std::string> raw_edges;             // store L lines for pass 2
+    std::unordered_set<std::string> have_segment;
+    std::vector<std::string> raw_edges;
     raw_edges.reserve(1 << 16);
 
     auto ensure = [&](const std::string& name){
@@ -93,14 +92,11 @@ void readGFA()
         if (line.empty() || line[0] == '#') continue;
 
         if (line[0] == 'S') {
-            // GFA1: S <name> <sequence> [tags...]
-            // We only need <name>. Keep parsing simple and robust.
             std::istringstream iss(line);
             std::string tok, id, seq;
             iss >> tok >> id >> seq;
-            if (id.empty()) continue;                 // malformed
+            if (id.empty()) continue;
             have_segment.insert(id);
-            // create both orientations now (like "one node" in Python but expanded here)
             ensure(id + "+");
             ensure(id + "-");
             continue;
@@ -109,211 +105,64 @@ void readGFA()
             raw_edges.push_back(line);
             continue;
         }
-        // ignore other records (H, P, W, etc.)
     }
 
     in.close();
 
-    // ---- pass 2: process L lines exactly like the Python logic ----
 
     auto flip = [](char c){ return c == '+' ? '-' : '+'; };
 
     // dedup per oriented endpoints AND overlap (mirrors Python's set-of-triples uniqueness)
     struct EdgeKey {
         std::string u, v;
-        int ovl;
-        bool operator==(const EdgeKey& o) const { return ovl==o.ovl && u==o.u && v==o.v; }
+        bool operator==(const EdgeKey& o) const { return  u==o.u && v==o.v; }
     };
     struct EdgeKeyHash {
         std::size_t operator()(EdgeKey const& k) const {
             std::size_t h1 = std::hash<std::string>{}(k.u);
             std::size_t h2 = std::hash<std::string>{}(k.v);
-            std::size_t h3 = std::hash<int>{}(k.ovl);
-            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2)) ^ (h3 + (h2<<1));
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
         }
     };
     std::unordered_set<EdgeKey, EdgeKeyHash> seen;
 
-    auto parse_overlap_like_python = [](const std::string& ovl)->int {
-        if (ovl == "*" || ovl.empty()) return 0;
-        if (!ovl.empty() && ovl.back()=='M') {
-            try { return std::stoi(ovl.substr(0, ovl.size()-1)); } catch (...) { return 0; }
-        }
-        try { return std::stoi(ovl); } catch (...) { return 0; }
-    };
 
-    auto add_edge = [&](const std::string& u, const std::string& v, int ovl){
-        EdgeKey key{u, v, ovl};
+
+    auto add_edge = [&](const std::string& u, const std::string& v){
+        EdgeKey key{u, v};
         if (seen.insert(key).second) {
             C.G.newEdge(C.name2node[u], C.name2node[v]);
         }
     };
 
     for (const std::string& e : raw_edges) {
-        // Python’s second pass uses .split() (whitespace). Do the same.
         std::istringstream iss(e);
         std::string tok, from, to, ovl_str;
         char o1 = 0, o2 = 0;
 
-        // Expect: L <from> <o1> <to> <o2> <overlap> ...
         if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) continue;
         if (tok != "L") continue;
 
-        // --- match Python: skip if either endpoint lacks an S record
         if (!have_segment.count(from) || !have_segment.count(to)) {
-            // (Python logs a warning; keep quiet or print if you want)
-            // std::cerr << "Warning: edge " << from << " - " << to << " but missing S; skipping\n";
             continue;
         }
 
-        // ensure oriented endpoints exist (they should, from pass 1; keep defensive)
         ensure(from + "+"); ensure(from + "-");
         ensure(to   + "+"); ensure(to   + "-");
 
-        int overlap = parse_overlap_like_python(ovl_str);
-
-        // primary and mirror arcs (skew-symmetric), same as your original approach
         if (o1=='+' || o1=='-') {
             if (o2=='+' || o2=='-') {
                 const std::string u1 = from + std::string(1, o1);
                 const std::string v1 = to   + std::string(1, o2);
-                add_edge(u1, v1, overlap);
+                add_edge(u1, v1);
 
                 const std::string u2 = to   + std::string(1, flip(o2));
                 const std::string v2 = from + std::string(1, flip(o1));
-                add_edge(u2, v2, overlap);
+                add_edge(u2, v2);
             }
         }
     }
 }
-
-
-// void readGFA()
-// {
-//     auto &C = ctx();
-//     if (C.graphPath.empty())
-//         throw std::runtime_error("GFA input needs -g <file>");
-
-//     std::ifstream in(C.graphPath);
-//     if (!in) throw std::runtime_error("Cannot open " + C.graphPath);
-
-
-    
-//     std::string line;
-//     while (std::getline(in, line)) {
-//         if (line.empty() || line[0] == '#') continue;
-
-//         std::istringstream iss(line);
-//         std::string token; iss >> token;
-
-//         if (token == "S") {
-//             std::string id, seq; iss >> id >> seq;
-//             // if (!C.name2node.count(id))
-//             //     C.name2node[id] = C.G.newNode();
-//         }
-//         else if (token == "L") {
-//                 std::string from, to, ovl;
-//     char o1 = 0, o2 = 0;                 // parse orientation as single chars
-//     iss >> from >> o1 >> to >> o2 >> ovl;
-
-//     std::cout << from << " " << to << " " << ovl << std::endl;
-
-//     auto flip = [](char c){ return c == '+' ? '-' : '+'; };
-
-//     // ensure oriented nodes exist
-//     auto ensure = [&](const std::string& name){
-//         if (!C.name2node.count(name)) {
-//             auto id = C.G.newNode();
-//             C.name2node[name] = id;
-//             C.node2name[id] = name;
-//         }
-//     };
-//     ensure(from + "+"); ensure(from + "-");
-//     ensure(to   + "+"); ensure(to   + "-");
-
-//     // --- Dedup edges by oriented *names* (string pairs) ---
-//     auto pair_hash = [](const std::pair<std::string,std::string>& p)->std::size_t {
-//         std::size_t h1 = std::hash<std::string>{}(p.first);
-//         std::size_t h2 = std::hash<std::string>{}(p.second);
-//         // hash combine
-//         return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
-//     };
-//     static std::unordered_set<std::pair<std::string,std::string>, decltype(pair_hash)>
-//         seen_edges(0, pair_hash);
-
-//     auto add_edge = [&](const std::string& u_name, const std::string& v_name){
-//         auto key = std::make_pair(u_name, v_name);
-//         if (seen_edges.insert(key).second) {
-//             C.G.newEdge(C.name2node[u_name], C.name2node[v_name]);
-//         }
-//     };
-
-//     // add primary and mirror (skew-symmetric) arcs, but only once each
-//     add_edge(from + std::string(1, o1), to + std::string(1, o2));
-//     add_edge(to   + std::string(1, flip(o2)),
-//              from + std::string(1, flip(o1)));
-
-
-//             // std::string from, o1, to, o2, ovl;
-//             // iss >> from >> o1 >> to >> o2 >> ovl;
-//             // // if (o1 != o2) continue;
-
-//             // auto flip = [&](string c) {
-//             //     return (c == "+" ? "-" : "+");
-//             // };
-
-//             // // bool from_start = (o1 == "-"), to_end = (o2 == "-"); 
-
-
-
-
-//             // // if (o1 == "-") std::swap(from, to);
-
-
-//             // // if(from_start && to_end) {
-                
-//             // // }
-
-//             // if (!C.name2node.count(from + "-")) {
-//             //     string name = from + "-";
-//             //     C.name2node[name] = C.G.newNode();
-//             //     C.node2name[C.name2node[name]] = name;
-//             // }
-
-//             // if (!C.name2node.count(from + "+")) {
-//             //     string name = from + "+";
-//             //     C.name2node[name] = C.G.newNode();
-//             //     C.node2name[C.name2node[name]] = name;
-//             // }
-
-//             // if (!C.name2node.count(to + "-")) {
-//             //     string name = to + "-";
-//             //     C.name2node[name] = C.G.newNode();
-//             //     C.node2name[C.name2node[name]] = name;
-//             // }
-
-//             // if (!C.name2node.count(to + "+")) {
-//             //     string name = to + "+";
-//             //     C.name2node[name] = C.G.newNode();
-//             //     C.node2name[C.name2node[name]] = name;
-//             // }
-
-
-
-//             // // if (!C.name2node.count(to)) {
-//             // //     C.name2node[to]  = C.G.newNode();
-//             // //     C.node2name[C.name2node[to]]  = to;
-//             // // }
-
-//             // // if(from_start && to_end) {
-
-//             // // }
-
-//             // C.G.newEdge(C.name2node[from + o1], C.name2node[to + o2]);
-//             // C.G.newEdge(C.name2node[to + flip(o2)], C.name2node[from + flip(o1)]);   
-//         }
-//     }
-// }
 
 
 void readGraph() {

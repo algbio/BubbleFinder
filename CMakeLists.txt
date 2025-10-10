@@ -14,14 +14,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BASE_FLAGS "")
 
 # Highest performance for Release
-set(RELEASE_FLAGS "-O3 -DNDEBUG -DENABLE_PROFILING -march=native -flto")
+set(RELEASE_FLAGS "-O3 -DNDEBUG -DENABLE_PROFILING -march=native -flto -pthread")
 
 
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DENABLE_PROFILING -fno-omit-frame-pointer" CACHE STRING "" FORCE)
 set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DENABLE_PROFILING -fno-omit-frame-pointer" CACHE STRING "" FORCE)
 
 
-set(RELWITHDEBINFO_FLAGS "-O2 -g -DENABLE_PROFILING -fno-omit-frame-pointer")
+set(RELWITHDEBINFO_FLAGS "-O2 -g -DNDEBUG -DENABLE_PROFILING -fno-omit-frame-pointer")
 set(DEBUG_FLAGS        "-O0 -g -fno-omit-frame-pointer")
 
 foreach(cfg RELEASE RELWITHDEBINFO DEBUG)
