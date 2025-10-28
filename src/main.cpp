@@ -1852,12 +1852,13 @@ namespace solver {
             std::vector<std::unique_ptr<CcData>>* components = targs->components;
             std::vector<BlockPrep>* blockPreps = targs->blockPreps;
 
-            // size_t chunkSize = std::max<size_t>(1, nCC / (numThreads * 4));
+            //size_t chunkSize = std::max<size_t>(1, nCC / numThreads);
             size_t chunkSize = 1;
             size_t processed = 0;
 
             while (true) {
                 size_t startIndex, endIndex;
+                // std::cout << chunkSize << std::endl;
                 {
                     std::lock_guard<std::mutex> lock(*workMutex);
                     if (*nextIndex >= static_cast<size_t>(nCC)) break;
@@ -1865,6 +1866,7 @@ namespace solver {
                     endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(nCC));
                     *nextIndex = endIndex;
                 }
+
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
                 
@@ -1903,7 +1905,7 @@ namespace solver {
                                                                 
                 if (chunkDuration.count() < 1000) {
                     // std::cout << tid << " enlarging chunk from " << chunkSize;
-                    chunkSize = std::min(chunkSize * 2, static_cast<size_t>(blockPreps->size() / numThreads));
+                    chunkSize = std::min(chunkSize * 2, static_cast<size_t>(nCC / numThreads));
                     // std::cout << " to " << chunkSize << std::endl;
                 } else if (chunkDuration.count() > 5000) {
                     // std::cout << tid << " shrinking chunk from " << chunkSize;
@@ -1991,6 +1993,7 @@ namespace solver {
                                 nextIndex = endIndex;
                             }
 
+                            // std::cout << startIndex << " to " << endIndex << std::endl;
 
                             auto chunkStart = std::chrono::high_resolution_clock::now();
                             
@@ -2032,7 +2035,7 @@ namespace solver {
                                                                         
                             if (chunkDuration.count() < 1000) {
                                 // std::cout << tid << " enlarging chunk from " << chunkSize;
-                                chunkSize = std::min(chunkSize * 2, static_cast<size_t>(blockPreps.size() / numThreads));
+                                chunkSize = std::min(chunkSize * 2, static_cast<size_t>(nCC / numThreads));
                                 // std::cout << " to " << chunkSize << std::endl;
                             } else if (chunkDuration.count() > 5000) {
                                 // std::cout << tid << " shrinking chunk from " << chunkSize;
@@ -2053,6 +2056,7 @@ namespace solver {
                 PROFILE_BLOCK("solveStreaming:: build BC trees and collect blocks");
 
 
+                std::cout << 123 << std::endl;
                 size_t numThreads = std::thread::hardware_concurrency();
                 // size_t numThreads = 16;
                 numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
@@ -2404,14 +2408,28 @@ namespace solver {
 
         static void tryCommitSnarl(std::vector<std::string> s) {
             auto &C = ctx();
+            PROFILE_BLOCK("tryCommitSnarl");
 
 
             // if(std::count(s[0].begin(), s[0].end(), ':') == 0) {
 
-            snarlsFound += s.size()*(s.size()-1)/2;
+            // snarlsFound += s.size()*(s.size()-1)/2;
             // }
             // std::cout << "S SIZE: " << s.size() << std::endl;
-            C.snarls.push_back(s);
+            std::sort(s.begin(), s.end());
+            // for (size_t i = 0; i < s.size(); i++)
+            // {
+            //     for (size_t j = i + 1; j < s.size(); j++)
+            //     {
+
+            //         std::string source = s[i], sink = s[j];
+            //         if(source == "_trash+" || sink == "_trash+") continue;
+                    C.snarls.insert(s);
+                    // C.snarls.insert({source, sink});
+            //     }
+            // }
+            
+            // C.snarls.push_back(s);
 
 
             // if(s.size()==2) {
@@ -2615,7 +2633,8 @@ namespace solver {
             };
 
             struct NodeDPState {
-                size_t cutsCnt{0};
+                std::vector<ogdf::node> GccCuts_last3; // last three cut nodes in Gcc
+                // size_t cutsCnt{0};
             };
 
 
@@ -2655,6 +2674,20 @@ namespace solver {
                 }
 
             }
+
+            void printAllStates(const ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
+                auto& C = ctx();
+
+                std::cout << "Node dp states: " << std::endl;
+                for(node v : T.nodes) {
+                    std::cout << "Node " << v->index() << ", ";
+                    // std::cout << "cutsCnt: " << node_dp[v].cutsCnt << ", ";
+                    std::cout << "GccCuts_last3: " << node_dp[v].GccCuts_last3.size();
+                    std::cout << std::endl;
+                    
+                }
+            }
+
 
 
             void dfsSPQR_order(
@@ -3076,7 +3109,6 @@ namespace solver {
                 const Graph& skelGraph = skel.getGraph();
                 const Graph& T = blk.spqr->tree();
                 
-
                 // std::cout << "Solving S node.." << std::endl;
 
                 std::vector<ogdf::node> nodesInOrderGcc; // In Gcc
@@ -3085,6 +3117,8 @@ namespace solver {
                 ogdf::EdgeArray<EdgeDPState*> skelToState(T);
 
                 // std::vector<EdgeDP> edgeT; // for i, nullptr if edge between i and i+1 is real, EdgeDp* if not 
+
+
 
 
                 for(edge e : skelGraph.edges) {
@@ -3096,6 +3130,10 @@ namespace solver {
                     skelToState[treeE] = child;
                 }
 
+                std::vector<ogdf::edge> adjEdgesG_; // edges are in G
+                std::vector<adjEntry> adjEntriesSkel; // edges are in skel
+
+
 
                 {
                     std::function<void(ogdf::node, ogdf::node)> dfs = [&](ogdf::node u, ogdf::node prev) {          
@@ -3103,6 +3141,19 @@ namespace solver {
                         nodesInOrderSkel.push_back(u);
                             
                         for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+
+                            if(adj->twinNode() == prev) continue;
+
+                            if(adj->twinNode() == skelGraph.firstNode() && u != skelGraph.firstNode()) {
+                                if(skel.realEdge(adj->theEdge())) {
+                                    adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                } else {
+                                    adjEdgesG_.push_back(nullptr);
+                                }
+
+                                adjEntriesSkel.push_back(adj);
+                            }
+
                             if(adj->twinNode() == skelGraph.firstNode() || adj->twinNode() == prev) continue;
                             {
                                 // if(skel.realEdge(adj->theEdge())) {
@@ -3113,23 +3164,61 @@ namespace solver {
                                 //     skelToState[adj->theEdge()] = nullptr;
                                 // }
                             }
+
+                            if(skel.realEdge(adj->theEdge())) {
+                                adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                            } else {
+                                adjEdgesG_.push_back(nullptr);
+                            }
+
+                            adjEntriesSkel.push_back(adj);
                             dfs(adj->twinNode(), u);
                         }
                         
                     };
                     
                     dfs(skelGraph.firstNode(), skelGraph.firstNode()->firstAdj()->twinNode());
+                    // adjEntriesSkel.push_back(skelGraph.firstNode()->firstAdj()->twinNode()->firstAdj()->twinNode() == skelGraph.firstNode() ? skelGraph.firstNode()->firstAdj()->twinNode()->firstAdj() : std::next(skelGraph.firstNode()->firstAdj()->twinNode()->firstAdj())); // adding edge back to first node
+
+                    
+
                 }
 
                 // GraphIO::drawGraph(skelGraph, "skelOfSNode");
-                // std::cout << "Order of nodes in S: " << std::endl;
-
-                // for (size_t i = 0; i < nodesInOrderGcc.size(); i++)
+                // bool toPrint = false;
                 // {
-                //     std::cout << ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[i]]] << ", ";
+                //     for (size_t i = 0; i < nodesInOrderGcc.size(); i++)
+                //     {
+                //         if(ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[i]]] == "3497") {
+                //             toPrint = true;
+                //         }
+                //     }
                 // }
-                // std::cout << std::endl;
 
+                // if(toPrint) {
+                //     GraphIO::drawGraph(skelGraph, "skelOfSNode");
+                // }
+
+                // if(toPrint) {
+                //     for(auto v:skelGraph.nodes) {
+                //         std::cout << ctx().node2name[blk.nodeToOrig[skel.original(v)]] << ", ";
+                //     }
+                //     std::cout << std::endl;
+                // }
+                
+
+                // if(toPrint) {
+                //     std::cout << "Order of nodes in S: " << std::endl;
+
+                //     for (size_t i = 0; i < nodesInOrderGcc.size(); i++)
+                //     {
+                //         std::cout << ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[i]]] << ", ";
+                //     }
+                //     std::cout << std::endl;
+
+                //     std::cout << "Number of adjacent edges in S: " << adjEntriesSkel.size() << ", " << adjEdgesG_.size() << std::endl;
+
+                // }
 
                 std::vector<bool> cuts(nodesInOrderGcc.size(), false);
 
@@ -3139,34 +3228,55 @@ namespace solver {
                     auto uGcc = nodesInOrderGcc[i];
                     auto uSkel = nodesInOrderSkel[i];
 
+                    // if(toPrint) {
+
                     // std::cout << "checking for " << ctx().node2name[cc.nodeToOrig[uGcc]] << std::endl;
+                    // }
 
-                    std::vector<ogdf::edge> adjEdgesG; // edges are in G
-                    std::vector<ogdf::edge> adjEdgesSkel; // edges are in skel
-
-                    for (ogdf::adjEntry adj = uSkel->firstAdj(); adj; adj = adj->succ()) {
-                        if(skel.realEdge(adj->theEdge())) adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
-                        else adjEdgesG.push_back(nullptr);
-
-                        adjEdgesSkel.push_back(adj->theEdge());
-                    }
+                    // for (ogdf::adjEntry adj = uSkel->firstAdj(); adj; adj = adj->succ()) {
+                    //     ogdf::edge eSkel = adj->theEdge();
+                    //     ogdf::node adjNode = adj->twinNode();
+                        
+                    //     // Only collect edges incident to uSkel (both outgoing and incoming)
+                    //     if(skel.realEdge(eSkel)) {
+                    //         adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(eSkel)]);
+                    //     } else {
+                    //         adjEdgesG.push_back(nullptr);
+                    //     }
+                    //     adjEdgesSkel.push_back(eSkel);
+                    // }
 
                     // std::cout << "11" << std::endl;
-                    assert(adjEdgesSkel.size() == 2);
-                    assert(adjEdgesG.size() == 2);
+                    // assert(adjEdgesSkel.size() == 2);
+                    // assert(adjEdgesG.size() == 2);
 
-                    if(uSkel->firstAdj()->twinNode() != nodesInOrderSkel[(i-1+nodesInOrderSkel.size())%nodesInOrderSkel.size()]) {
-                        std::swap(adjEdgesG[0], adjEdgesG[1]);
-                        std::swap(adjEdgesSkel[0], adjEdgesSkel[1]);        
-                    }
+                    // if(uSkel->firstAdj()->twinNode() != nodesInOrderSkel[(i-1+nodesInOrderSkel.size())%nodesInOrderSkel.size()]) {
+                    //     std::swap(adjEdgesG[0], adjEdgesG[1]);
+                    //     std::swap(adjEdgesSkel[0], adjEdgesSkel[1]);  
+                    //     std::cout << ctx().node2name[cc.nodeToOrig[uGcc]] << ": swapped edges\n";      
+                    // }
+
+                    // std::cout <<  adjEdgesSkel[0]->source() << " - " << adjEdgesSkel[1]->source() << "\n";
 
 
+                    std::vector<edge> adjEdgesSkel = {adjEntriesSkel[(i-1+adjEntriesSkel.size())%adjEntriesSkel.size()]->theEdge(), adjEntriesSkel[i]->theEdge()};
+                    std::vector<ogdf::edge> adjEdgesG = {adjEdgesG_[(i-1+adjEdgesG_.size())%adjEdgesG_.size()], adjEdgesG_[i]};
+
+
+                    // std::cout << "Got edges" << std::endl;
+
+
+                    
+                    
+                    // std::cout << adjEdgesG[0]->source() << " - " << adjEdgesG[0]->target() << "\n";
+                    // std::cout << adjEdgesG[1]->source() << " - " << adjEdgesG[1]->target() << "\n";
 
                     bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) || (!cc.isCutNode[uGcc]));
 
                     // std::cout << "22" << std::endl;
                     if(!skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
                         // both edges are real
+                        // if(toPrint)
                         // std::cout << "real - real"  << std::endl;
                         EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
                         EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
@@ -3175,6 +3285,7 @@ namespace solver {
                         nodeIsCut &= t0 != t1;
                     } else if(!skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
                         // first is real, second is virtual
+                        // if(toPrint)
                         // std::cout << "real - vir" << std::endl;
                         EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
                         EdgePartType t1 = EdgePartType::NONE;
@@ -3211,6 +3322,7 @@ namespace solver {
                         nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
                     } else if(skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
                         // first is virtual, second is real
+                        // if(toPrint)
                         // std::cout << "vir - real, " << std::endl;
                         EdgePartType t0 = EdgePartType::NONE;
                         EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
@@ -3253,7 +3365,8 @@ namespace solver {
                         nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
                     } else if(skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
                         // both edges are virtual
-                        // std::cout << "vir - vir" << std::endl;
+                        // if(toPrint)
+                        // std::cout << ctx().node2name[cc.nodeToOrig[uGcc]] << " vir - vir" << std::endl;
                         
                         EdgePartType t0 = EdgePartType::NONE;
                         EdgePartType t1 = EdgePartType::NONE;
@@ -3263,19 +3376,25 @@ namespace solver {
                         
                         EdgeDPState* state0 = skelToState[treeE0];
                         EdgeDPState* state1 = skelToState[treeE1];
-                        
-                        // std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
-                        // node B = skel.twinTreeNode(adjEdges[1])
 
-                        
+                        // if(toPrint) {
+                        //     std::cout << "S-" << skelToState[treeE0]->localMinusS << " " << "S+"  << skelToState[treeE0]->localPlusS << " " << "T-" << skelToState[treeE0]->localMinusT << " " << "T+" << skelToState[treeE0]->localPlusT << std::endl;
+                        //     std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
+                        // // node B = skel.twinTreeNode(adjEdges[1])
+                        // }
+                        assert(blk.nodeToOrig[state0->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state0->t] == cc.nodeToOrig[uGcc]);
+                        assert(blk.nodeToOrig[state1->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state1->t] == cc.nodeToOrig[uGcc]);
+
+                        // std::cout << ctx().node2name[cc.nodeToOrig[state0->s]] << " " << ctx().node2name[cc.nodeToOrig[state0->t]] << std::endl;
+                        // std::cout << ctx().node2name[state1->s] << " " << ctx().node2name[cc.nodeToOrig[state1->t]] << std::endl;
 
                         if(blk.toCc[state0->s] == uGcc) {
                             // take state0.s
                             if(state0->localMinusS>0 && state0->localPlusS>0) {}
                             else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                                t1 = EdgePartType::PLUS;
+                                t0 = EdgePartType::PLUS;
                             } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                                t1 = EdgePartType::MINUS;
+                                t0 = EdgePartType::MINUS;
                             } else {
                                 assert(false);
                             }
@@ -3283,9 +3402,9 @@ namespace solver {
                             // take state0.t
                             if(state0->localMinusT>0 && state0->localPlusT>0) {}
                             else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                                t1 = EdgePartType::PLUS;
+                                t0 = EdgePartType::PLUS;
                             } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                                t1 = EdgePartType::MINUS;
+                                t0 = EdgePartType::MINUS;
                             } else {
                                 assert(false);
                             }
@@ -3313,13 +3432,21 @@ namespace solver {
                             }
                         }
 
+                        // std::cout << (t0 == EdgePartType::NONE ? "NONE" : (t0 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << " - " << (t1 == EdgePartType::NONE ? "NONE" : (t1 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << std::endl;
                         
                         nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
                     }
 
 
                     if(nodeIsCut) { 
-                        node_dp[sNode].cutsCnt++;
+                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
+                        if(node_dp[sNode].GccCuts_last3.size() < 3) {
+                            node_dp[sNode].GccCuts_last3.push_back(uGcc);
+                        }
+                        // node_dp[sNode].cutsCnt++;
+                        // if(toPrint)
+                        // std::cout << "Found cut at " << ctx().node2name[cc.nodeToOrig[uGcc]] << std::endl;
+                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
                         if(!skel.isVirtual(adjEdgesSkel[0])) {
                             EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
 
@@ -3353,6 +3480,7 @@ namespace solver {
 
                     }
 
+                    // if(toPrint)
                     // std::cout << "Node " << ctx().node2name[cc.nodeToOrig[uGcc]] << " " << (nodeIsCut ? "cut" : "not cut") << std::endl;
                 }
                 
@@ -3365,7 +3493,10 @@ namespace solver {
                 if(res.size()>2) {
                     for (size_t i = 1; i < res.size(); i+=2)
                     {
-                        std::vector<std::string> v = {res[i], res[(i+1)%res.size()]};
+                        std::vector<std::string> v = {/*"S"+*/res[i], /*"S"+*/res[(i+1)%res.size()]};
+                        // std::cout << "S node snarl: ";
+                        // for(auto &s:v) std::cout << s << " ";
+                        // std::cout << std::endl;
                         addSnarl(v);
 
                         // std::cout << res[i] <<":" << res[(i+1)%res.size()] << std::endl; 
@@ -3397,6 +3528,10 @@ namespace solver {
 
                 node pole0Blk = skel.original(pole0Skel), pole1Blk = skel.original(pole1Skel);
                 node pole0Gcc = blk.toCc[pole0Blk], pole1Gcc = blk.toCc[pole1Blk];
+
+                // if(ctx().node2name[cc.nodeToOrig[pole0Gcc]] == "3497" || ctx().node2name[cc.nodeToOrig[pole1Gcc]] == "3497") {
+                //     std::cout << "Processing P node with pole " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " and " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
+                // }
 
 
                 for (ogdf::adjEntry adj = pole0Skel->firstAdj(); adj; adj = adj->succ()) {
@@ -3470,15 +3605,30 @@ namespace solver {
                             bool ok = true;
                             if(leftPart.size()==1) {
                                 node B = (blk.skel2tree[leftPart[0]]->source() == pNode ? blk.skel2tree[leftPart[0]]->target() : blk.skel2tree[leftPart[0]]->source());
-                                if(blk.spqr->typeOf(B) == SPQRTree::NodeType::SNode && node_dp[B].cutsCnt >= 3) ok = false;
+                                
+
+
+                                if(blk.spqr->typeOf(B) == SPQRTree::NodeType::SNode /*&& node_dp[B].cutsCnt >= 3*/) {
+                                    for(auto &gccCut:node_dp[B].GccCuts_last3) {
+                                        if(gccCut != pole0Gcc && gccCut != pole1Gcc) {
+                                            // std::cout << "FAILED due to S node " << ctx().node2name[cc.nodeToOrig[gccCut]] << std::endl;
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                    // ok = false;
+                                }
                             }
 
                             if(ok) {
                                 // std::cout << "SNARL: " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-") << ":" << ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-") << std::endl;
-                                string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-");
-                                string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-");
+                                string s = /*"P"+*/ ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-");
+                                string t = /*"P"+*/ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-");
                                 
                                 std::vector<std::string> v={s,t};
+                                // std::cout << "P node snarl: ";
+                                // for(auto &s:v) std::cout << s << " ";
+                                // std::cout << std::endl;
                                 addSnarl(v);
 
                             }
@@ -3495,6 +3645,10 @@ namespace solver {
 
                 node pole0Blk = down.s, pole1Blk = down.t;
                 node pole0Gcc = blk.toCc[pole0Blk], pole1Gcc = blk.toCc[pole1Blk];
+
+                // if(ctx().node2name[cc.nodeToOrig[pole0Gcc]] == "3497" || ctx().node2name[cc.nodeToOrig[pole1Gcc]] == "3497") {
+                //     std::cout << "Processing RR edge with pole " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " and " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
+                // }
 
                 // if(cc.isCutNode[pole0Blk]) {
                 //     node pole0CutT = cc.bc->bcproper(pole0Gcc);
@@ -3571,7 +3725,10 @@ namespace solver {
                     string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0DownType == EdgePartType::PLUS ? "+" : "-");
                     string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1DownType == EdgePartType::PLUS ? "+" : "-");
 
-                    std::vector<std::string> v={s,t};
+                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
+                    // std::cout << "RR edge snarl: ";
+                    // for(auto &s:v) std::cout << s << " ";
+                    // std::cout << std::endl;
                     addSnarl(v);
                 }
 
@@ -3579,7 +3736,11 @@ namespace solver {
                     string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0UpType == EdgePartType::PLUS ? "+" : "-");
                     string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1UpType == EdgePartType::PLUS ? "+" : "-");
 
-                    std::vector<std::string> v={s,t};
+                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
+                    // std::cout << "RR edge snarl: ";
+                    // for(auto &s:v) std::cout << s << " ";
+                    // std::cout << std::endl;
+
                     addSnarl(v);
                 }
 
@@ -3676,6 +3837,11 @@ namespace solver {
 
                 const Graph &T = blk.spqr->tree();
 
+
+                // std::cout << blk.spqr->numberOfPNodes() << " P nodes in SPQR tree" << std::endl;
+                // std::cout << blk.spqr->numberOfSNodes() << " S nodes in SPQR tree" << std::endl;
+                // std::cout << blk.spqr->numberOfRNodes() << " R nodes in SPQR tree" << std::endl;
+
                 EdgeArray<SPQRsolve::EdgeDP> edge_dp(T);
                 NodeArray<SPQRsolve::NodeDPState> node_dp(T);
 
@@ -3700,15 +3866,23 @@ namespace solver {
 
                 for(auto v:nodeOrder) {
                     SPQRsolve::processNode(v, edge_dp, cc, blk);
-                    // printAllEdgeStates(edge_dp, blk, T);
-
                 }
-
-                // std::cout << "Edges dp are processed" << std::endl;
-
                 // printAllEdgeStates(edge_dp, blk, T);
 
+                
+                // std::cout << "Edges dp are processed" << std::endl;
+                
+                // printAllEdgeStates(edge_dp, blk, T);
+                
+
+                for(auto vGblk:blk.Gblk->nodes) {
+                    if(ctx().node2name[blk.nodeToOrig[vGblk]] == "3497") {
+                        std::cout << "Node 3497 is in this block" << std::endl; 
+                    }
+                }
+
                 solveNodes(node_dp, edge_dp, blk, cc); // S, P, R-R
+                // printAllStates(node_dp, T);
                 // solveEdges(); // R-R
             }
 
@@ -3743,6 +3917,8 @@ namespace solver {
                 if(plusCnt + minusCnt == 0) {
                     isolatedNodesCnt++;
                 }
+
+                if(ctx().node2name[cc.nodeToOrig[v]] == "3497") std::cout << ctx().node2name[cc.nodeToOrig[v]] << " has " << plusCnt << " plus and " << minusCnt << " minus outgoing edges" << std::endl;
                 if(plusCnt == 0 || minusCnt == 0) {
                     cc.isTip[v] = true;
                 } else {
@@ -3811,6 +3987,9 @@ namespace solver {
                     }
                     // }
                     cc.isGoodCutNode[v] = isGood;
+                    // if(isGood) {
+                    //     std::cout << "Good cut node: " << ctx().node2name[cc.nodeToOrig[v]] << std::endl;
+                    // }
                     // std::cout << "Cut node " << ctx().node2name[cc.nodeToOrig[v]] << " is " << (isGood ? "good" : "bad") << std::endl;
                 }
             }
@@ -3853,8 +4032,8 @@ namespace solver {
             // }
 
             std::function<void(ogdf::node, ogdf::node, EdgePartType, std::vector<std::string> &)>  dfs=[&](ogdf::node node, ogdf::node prev, EdgePartType edgeType, std::vector<std::string> &goodNodes) -> void {
-                if(cc.isGoodCutNode[node] || cc.isTip[node]) {
-                    goodNodes.push_back((prev!=nullptr ? ctx().node2name[cc.nodeToOrig[prev]] : "-")+":"+ctx().node2name[cc.nodeToOrig[node]]+(edgeType == EdgePartType::PLUS ? "+" : "-"));
+                if((cc.isGoodCutNode[node] || cc.isTip[node]) && ctx().node2name[cc.nodeToOrig[node]] != "_trash") {
+                    goodNodes.push_back(/*"C"+*//*(prev!=nullptr ? ctx().node2name[cc.nodeToOrig[prev]] : "-")+":"+*/ctx().node2name[cc.nodeToOrig[node]]+(edgeType == EdgePartType::PLUS ? "+" : "-"));
                     // if(ctx().node2name[cc.nodeToOrig[node]] == "2346654") {
                     //     std::cout << ctx().node2name[cc.nodeToOrig[node]] << ": " << (cc.isCutNode[node]) << ", " << (cc.isGoodCutNode[node]) << ", " << (cc.isTip[node]) << std::endl;
                     // }
@@ -3927,7 +4106,13 @@ namespace solver {
                     std::vector<std::string> goodNodes;
                     dfs(v, nullptr, t, goodNodes);
 
-                    if(goodNodes.size()>=2) addSnarl(goodNodes);
+                    if(goodNodes.size()>=2) {
+                        // std::cout << "find cut snarls: ";
+                        // for(auto &s:goodNodes) std::cout << s << " ";
+                        // std::cout << std::endl;
+
+                        addSnarl(goodNodes);
+                    }
 
                     // std::cout << "Found cut/tip snarls: ";
                     // for (size_t i = 0; i < goodNodes.size(); i++)
@@ -3947,15 +4132,25 @@ namespace solver {
             }   
 
 
+            std::vector<std::string> tips;
             int tipsCnt = 0, cutCnt=0, goodCnt=0;
             for(node v : cc.Gcc->nodes) {
-                if(cc.isTip[v]) tipsCnt++;
+                if(cc.isTip[v]) {
+                    tipsCnt++;
+                    tips.push_back(ctx().node2name[cc.nodeToOrig[v]]);
+                }
                 if(cc.isCutNode[v]) cutCnt++;
                 if(cc.isGoodCutNode[v]) goodCnt++;
             }
 
             std::cout << cc.Gcc->numberOfNodes() << " nodes" << std::endl;
             std::cout << tipsCnt << " tips, " << cutCnt << " cut nodes, " << goodCnt << " good cut nodes found in component" << std::endl;
+            
+            // std::cout << "tips: ";
+            // for(auto &s:tips) {
+            //     std::cout << s << " ";
+            // }
+            // std::cout << std::endl;
             // std::cout << "done" << std::endl;
         }
 
@@ -4006,6 +4201,8 @@ namespace solver {
                     if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end()) {
                         edge e = blk.Gblk->newEdge(srcIt->second, tgtIt->second);
                         blk.edgeToOrig[e] = cc.edgeToOrig[eCc];
+                    } else {
+                        std::cout << "EDGE OUTSIDE???" << std::endl;
                     }
                 }
             }
@@ -4245,9 +4442,9 @@ int main(int argc, char** argv) {
     readArgs(argc, argv);
     {
         PROFILE_BLOCK("Graph reading");
-    GraphIO::readGraph();
+        GraphIO::readGraph();
     }
-    GraphIO::drawGraph(ctx().G, "input_graph");
+    // GraphIO::drawGraph(ctx().G, "input_graph");
 
 
     // std::vector<edge> res;

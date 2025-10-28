@@ -85,6 +85,8 @@ void readGFA()
     std::vector<std::string> raw_edges;
     raw_edges.reserve(1 << 16);
 
+
+
     auto ensure = [&](const std::string& name){
         if (!C.name2node.count(name)) {
             auto id = C.G.newNode();
@@ -92,6 +94,9 @@ void readGFA()
             C.node2name[id] = name;
         }
     };
+
+
+
 
     std::string line;
     while (std::getline(in, line)) {
@@ -140,6 +145,29 @@ void readGFA()
     std::unordered_set<EdgeKey, EdgeKeyHash> seen;
 
 
+    struct PairHash {
+        std::size_t operator()(const std::pair<std::string,std::string>& p) const noexcept {
+            std::size_t h1 = std::hash<std::string>{}(p.first);
+            std::size_t h2 = std::hash<std::string>{}(p.second);
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
+        }
+    };
+
+    std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pair_count;
+    for (const std::string& e : raw_edges) {
+        std::istringstream iss(e);
+        std::string tok, from, to, ovl_str;
+        char o1 = 0, o2 = 0;
+        if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) continue;
+        if (tok != "L") continue;
+
+        // unordered pair key
+        auto key = (from < to) ? std::make_pair(from, to) : std::make_pair(to, from);
+        pair_count[key]++;
+    }
+
+
+
 
     auto add_edge_double = [&](const std::string& u, const std::string& v){
         EdgeKey key{u, v};
@@ -148,15 +176,71 @@ void readGFA()
         }
     };
 
-    auto add_edge_bidirected = [&](const std::string& u, const std::string& v, EdgePartType t1, EdgePartType t2){
-        EdgeKey key{u, v};
-        if (seen.insert(key).second) {
+    // auto add_edge_bidirected = [&](std::string& u, std::string& v, EdgePartType t1, EdgePartType t2){
+    //     // if(u>v) {
+    //     //     std::swap(u, v);
+    //     //     std::swap(t1, t2);
+    //     // }
+
+    //     // EdgeKey key{u, v};
+    //     // if (seen.insert(key).second) {
+    //         node trashNode = C.G.newNode();
+    //         C.node2name[trashNode] = "_trash";
+
+    //         // auto e1 = C.G.newEdge(C.name2node[u], C.name2node[v]);
+
+    //         auto e1 = C.G.newEdge(C.name2node[u], trashNode);
+    //         C._edge2types[e1] = std::make_pair(t1, EdgePartType::PLUS);
+
+    //         auto e2 = C.G.newEdge(trashNode, C.name2node[v]);
+    //         C._edge2types[e2] = std::make_pair(EdgePartType::PLUS, t2);
+
+    //         // C._edge2cnt[e].first = (t1 == EdgePartType::PLUS) ? 1 : 0;
+    //         // C._edge2cnt[e].second = (t2 == EdgePartType::PLUS) ? 1 : 0;
+    //         // std::cout << "Added " << u << " - " << v <<  (t1 == EdgePartType::PLUS ? "+" : "-") << " - " << (t2 == EdgePartType::PLUS ? "+" : "-") << std::endl;
+    //     // } 
+    //     // else {
+    //     //     auto e = C.G.newEdge(C.name2node[u], C.name2node[v]);
+    //     //     C._edge2types[e] = std::make_pair(t1, t2);
+
+    //     // }
+    // };
+
+    auto add_edge_bidirected = [&]( std::string& u,
+                                    std::string& v,
+                                    EdgePartType t1,
+                                    EdgePartType t2)
+    {
+        if(u>v) {
+            std::swap(u, v);
+            std::swap(t1, t2);
+        }
+
+        auto key = std::make_pair(u, v);
+
+        bool multi = pair_count[key] > 1;
+
+        if (!multi) {
             auto e = C.G.newEdge(C.name2node[u], C.name2node[v]);
             C._edge2types[e] = std::make_pair(t1, t2);
-            // std::cout << "Added " << u << " - " << v <<  (t1 == EdgePartType::PLUS ? "+" : "-") << " - " << (t2 == EdgePartType::PLUS ? "+" : "-") << std::endl;
+            return;
+        }
 
+        std::string mid_name = "_trash";
+        auto mid_node = C.G.newNode();
+        C.node2name[mid_node] = mid_name;
+
+        {
+            auto e1 = C.G.newEdge(C.name2node[u], mid_node);
+            C._edge2types[e1] = std::make_pair(t1, EdgePartType::PLUS);
+        }
+        {
+            auto e2 = C.G.newEdge(mid_node, C.name2node[v]);
+            C._edge2types[e2] = std::make_pair(EdgePartType::PLUS, t2);
         }
     };
+
+
 
     for (const std::string& e : raw_edges) {
         std::istringstream iss(e);
@@ -166,9 +250,9 @@ void readGFA()
         if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) continue;
         if (tok != "L") continue;
 
-        if (!have_segment.count(from) || !have_segment.count(to)) {
-            continue;
-        }
+        // if (!have_segment.count(from) || !have_segment.count(to)) {
+        //     continue;
+        // }
 
         if(C.bubbleType == Context::BubbleType::SUPERBUBBLE) {
             ensure(from + "+"); ensure(from + "-");
