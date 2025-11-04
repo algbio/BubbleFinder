@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BASE_FLAGS "")
 
 # Highest performance for Release
-set(RELEASE_FLAGS "-O3 -DNDEBUG -DENABLE_PROFILING -march=native -flto -pthread")
+set(RELEASE_FLAGS "-O3 -DNDEBUG -DENABLE_PROFILING -march=native -flto -pthread -g")
 
 
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DENABLE_PROFILING -fno-omit-frame-pointer" CACHE STRING "" FORCE)
@@ -52,7 +52,7 @@ FetchContent_MakeAvailable(spdlog)
 # 3.2 OGDF  – either bundled or system
 option(SB_BUNDLE_OGDF "Download & build OGDF locally" ON)
 # set(OGDF_TAG "elderberry-202309" CACHE STRING "OGDF tag/branch/commit")
-set(OGDF_TAG "dogwood-202202" CACHE STRING "OGDF tag/branch/commit")
+set(OGDF_TAG "elderberry-202309" CACHE STRING "OGDF tag/branch/commit")
 
 
 if(SB_BUNDLE_OGDF)
