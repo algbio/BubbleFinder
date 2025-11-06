@@ -426,7 +426,7 @@ void readGraph() {
 
 void drawGraph(const ogdf::Graph &G, const std::string &file)
 {
-    return;
+    // return;
     using namespace ogdf;
 
     auto &C = ctx();
