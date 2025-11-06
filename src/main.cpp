@@ -2408,16 +2408,12 @@ namespace solver {
             // std::cout << "Collected " << workItems.size() << " work items" << std::endl;
 }
 
-            // MEM-TEST: sortie après la “construction” globale (CC/Gcc + BC-tree + blockPreps/workItems), avant le traitement.
             // std::cerr << "[mem-test] Superbubbles: exit after construction, before processing blocks." << std::endl;
             // std::cout << std::flush;
             // std::exit(0);
 
             {
                 PROFILE_BLOCK("solve:: process blocks (pthreads, large stack)");
-
-                // Si tu ne comptes plus utiliser allBlockData, simplifie la réserve ci-dessus:
-                // workItems.reserve(blockPreps.size());
 
                 std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> blockResults(workItems.size());
 
@@ -2616,6 +2612,21 @@ namespace solver {
 
     namespace snarls {
         namespace {
+
+            thread_local std::vector<std::vector<std::string>>* tls_snarl_buffer = nullptr;
+
+            static std::mutex g_snarls_mtx;
+
+            inline void flushThreadLocalSnarls(std::vector<std::vector<std::string>>& local) {
+                auto &C = ctx();
+                std::lock_guard<std::mutex> lk(g_snarls_mtx);
+                for (auto &s : local) {
+                    snarlsFound += s.size() * (s.size() - 1) / 2;
+                    C.snarls.insert(s);
+                }
+                local.clear();
+            }
+
             struct pair_hash {
                 size_t operator()(const std::pair<std::string, std::string>& p) const noexcept {
                     auto h1 = std::hash<std::string>{}(p.first);
@@ -2633,6 +2644,7 @@ namespace solver {
 
 
             // if(std::count(s[0].begin(), s[0].end(), ':') == 0) {
+            std::lock_guard<std::mutex> lk(g_snarls_mtx);
 
             snarlsFound += s.size()*(s.size()-1)/2;
             // }
@@ -2645,7 +2657,7 @@ namespace solver {
 
             //         std::string source = s[i], sink = s[j];
             //         if(source == "_trash+" || sink == "_trash+") continue;
-                    C.snarls.insert(s);
+            C.snarls.insert(std::move(s));
                     // C.snarls.insert({source, sink});
             //     }
             // }
@@ -2700,7 +2712,11 @@ namespace solver {
             //     }
             // Otherwise, commit directly to global state (sequential behavior)
             // tryCommitSnarl(source, sink);
-            tryCommitSnarl(s);
+            if (tls_snarl_buffer) {
+                tls_snarl_buffer->push_back(std::move(s));
+                return;
+            }
+            tryCommitSnarl(std::move(s));
 
             // if(C.isEntry[source] || C.isExit[sink]) {
             //     std::cerr << ("Superbubble already exists for source %s and sink %s", C.node2name[source].c_str(), C.node2name[sink].c_str());
@@ -4089,6 +4105,7 @@ namespace solver {
 
         void findTips(CcData& cc) {
             PROFILE_FUNCTION();
+            size_t localIsolated = 0;
             for(node v : cc.Gcc->nodes) {
                 int plusCnt = 0, minusCnt = 0;
                 node vG = cc.nodeToOrig[v];
@@ -4130,6 +4147,11 @@ namespace solver {
             //         std::cout << "Node " << ctx().node2name[cc.nodeToOrig[v]] << " is a tip" << std::endl;
             //     }
             // }
+
+            {
+                std::lock_guard<std::mutex> lk(g_snarls_mtx);
+                isolatedNodesCnt += localIsolated;
+            }
 
         }
 
@@ -4588,13 +4610,14 @@ namespace solver {
             std::mutex* workMutex = targs->workMutex;
             std::vector<std::unique_ptr<CcData>>* components = targs->components;
 
-            //size_t chunkSize = std::max<size_t>(1, nCC / numThreads);
             size_t chunkSize = 1;
             size_t processed = 0;
 
+            std::vector<std::vector<std::string>> localSnarls;
+            tls_snarl_buffer = &localSnarls;
+
             while (true) {
                 size_t startIndex, endIndex;
-                // std::cout << chunkSize << std::endl;
                 {
                     std::lock_guard<std::mutex> lock(*workMutex);
                     if (*nextIndex >= static_cast<size_t>(nCC)) break;
@@ -4603,43 +4626,35 @@ namespace solver {
                     *nextIndex = endIndex;
                 }
 
-
                 auto chunkStart = std::chrono::high_resolution_clock::now();
-                
+
                 for (size_t cid = startIndex; cid < endIndex; ++cid) {
                     CcData* cc = (*components)[cid].get();
 
-                    
                     findTips(*cc);
-                    if(cc->bc->numberOfCComps() > 0) {
+                    if (cc->bc->numberOfCComps() > 0) {
                         processCutNodes(*cc);
                     }
+                    findCutSnarl(*cc); 
 
-                    findCutSnarl(*cc);
-                    
                     ++processed;
                 }
-                
 
                 auto chunkEnd = std::chrono::high_resolution_clock::now();
                 auto chunkDuration = std::chrono::duration_cast<std::chrono::microseconds>(chunkEnd - chunkStart);
 
-
-                                                                
                 if (chunkDuration.count() < 1000) {
-                    // std::cout << tid << " enlarging chunk from " << chunkSize;
                     chunkSize = std::min(chunkSize * 2, static_cast<size_t>(nCC / numThreads));
-                    // std::cout << " to " << chunkSize << std::endl;
                 } else if (chunkDuration.count() > 5000) {
-                    // std::cout << tid << " shrinking chunk from " << chunkSize;
                     chunkSize = std::max(chunkSize / 2, static_cast<size_t>(1));
-                    // std::cout << " to " << chunkSize << std::endl;
                 }
             }
 
+            tls_snarl_buffer = nullptr;
+            flushThreadLocalSnarls(localSnarls);
+
             std::cout << "Thread " << tid << " built " << processed << " components (cuts tips)" << std::endl;
             return nullptr;
-
         }
 
         void* worker_block(void* arg) {
@@ -4651,13 +4666,14 @@ namespace solver {
             std::mutex* workMutex = targs->workMutex;
             std::vector<BlockPrep>* blockPreps = targs->blockPreps;
 
-            //size_t chunkSize = std::max<size_t>(1, nCC / numThreads);
             size_t chunkSize = 1;
             size_t processed = 0;
 
+            std::vector<std::vector<std::string>> localSnarls;
+            tls_snarl_buffer = &localSnarls;
+
             while (true) {
                 size_t startIndex, endIndex;
-                // std::cout << chunkSize << std::endl;
                 {
                     std::lock_guard<std::mutex> lock(*workMutex);
                     if (*nextIndex >= static_cast<size_t>(blocks)) break;
@@ -4666,44 +4682,37 @@ namespace solver {
                     *nextIndex = endIndex;
                 }
 
-
                 auto chunkStart = std::chrono::high_resolution_clock::now();
 
                 for (size_t bid = startIndex; bid < endIndex; ++bid) {
                     BlockData blk;
                     blk.bNode = (*blockPreps)[bid].bNode;
                     buildBlockData(blk, *(*blockPreps)[bid].cc);
-                    //std::cout << "Added block with " << blk.spqr->numberOfSNodes() << " S nodes" << std::endl;
-                    // components[cid]->blocks.push_back(std::move(blk));
 
-                    if(blk.Gblk->numberOfNodes() >= 3) {
-                        SPQRsolve::solveSPQR(blk, *(*blockPreps)[bid].cc);
+                    if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3) {
+                        SPQRsolve::solveSPQR(blk, *(*blockPreps)[bid].cc); // addSnarl -> buffer TLS
                     }
 
                     ++processed;
                 }
-                
 
                 auto chunkEnd = std::chrono::high_resolution_clock::now();
                 auto chunkDuration = std::chrono::duration_cast<std::chrono::microseconds>(chunkEnd - chunkStart);
 
-
-                                                                
                 if (chunkDuration.count() < 1000) {
-                    // std::cout << tid << " enlarging chunk from " << chunkSize;
                     chunkSize = std::min(chunkSize * 2, static_cast<size_t>(blocks / numThreads));
-                    // std::cout << " to " << chunkSize << std::endl;
                 } else if (chunkDuration.count() > 5000) {
-                    // std::cout << tid << " shrinking chunk from " << chunkSize;
                     chunkSize = std::max(chunkSize / 2, static_cast<size_t>(1));
-                    // std::cout << " to " << chunkSize << std::endl;
                 }
             }
 
+            tls_snarl_buffer = nullptr;
+            flushThreadLocalSnarls(localSnarls);
+
             std::cout << "Thread " << tid << " built " << processed << " components (cuts tips)" << std::endl;
             return nullptr;
-
         }
+
 
         void solve() {
             std::cout << "Finding snarls...\n";
@@ -4838,6 +4847,11 @@ namespace solver {
 
 
             std::vector<BlockPrep> blockPreps;
+
+
+            // std::cerr << "[mem-test][snarls] Exit before BC-tree construction." << std::endl;
+            // std::cout << std::flush;
+            // std::exit(0);
 
             {
                 // TIME_BLOCK("solveStreaming:: build BC trees and collect blocks");
@@ -5001,6 +5015,10 @@ namespace solver {
             // }
 
 
+
+            // std::cerr << "[mem-test][snarls] Exiting after construction, before per-block SPQR/solving." << std::endl;
+            // std::cout << std::flush;
+            // std::exit(0);
 
 
             {
