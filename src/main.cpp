@@ -4069,7 +4069,7 @@ namespace solver {
                 
                 // std::cout << "Edges dp are processed" << std::endl;
                 
-                printAllEdgeStates(edge_dp, blk, T);
+                // printAllEdgeStates(edge_dp, blk, T);
                 
 
                 // for(auto vGblk:blk.Gblk->nodes) {
@@ -4079,7 +4079,7 @@ namespace solver {
                 // }
 
                 solveNodes(node_dp, edge_dp, blk, cc); // S, P, R-R
-                printAllStates(node_dp, T);
+                // printAllStates(node_dp, T);
                 // solveEdges(); // R-R
             }
 
@@ -5116,7 +5116,7 @@ int main(int argc, char** argv) {
         PROFILE_BLOCK("Graph reading");
         GraphIO::readGraph();
     }
-    GraphIO::drawGraph(ctx().G, "input_graph");
+    // GraphIO::drawGraph(ctx().G, "input_graph");
 
 
     // std::vector<edge> res;
