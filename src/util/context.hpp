@@ -34,6 +34,9 @@ struct Context
 
     unsigned threads = 1;
 
+
+    size_t stackSize = 1ULL * 1024ULL * 1024ULL * 1024ULL;
+
     // int type = 0;
 
     BubbleType bubbleType = SUPERBUBBLE;

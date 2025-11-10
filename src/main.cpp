@@ -61,7 +61,9 @@ static void usage(const char* prog) {
               << " -g <graphFile> -o <outputFile> [--gfa] "
               << "[--superbubbles | --snarls] "
               << "[-j <threads>] "
-              << "[--report-json <file>]\n";
+              << "[--report-json <file>] "
+              << "[-m <stack size in bytes>]\n";
+
     std::exit(EXIT_FAILURE);
 }
 
@@ -108,6 +110,9 @@ void readArgs(int argc, char** argv) {
 
         } else if (s == "--snarls") {
             C.bubbleType = Context::BubbleType::SNARL;
+
+        } else if(s == "-m") {
+            C.stackSize = std::stoull(nextArgOrDie(args, i, "-m"));
 
         } else {
             std::cerr << "Unknown argument: " << s << "\n";
@@ -2126,7 +2131,8 @@ void solveStreaming() {
                 pthread_attr_t attr;
                 pthread_attr_init(&attr);
 
-                size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                size_t stackSize = C.stackSize;
                 if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                     std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                 }
@@ -2171,7 +2177,9 @@ void solveStreaming() {
                 pthread_attr_t attr;
                 pthread_attr_init(&attr);
 
-                size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                size_t stackSize = C.stackSize;
+
                 if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                     std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                 }
@@ -2226,7 +2234,9 @@ void solveStreaming() {
         for (size_t tid = 0; tid < numThreads; ++tid) {
             pthread_attr_t attr;
             pthread_attr_init(&attr);
-            size_t stackSize = 1024ULL * 1024ULL * 1024ULL * 20ULL; 
+            // size_t stackSize = 1024ULL * 1024ULL * 1024ULL * 20ULL; 
+            size_t stackSize = C.stackSize;
+
             pthread_attr_setstacksize(&attr, stackSize);
 
             ThreadProcessArgs* args = new ThreadProcessArgs{
@@ -4372,7 +4382,9 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = C.stackSize;
+
                         pthread_attr_setstacksize(&attr, stackSize);
 
                         ThreadComponentArgs* args = new ThreadComponentArgs{
@@ -4413,7 +4425,9 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = C.stackSize;
+
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }
@@ -4458,7 +4472,9 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = C.stackSize;
+
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }
@@ -4502,7 +4518,9 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = C.stackSize;
+
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }
