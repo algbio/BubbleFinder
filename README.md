@@ -9,5 +9,5 @@ make
 To run:
 ```
 cd build 
-./sbfind -g {graphPath} [--gfa] -o {-, outputPath} -j {threadsNumber}
+./BubbleFinder -g {graphPath} [--gfa] -o {-, outputPath} -j {threadsNumber}
 ```

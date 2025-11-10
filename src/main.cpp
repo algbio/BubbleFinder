@@ -2126,7 +2126,7 @@ void solveStreaming() {
                 pthread_attr_t attr;
                 pthread_attr_init(&attr);
 
-                size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                 if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                     std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                 }
@@ -2171,7 +2171,7 @@ void solveStreaming() {
                 pthread_attr_t attr;
                 pthread_attr_init(&attr);
 
-                size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                 if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                     std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                 }
@@ -3790,7 +3790,7 @@ void solveStreaming() {
                         std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-")};
                         addSnarl(v);
                         if(!blk._adjInS.count({s, t}) && !blk._adjInS.count({t, s})) {
-
+                            std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "-" : "+"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "-" : "+")};
                             addSnarl(v);
                         }
                     } 
@@ -4372,7 +4372,7 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                         pthread_attr_setstacksize(&attr, stackSize);
 
                         ThreadComponentArgs* args = new ThreadComponentArgs{
@@ -4413,7 +4413,7 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }
@@ -4458,7 +4458,7 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }
@@ -4502,7 +4502,7 @@ void solveStreaming() {
                         pthread_attr_t attr;
                         pthread_attr_init(&attr);
 
-                        size_t stackSize = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+                        size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
                         if(pthread_attr_setstacksize(&attr, stackSize) != 0){
                             std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                         }

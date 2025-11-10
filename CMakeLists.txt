@@ -58,10 +58,10 @@ add_subdirectory(src/util)   # ⇒ target sbutil
 add_subdirectory(src/io)     # ⇒ target sbio
 
 # 5. main executable
-add_executable(sbfind src/main.cpp src/fas.cpp)
-target_include_directories(sbfind PRIVATE src)
+add_executable(BubbleFinder src/main.cpp src/fas.cpp)
+target_include_directories(BubbleFinder PRIVATE src)
 
-target_link_libraries(sbfind PRIVATE
+target_link_libraries(BubbleFinder PRIVATE
     sbio sbutil
     ${OGDF_LIB}
     spdlog::spdlog_header_only
@@ -96,7 +96,7 @@ option(SB_ENABLE_LTO "Enable Link Time Optimization (IPO/LTO)" ON)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_ok OUTPUT ipo_err)
 if(SB_ENABLE_LTO AND ipo_ok AND NOT SB_ENABLE_SANITIZERS)
-    foreach(t sbfind sbio sbutil)
+    foreach(t BubbleFinder sbio sbutil)
         if(TARGET ${t})
             set_property(TARGET ${t} PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
         endif()
@@ -111,7 +111,7 @@ endif()
 
 # 8. Options par configuration et warnings (appliqués aux targets existants)
 # Définir les options d'optimisation par configuration via generator expressions.
-foreach(t sbfind sbio sbutil)
+foreach(t BubbleFinder sbio sbutil)
     if(TARGET ${t})
         # optimisation / debug par config
         target_compile_options(${t} PRIVATE
@@ -219,12 +219,12 @@ message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 # # ──────────────────────────────────────────────────────────────────
 # # 4. Main executable
 # # ──────────────────────────────────────────────────────────────────
-# add_executable(sbfind src/main.cpp)
-# target_include_directories(sbfind PRIVATE src)
-# target_compile_options(sbfind PRIVATE -O2  -g -fno-omit-frame-pointer)
+# add_executable(BubbleFinder src/main.cpp)
+# target_include_directories(BubbleFinder PRIVATE src)
+# target_compile_options(BubbleFinder PRIVATE -O2  -g -fno-omit-frame-pointer)
 
 
-# target_link_libraries(sbfind PRIVATE
+# target_link_libraries(BubbleFinder PRIVATE
 #     sbio
 #     sbutil
 #     OGDF
@@ -236,7 +236,7 @@ message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 # # 5. Warnings & optimisation for *this* target only
 # # ──────────────────────────────────────────────────────────────────
 # if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-#     target_compile_options(sbfind PRIVATE
+#     target_compile_options(BubbleFinder PRIVATE
 #         -Wall -Wextra -Wshadow -pedantic
 #     )
 # endif()
@@ -328,9 +328,9 @@ message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 	                        # # ------------------------------------------------------------------#
 	                        # # Main executable                                                   #
 	                        # # ------------------------------------------------------------------#
-	                        # add_executable(sbfind src/main.cpp)
-	                        # target_include_directories(sbfind PRIVATE src)   # #include "util/…"
-	                        # target_link_libraries(sbfind PRIVATE
+	                        # add_executable(BubbleFinder src/main.cpp)
+	                        # target_include_directories(BubbleFinder PRIVATE src)   # #include "util/…"
+	                        # target_link_libraries(BubbleFinder PRIVATE
 	                        #     sbio
 	                        #     sbutil
 	                        #     OGDF
@@ -338,15 +338,15 @@ message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 	                        #     OpenMP::OpenMP_CXX
 	                        # )
 
-	                        # # target_compile_options(sbfind PRIVATE -fopenmp)
-	                        # # target_link_libraries(sbfind PRIVATE -fopenmp)
+	                        # # target_compile_options(BubbleFinder PRIVATE -fopenmp)
+	                        # # target_link_libraries(BubbleFinder PRIVATE -fopenmp)
 
 
 	                        # # ------------------------------------------------------------------#
 	                        # # Nice warnings                                                     #
 	                        # # ------------------------------------------------------------------#
 	                        # if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-	                        #     # target_compile_options(sbfind PRIVATE -O3 -Wall -Wextra -Wshadow -pedantic -fopenmp -g -march=native -flto -fno-omit-frame-pointer)
-	                        #     target_compile_options(sbfind PRIVATE -O2 -g -fno-omit-frame-pointer -DNDEBUG)
+	                        #     # target_compile_options(BubbleFinder PRIVATE -O3 -Wall -Wextra -Wshadow -pedantic -fopenmp -g -march=native -flto -fno-omit-frame-pointer)
+	                        #     target_compile_options(BubbleFinder PRIVATE -O2 -g -fno-omit-frame-pointer -DNDEBUG)
 
 	                        # endif()

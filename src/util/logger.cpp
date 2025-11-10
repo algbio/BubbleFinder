@@ -15,7 +15,7 @@ std::shared_ptr<spdlog::logger> make_default()
 
     // Disable file logging for performance
     // auto file = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
-    //     ctx().outputPath.empty() ? "sbfind.log" : ctx().outputPath,
+    //     ctx().outputPath.empty() ? "BubbleFinder.log" : ctx().outputPath,
     //     0, 0);
 
     // one async queue shared by all loggers
