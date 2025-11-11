@@ -1,3 +1,5 @@
+# BubbleFinder
+
 To build:
 ```
 mkdir build
@@ -6,8 +8,14 @@ cmake ..
 make 
 ```
 
-To run:
+To run BubbleFinder:
 ```
 cd build 
-./BubbleFinder -g {graphPath} [--gfa] -o {-, outputPath} -j {threadsNumber} -m {stack size per thread in bytes}
+./BubbleFinder -g {graphPath} [--gfa] -o {-, outputPath} [--superbubbles | --snarls] -j {threadsNumber} -m {stack size per thread in bytes}
+```
+
+To run brute-force tester for snarls
+```
+cd build 
+./snarls_brute input_path
 ```
