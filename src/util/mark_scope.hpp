@@ -175,10 +175,19 @@ inline void report_to_json(const std::string& path, std::size_t topN = 0) {
 
 }
 
-#define MARK_SCOPE(label_literal) \
-    static mark::Stat* __mark_stat_##__COUNTER__ = mark::register_label(label_literal); \
-    mark::Scope __mark_scope_##__COUNTER__(__mark_stat_##__COUNTER__, false)
+
+#define MARK_JOIN_IMPL(a,b) a##b
+#define MARK_JOIN(a,b)      MARK_JOIN_IMPL(a,b)
+
+#if defined(__COUNTER__)
+#  define MARK_UNIQ() __COUNTER__
+#else
+#  define MARK_UNIQ() __LINE__  
+#endif
 
 #define MARK_SCOPE_MEM(label_literal) \
-    static mark::Stat* __mark_mstat_##__COUNTER__ = mark::register_label(label_literal); \
-    mark::Scope __mark_mscope_##__COUNTER__(__mark_mstat_##__COUNTER__, true)
+    MARK_SCOPE_MEM_IMPL(label_literal, MARK_UNIQ())
+
+#define MARK_SCOPE_MEM_IMPL(label_literal, N) \
+    static mark::Stat* MARK_JOIN(__mark_mstat_, N) = mark::register_label(label_literal); \
+    mark::Scope        MARK_JOIN(__mark_mscope_, N)(MARK_JOIN(__mark_mstat_, N), true)

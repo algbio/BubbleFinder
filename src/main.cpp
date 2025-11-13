@@ -4672,6 +4672,7 @@ namespace solver {
             return nullptr;
         }
 
+        
         void solve() {
             std::cout << "Finding snarls...\n";
             PROFILE_FUNCTION();
@@ -4687,7 +4688,7 @@ namespace solver {
             std::vector<std::vector<edge>> edgeBuckets;
 
             {
-                PhaseSampler io_sampler(g_stats_io); 
+                PhaseSampler io_sampler(g_stats_io);
 
                 MARK_SCOPE_MEM("sn/phase/ComputeCC");
                 nCC = connectedComponents(G, compIdx);
@@ -4709,7 +4710,6 @@ namespace solver {
                 }
             }
 
-
             std::vector<std::unique_ptr<CcData>> components(nCC);
             std::vector<BlockPrep> blockPreps;
 
@@ -4717,24 +4717,16 @@ namespace solver {
             {
                 PhaseSampler build_sampler(g_stats_build);
 
+                // 1) rebuild cc graphs (worker_component)
                 {
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
 
-                    std::vector<pthread_t> threads(numThreads);
-
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-                        pthread_attr_setstacksize(&attr, stackSize);
-
+                    if (numThreads <= 1) {
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
                         ThreadComponentArgs* args = new ThreadComponentArgs{
-                            tid,
+                            0,
                             numThreads,
                             nCC,
                             &nextIndex,
@@ -4743,40 +4735,55 @@ namespace solver {
                             &edgeBuckets,
                             &components,
                         };
+                        worker_component(static_cast<void*>(args));
+                    } else {
+                        std::vector<pthread_t> threads(numThreads);
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
 
-                        int ret = pthread_create(&threads[tid], &attr, worker_component, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            pthread_attr_setstacksize(&attr, stackSize);
+
+                            ThreadComponentArgs* args = new ThreadComponentArgs{
+                                tid,
+                                numThreads,
+                                nCC,
+                                &nextIndex,
+                                &workMutex,
+                                &bucket,
+                                &edgeBuckets,
+                                &components,
+                            };
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_component, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
-                    }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
 
+                // 2) build BC-trees and collect blocks (worker_bcTree)
                 {
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-                    std::vector<pthread_t> threads(numThreads);
 
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-                        if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                            std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                        }
-
+                    if (numThreads <= 1) {
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
                         ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
-                            tid,
+                            0,
                             numThreads,
                             nCC,
                             &nextIndex,
@@ -4784,156 +4791,226 @@ namespace solver {
                             &components,
                             &blockPreps
                         };
+                        worker_bcTree(static_cast<void*>(args));
+                    } else {
+                        std::vector<pthread_t> threads(numThreads);
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
 
-                        int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            }
+
+                            ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
+                                tid,
+                                numThreads,
+                                nCC,
+                                &nextIndex,
+                                &workMutex,
+                                &components,
+                                &blockPreps
+                            };
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
-                    }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
 
+                // 3) build SPQR for blocks (worker_block_build)
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
 
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads});
 
-                    std::vector<pthread_t> threads(numThreads);
-
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-
-                        if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                            std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                        }
-
+                    if (numThreads <= 1) {
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
                         ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                            tid,
+                            0,
                             numThreads,
                             blockPreps.size(),
                             &nextIndex,
                             &workMutex,
                             &blockPreps
                         };
+                        worker_block_build(static_cast<void*>(args));
+                    } else {
+                        std::vector<pthread_t> threads(numThreads);
 
-                        int ret = pthread_create(&threads[tid], &attr, worker_block_build, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
+
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            }
+
+                            ThreadBlocksArgs* args = new ThreadBlocksArgs{
+                                tid,
+                                numThreads,
+                                blockPreps.size(),
+                                &nextIndex,
+                                &workMutex,
+                                &blockPreps
+                            };
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_block_build, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
-                    }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
-            } 
+            }
 
 
             {
                 PhaseSampler logic_sampler(g_stats_logic);
 
+                // 4) tips & cuts (worker_tips)
                 {
                     MARK_SCOPE_MEM("sn/phase/tips_cuts");
 
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
 
-                    std::vector<pthread_t> threads(numThreads);
-
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-                        if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                            std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                        }
-
+                    if (numThreads <= 1) {
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
                         ThreadTipsArgs* args = new ThreadTipsArgs{
-                            tid,
+                            0,
                             numThreads,
                             nCC,
                             &nextIndex,
                             &workMutex,
                             &components
                         };
+                        worker_tips(static_cast<void*>(args));
+                    } else {
+                        std::vector<pthread_t> threads(numThreads);
 
-                        int ret = pthread_create(&threads[tid], &attr, worker_tips, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
+
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            }
+
+                            ThreadTipsArgs* args = new ThreadTipsArgs{
+                                tid,
+                                numThreads,
+                                nCC,
+                                &nextIndex,
+                                &workMutex,
+                                &components
+                            };
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_tips, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
-                    }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
 
+                // 5) SPQR solve for blocks (worker_block_solve)
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_solve");
 
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads});
 
-                    std::vector<pthread_t> threads(numThreads);
-
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-                        if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                            std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                        }
-
+                    if (numThreads <= 1) {
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
                         ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                            tid,
+                            0,
                             numThreads,
                             blockPreps.size(),
                             &nextIndex,
                             &workMutex,
                             &blockPreps
                         };
+                        worker_block_solve(static_cast<void*>(args));
+                    } else {
+                        std::vector<pthread_t> threads(numThreads);
 
-                        int ret = pthread_create(&threads[tid], &attr, worker_block_solve, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
+
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            }
+
+                            ThreadBlocksArgs* args = new ThreadBlocksArgs{
+                                tid,
+                                numThreads,
+                                blockPreps.size(),
+                                &nextIndex,
+                                &workMutex,
+                                &blockPreps
+                            };
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_block_solve, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
-                    }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
-            } 
+            }
 
             auto to_ms  = [](uint64_t us){ return us / 1000.0; };
             auto to_mib = [](size_t bytes){ return bytes / (1024.0 * 1024.0); };
@@ -4942,7 +5019,7 @@ namespace solver {
                 double t_ms = to_ms(st.elapsed_us.load());
                 double peak_mib = to_mib(st.peak_rss.load());
                 double delta_mib = to_mib(st.peak_rss.load() > st.start_rss.load()
-                                        ? st.peak_rss.load() - st.start_rss.load() : 0);
+                                            ? st.peak_rss.load() - st.start_rss.load() : 0);
                 std::cout << "[SNARLS] " << name << " : time=" << t_ms
                         << " ms, peakRSS=" << peak_mib << " MiB, peakDelta=" << delta_mib << " MiB\n";
             };
