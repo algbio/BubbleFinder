@@ -79,20 +79,29 @@ struct Scope {
 
     ~Scope() {
         const auto t1 = std::chrono::steady_clock::now();
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-        const size_t rss1 = currentRSSBytes();
-        const size_t hwm1 = peakRSSBytes();
-        const double MiB = 1024.0 * 1024.0;
-
-        // logger::info("[{}] {<:.3f}s | RSS now {:.2f} MiB (Δ{:+.2f}) | PeakRSS {:.2f} MiB (Δ{:+.2f})",
-        //              name,
-        //              ms / 1000.0,
-        //              rss1 / MiB, (double)((long long)rss1 - (long long)rss0) / MiB,
-        //              hwm1 / MiB, (do>uble)((long long)hwm1 - (long long)hwm0) / MiB);
+        [[maybe_unused]] const auto   ms   =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        [[maybe_unused]] const size_t rss1 = currentRSSBytes();
+        [[maybe_unused]] const size_t hwm1 = peakRSSBytes();
+        [[maybe_unused]] const double MiB  = 1024.0 * 1024.0;
     }
 };
 
 } 
 
-#define MEM_TIME_BLOCK(name_literal_or_string) \
-    memtime::Scope __memtime_scope_##__LINE__ (name_literal_or_string)
+
+#if defined(__clang__)
+#  define MEMTIME_DIAG_PUSH  _Pragma("clang diagnostic push")
+#  define MEMTIME_DIAG_IGN   _Pragma("clang diagnostic ignored \"-Wshadow\"")
+#  define MEMTIME_DIAG_POP   _Pragma("clang diagnostic pop")
+#elif defined(__GNUC__)
+#  define MEMTIME_DIAG_PUSH  _Pragma("GCC diagnostic push")
+#  define MEMTIME_DIAG_IGN   _Pragma("GCC diagnostic ignored \"-Wshadow\"")
+#  define MEMTIME_DIAG_POP   _Pragma("GCC diagnostic pop")
+#else
+#  define MEMTIME_DIAG_PUSH
+#  define MEMTIME_DIAG_IGN
+#  define MEMTIME_DIAG_POP
+#endif
+
+#define MEM_TIME_BLOCK(name_literal_or_string) MEMTIME_DIAG_PUSH MEMTIME_DIAG_IGN memtime::Scope memtime_scope_##__COUNTER__ (name_literal_or_string); MEMTIME_DIAG_POP

@@ -1,20 +1,4 @@
-#include <ogdf/basic/graph_generators.h>
-#include <ogdf/layered/DfsAcyclicSubgraph.h>
-#include <ogdf/fileformats/GraphIO.h>
-#include <ogdf/basic/GraphAttributes.h>
-#include <ogdf/basic/simple_graph_alg.h>
-#include <ogdf/planarity/PlanarizationLayout.h>
-#include <ogdf/decomposition/BCTree.h>
-#include <ogdf/decomposition/DynamicSPQRForest.h>
-#include <ogdf/decomposition/DynamicSPQRTree.h>
-#include <ogdf/augmentation/DfsMakeBiconnected.h>
-#include <ogdf/decomposition/StaticSPQRTree.h>
-#include <ogdf/decomposition/SPQRTree.h>
-#include <ogdf/energybased/FMMMLayout.h>
-#include <ogdf/tree/TreeLayout.h>
-#include <ogdf/basic/List.h>
-#include <ogdf/tree/LCA.h>
-
+#include "util/ogdf_all.hpp"
 
 
 #include <iostream>
@@ -39,6 +23,15 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+
+#include <queue>
+
+#include <sys/resource.h>
+#include <sys/time.h>
+
+#ifdef __APPLE__
+#  include <mach/mach.h>
+#endif
 
 #include "io/graph_io.hpp"
 #include "util/timer.hpp"
@@ -234,7 +227,8 @@ void readArgs(int argc, char** argv) {
 
         } else if(s == "-m") {
             C.stackSize = std::stoull(nextArgOrDie(args, i, "-m"));
-
+        } else if(s == "-sanity") {
+            std::exit(0);
         } else {
             std::cerr << "Unknown argument: " << s << "\n";
             usage(args[0].c_str());
@@ -379,7 +373,7 @@ namespace solver {
 
 
 
-        void printBlockEdges(std::vector<CcData> &comps) {
+        void printBlockEdges(std::vector<CcData> &/*comps*/) {
             // auto& C = ctx();
 
             // for (size_t cid = 0; cid < comps.size(); ++cid) {
@@ -624,14 +618,19 @@ namespace solver {
 
         // process edge in the direction of parent to child
         // Computing A->B (curr_edge)
-        void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
-            //PROFILE_FUNCTION();
-            auto& C = ctx();
+
+        void processEdge(ogdf::edge curr_edge,
+                         ogdf::EdgeArray<EdgeDP> &dp,
+                         NodeArray<NodeDPState> &node_dp,
+                         const CcData &cc,
+                         BlockData &blk)
+        {
+            auto &C = ctx();
 
             const ogdf::NodeArray<int> &globIn  = C.inDeg;
             const ogdf::NodeArray<int> &globOut = C.outDeg;
 
-            EdgeDPState &state = dp[curr_edge].down;
+            EdgeDPState &state      = dp[curr_edge].down;
             EdgeDPState &back_state = dp[curr_edge].up;
 
             const StaticSPQRTree &spqr = *blk.spqr;
@@ -644,48 +643,27 @@ namespace solver {
             state.localOutT = 0;
             state.localInS  = 0;
 
-            const Skeleton &skel = spqr.skeleton(B);
-            const Graph &skelGraph = skel.getGraph();
+            const Skeleton &skel    = spqr.skeleton(B);
+            const Graph    &skelG   = skel.getGraph();
 
-
-            // Building new graph with correct orientation of virtual edges
+            // Construction du graphe local orienté
             Graph newGraph;
 
-            NodeArray<node> skelToNew(skelGraph, nullptr);
-            for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
+            NodeArray<node> skelToNew(skelG, nullptr);
+            for (node v : skelG.nodes)
+                skelToNew[v] = newGraph.newNode();
+
             NodeArray<node> newToSkel(newGraph, nullptr);
-            for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+            for (node v : skelG.nodes)
+                newToSkel[skelToNew[v]] = v;
 
-
-            {
-                //PROFILE_BLOCK("processNode:: map block to skeleton nodes");
-                for (ogdf::node h : skelGraph.nodes) {
-                    ogdf::node vB = skel.original(h);
-                    blk.blkToSkel[vB] = h;
-                }
+            // map bloc -> squelette
+            for (ogdf::node h : skelG.nodes) {
+                ogdf::node vB = skel.original(h);
+                blk.blkToSkel[vB] = h;
             }
 
-
             NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
-
-
-
-
-            // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
-            //     // global -> component
-            //     ogdf::node vComp = cc.toCopy[vG];
-            //     if (!vComp) return nullptr;
-
-            //     // component -> block
-            //     ogdf::node vBlk  = cc.toBlk[vComp];
-            //     if (!vBlk)  return nullptr;
-
-            //     // block -> skeleton
-            //     ogdf::node vSkel = blk.blkToSkel[vBlk];
-            //     if (!vSkel) return nullptr;
-
-            //     return skelToNew[vSkel];
-            // };
 
             auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
                 if (!vN) return nullptr;
@@ -693,158 +671,90 @@ namespace solver {
                 ogdf::node vSkel = newToSkel[vN];
                 if (!vSkel) return nullptr;
 
-                ogdf::node vBlk  = skel.original(vSkel);
+                ogdf::node vBlk = skel.original(vSkel);
                 if (!vBlk) return nullptr;
 
-                ogdf::node vCc   = blk.toCc[vBlk];
+                ogdf::node vCc = blk.toCc[vBlk];
                 if (!vCc) return nullptr;
 
                 return cc.toOrig[vCc];
             };
 
+            ogdf::node nS = nullptr, nT = nullptr;
 
-            // auto mapBlkToNew = [&](ogdf::node bV) -> ogdf::node {
-            //     if (!bV) return nullptr;
-
-            //     ogdf::node vSkel = newToSkel[vN];
-            //     if (!vSkel) return nullptr;
-
-            //     ogdf::node vBlk  = skel.original(vSkel);
-            //     if (!vBlk) return nullptr;
-
-            //     ogdf::node vCc   = blk.toCc[vBlk];
-            //     if (!vCc) return nullptr;
-
-            //     return cc.toOrig[vCc];
-            // };
-
-
-
-
-
-
-            // For debug
-            auto printDegrees = [&]() {
-                for(node vN:newGraph.nodes) {
-                    node vG = mapNewToGlobal(vN);
-
-                    // std::cout << C.node2name[vG] << ":    out: " << localOutDeg[vN] << ", in: " << localInDeg[vN] << std::endl;
-                }
-            };
-
-
-
-            ogdf::node nS, nT;
-
-
-            for(edge e : skelGraph.edges) {
-                node u = e->source();
-                node v = e->target();
-
+            // Construction des arêtes locales
+            for (edge e : skelG.edges) {
+                node u  = e->source();
+                node v  = e->target();
                 node nU = skelToNew[u];
                 node nV = skelToNew[v];
 
-
-                if(!skel.isVirtual(e)) {
+                if (!skel.isVirtual(e)) {
                     newGraph.newEdge(nU, nV);
                     localOutDeg[nU]++;
                     localInDeg[nV]++;
-
                     continue;
                 }
 
                 auto D = skel.twinTreeNode(e);
 
-
-                if(D == A) {
+                // Cette arête virtuelle correspond à curr_edge
+                if (D == A) {
                     ogdf::node vBlk = skel.original(v);
                     ogdf::node uBlk = skel.original(u);
-
-                    // ogdf::node vG  = blk.toOrig[vCc];
-                    // ogdf::node uG  = blk.toOrig[uCc];
 
                     state.s = back_state.s = vBlk;
                     state.t = back_state.t = uBlk;
 
                     nS = nV;
                     nT = nU;
-
-
                     continue;
                 }
-
 
                 edge treeE = blk.skel2tree.at(e);
                 OGDF_ASSERT(treeE != nullptr);
 
-
-
                 const EdgeDPState child = dp[treeE].down;
                 int dir = child.getDirection();
-
-                // ogdf::node nS = mapGlobalToNew(child.s);
-                // ogdf::node nT = mapGlobalToNew(child.t);
 
                 ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
                 ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
 
-
-
-
-                if(dir==1) {
+                if (dir == 1)
                     newGraph.newEdge(nA, nB);
-                } else if(dir==-1) {
+                else if (dir == -1)
                     newGraph.newEdge(nB, nA);
-                }
 
-
-                if(nA == nU && nB == nV) {
-                    localOutDeg[nA]+=child.localOutS;
-                    localInDeg[nA]+=child.localInS;
-
-                    localOutDeg[nB]+=child.localOutT;
-                    localInDeg[nB]+=child.localInT;
+                if (nA == nU && nB == nV) {
+                    localOutDeg[nA] += child.localOutS;
+                    localInDeg [nA] += child.localInS;
+                    localOutDeg[nB] += child.localOutT;
+                    localInDeg [nB] += child.localInT;
                 } else {
-                    localOutDeg[nB]+=child.localOutT;
-                    localInDeg[nB]+=child.localInT;
-
-                    localOutDeg[nA]+=child.localOutS;
-                    localInDeg[nA]+=child.localInS;
+                    localOutDeg[nB] += child.localOutT;
+                    localInDeg [nB] += child.localInT;
+                    localOutDeg[nA] += child.localOutS;
+                    localInDeg [nA] += child.localInS;
                 }
 
-
-
-                state.acyclic &= child.acyclic;
+                state.acyclic          &= child.acyclic;
                 state.globalSourceSink |= child.globalSourceSink;
-                state.hasLeakage |= child.hasLeakage;
+                state.hasLeakage       |= child.hasLeakage;
             }
 
+            // Comptage direct ST/TS (P-nodes)
+            if (spqr.typeOf(B) == SPQRTree::NodeType::PNode) {
+                for (edge e : skelG.edges) {
+                    if (skel.isVirtual(e)) continue;
 
-            // Direct ST/TS computation(only happens in P nodes)
-            if(spqr.typeOf(B) == SPQRTree::NodeType::PNode) {
-                for(edge e : skelGraph.edges) {
-                    if(skel.isVirtual(e)) continue;
-                    node u = e->source();
-                    node v = e->target();
-
-                    // node nU = skelToNew[u];
-                    // node nV = skelToNew[v];
-
+                    node u  = e->source();
+                    node v  = e->target();
                     node bU = skel.original(u);
                     node bV = skel.original(v);
 
-
-                    // if(mapGlobalToNew(state.s) == nU && mapGlobalToNew(state.t) == nV) {
-                    //     state.directST = true;
-                    // } else if(mapGlobalToNew(state.s) == nV && mapGlobalToNew(state.t) == nU) {
-                    //     state.directTS = true;
-                    // } else {
-                    //     assert(false);
-                    // }
-
-                    if(state.s == bU && state.t == bV) {
+                    if (state.s == bU && state.t == bV) {
                         state.directST = true;
-                    } else if(state.s == bV && state.t == bU) {
+                    } else if (state.s == bV && state.t == bU) {
                         state.directTS = true;
                     } else {
                         assert(false);
@@ -852,36 +762,16 @@ namespace solver {
                 }
             }
 
-
-            // for (ogdf::node vN : newGraph.nodes) {
-            //     ogdf::node vG  = mapNewToGlobal(vN);
-            //     assert(vN == mapGlobalToNew(vG));
-
-            //     if (vG == state.s || vG == state.t)
-            //         continue;
-
-
-            //     if(globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
-            //         state.hasLeakage = true;
-            //     }
-
-            //     if (globIn[vG] == 0 || globOut[vG] == 0) {
-            //         state.globalSourceSink = true;
-            //     }
-            // }
-
-
-
+            // Vérification fuite / source/sink globale
             for (ogdf::node nV : newGraph.nodes) {
                 ogdf::node sV = newToSkel[nV];
-                ogdf::node bV  = skel.original(sV);
-                ogdf::node gV  = mapNewToGlobal(nV);
+                ogdf::node bV = skel.original(sV);
+                ogdf::node gV = mapNewToGlobal(nV);
 
                 if (bV == state.s || bV == state.t)
                     continue;
 
-
-                if(globIn[gV] != localInDeg[nV] || globOut[gV] != localOutDeg[nV]) {
+                if (globIn[gV] != localInDeg[nV] || globOut[gV] != localOutDeg[nV]) {
                     state.hasLeakage = true;
                 }
 
@@ -890,111 +780,76 @@ namespace solver {
                 }
             }
 
-
-
-
-
-            // state.localInS = localInDeg[mapGlobalToNew(state.s)];
-            // state.localOutS = localOutDeg[mapGlobalToNew(state.s)];
-
-            // state.localInT = localInDeg[mapGlobalToNew(state.t)];
-            // state.localOutT = localOutDeg[mapGlobalToNew(state.t)];
-
-
-            state.localInS = localInDeg[nS];
+            // degrés locaux sur s, t
+            state.localInS  = localInDeg [nS];
             state.localOutS = localOutDeg[nS];
-
-            state.localInT = localInDeg[nT];
+            state.localInT  = localInDeg [nT];
             state.localOutT = localOutDeg[nT];
 
+            if (state.acyclic)
+                state.acyclic &= isAcyclic(newGraph);
 
-
-
-            if(state.acyclic) state.acyclic &= isAcyclic(newGraph);
-
-
-            if(!state.acyclic) {
+            if (!state.acyclic) {
                 node_dp[A].outgoingCyclesCount++;
                 node_dp[A].lastCycleNode = B;
             }
-
-            if(state.globalSourceSink) {
+            if (state.globalSourceSink) {
                 node_dp[A].outgoingSourceSinkCount++;
                 node_dp[A].lastSourceSinkNode = B;
             }
-
-            if(state.hasLeakage) {
+            if (state.hasLeakage) {
                 node_dp[A].outgoingLeakageCount++;
                 node_dp[A].lastLeakageNode = B;
             }
         }
 
 
-        void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
-            //PROFILE_FUNCTION();
-            auto& C = ctx();
+
+        void processNode(node curr_node,
+                        EdgeArray<EdgeDP> &edge_dp,
+                        NodeArray<NodeDPState> &node_dp,
+                        const CcData &cc,
+                        BlockData &blk)
+        {
+            auto &C = ctx();
 
             const ogdf::NodeArray<int> &globIn  = C.inDeg;
             const ogdf::NodeArray<int> &globOut = C.outDeg;
 
             ogdf::node A = curr_node;
 
-            const Graph &T = blk.spqr->tree();
-
             NodeDPState curr_state = node_dp[A];
 
-            const StaticSPQRTree &spqr = *blk.spqr;
+            const StaticSPQRTree &spqr    = *blk.spqr;
+            const Skeleton       &skel    = spqr.skeleton(A);
+            const Graph          &skelGraph = skel.getGraph();
 
-
-            const Skeleton &skel = spqr.skeleton(A);
-            const Graph &skelGraph = skel.getGraph();
-
-
-            // Building new graph with correct orientation of virtual edges
             Graph newGraph;
 
             NodeArray<node> skelToNew(skelGraph, nullptr);
-            for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
+            for (node v : skelGraph.nodes)
+                skelToNew[v] = newGraph.newNode();
             NodeArray<node> newToSkel(newGraph, nullptr);
-            for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+            for (node v : skelGraph.nodes)
+                newToSkel[skelToNew[v]] = v;
 
             for (ogdf::node h : skelGraph.nodes) {
                 ogdf::node vB = skel.original(h);
                 blk.blkToSkel[vB] = h;
             }
 
-
-            NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
-
+            NodeArray<int>  localInDeg (newGraph, 0), localOutDeg(newGraph, 0);
             NodeArray<bool> isSourceSink(newGraph, false);
             int localSourceSinkCount = 0;
-
             NodeArray<bool> isLeaking(newGraph, false);
             int localLeakageCount = 0;
 
-            EdgeArray<bool> isVirtual(newGraph, false);
-            EdgeArray<EdgeDPState*> edgeToDp(newGraph, nullptr);
+            EdgeArray<bool>         isVirtual(newGraph, false);
+            EdgeArray<EdgeDPState*> edgeToDp (newGraph, nullptr);
             EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
-            EdgeArray<node> edgeChild(newGraph, nullptr);
-
+            EdgeArray<node>         edgeChild(newGraph, nullptr);
 
             std::vector<edge> virtualEdges;
-
-
-            // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
-            //     // global -> component
-            //     ogdf::node vComp = cc.toCopy[vG];
-            //     if (!vComp) return nullptr;
-            //     // component -> block
-            //     ogdf::node vBlk  = cc.toBlk[vComp];
-            //     if (!vBlk)  return nullptr;
-            //     // block -> skeleton
-            //     ogdf::node vSkel = blk.blkToSkel[vBlk];
-            //     if (!vSkel) return nullptr;
-
-            //     return skelToNew[vSkel];
-            // };
-
 
             auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
                 ogdf::node sV = blk.blkToSkel[bV];
@@ -1002,147 +857,93 @@ namespace solver {
                 return nV;
             };
 
-
-
             auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
                 if (!vN) return nullptr;
                 ogdf::node vSkel = newToSkel[vN];
                 if (!vSkel) return nullptr;
-                ogdf::node vBlk  = skel.original(vSkel);
+                ogdf::node vBlk = skel.original(vSkel);
                 if (!vBlk) return nullptr;
-                ogdf::node vCc   = blk.toCc[vBlk];
+                ogdf::node vCc = blk.toCc[vBlk];
                 if (!vCc) return nullptr;
                 return cc.toOrig[vCc];
             };
 
+            for (edge e : skelGraph.edges) {
+                node u  = e->source();
+                node v  = e->target();
+                node nU = skelToNew[u];
+                node nV = skelToNew[v];
 
-
-
-            auto printDegrees = [&]() {
-                for(node vN:newGraph.nodes) {
-                    node vG = mapNewToGlobal(vN);
+                if (!skel.isVirtual(e)) {
+                    edge newEdge = newGraph.newEdge(nU, nV);
+                    isVirtual[newEdge] = false;
+                    localOutDeg[nU]++;
+                    localInDeg [nV]++;
+                    continue;
                 }
-            };
 
+                node B = skel.twinTreeNode(e);
+                edge treeE = blk.skel2tree.at(e);
+                OGDF_ASSERT(treeE != nullptr);
 
-            // Building new graph
-            {
-                //PROFILE_BLOCK("processNode:: build oriented local graph");
-                for(edge e : skelGraph.edges) {
-                    node u = e->source();
-                    node v = e->target();
+                EdgeDPState *child        = (B == blk.parent(A) ? &edge_dp[treeE].up   : &edge_dp[treeE].down);
+                EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
+                int dir = child->getDirection();
 
-                    node nU = skelToNew[u];
-                    node nV = skelToNew[v];
+                ogdf::node nS = mapBlockToNew(child->s);
+                ogdf::node nT = mapBlockToNew(child->t);
 
+                edge newEdge = nullptr;
 
-                    if(!skel.isVirtual(e)) {
-                        auto newEdge = newGraph.newEdge(nU, nV);
+                if (dir == 1 || dir == 0) {
+                    newEdge = newGraph.newEdge(nS, nT);
+                    isVirtual[newEdge] = true;
+                    virtualEdges.push_back(newEdge);
+                    edgeToDp [newEdge] = edgeToUpdate;
+                    edgeToDpR[newEdge] = child;
+                    edgeChild[newEdge] = B;
+                } else if (dir == -1) {
+                    newEdge = newGraph.newEdge(nT, nS);
+                    isVirtual[newEdge] = true;
+                    virtualEdges.push_back(newEdge);
+                    edgeToDpR[newEdge] = child;
+                    edgeToDp [newEdge] = edgeToUpdate;
+                    edgeChild[newEdge] = B;
+                } else {
+                    newEdge = newGraph.newEdge(nS, nT);
+                    isVirtual[newEdge] = true;
+                    virtualEdges.push_back(newEdge);
+                    edgeChild[newEdge] = B;
+                    edgeToDpR[newEdge] = child;
+                    edgeToDp [newEdge] = edgeToUpdate;
+                }
 
-                        isVirtual[newEdge] = false;
-
-                        localOutDeg[nU]++;
-                        localInDeg[nV]++;
-
-                        continue;
-                    }
-
-                    auto B = skel.twinTreeNode(e);
-
-                    edge treeE = blk.skel2tree.at(e);
-                    OGDF_ASSERT(treeE != nullptr);
-
-
-
-                    EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
-                    EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
-                    int dir = child->getDirection();
-
-                    // ogdf::node nS = mapGlobalToNew(child->s);
-                    // ogdf::node nT = mapGlobalToNew(child->t);
-
-                    ogdf::node nS = mapBlockToNew(child->s);
-                    ogdf::node nT = mapBlockToNew(child->t);
-
-
-
-                    edge newEdge = nullptr;
-
-                    if(dir==1 || dir == 0) {
-                        newEdge = newGraph.newEdge(nS, nT);
-
-                        isVirtual[newEdge] = true;
-
-                        virtualEdges.push_back(newEdge);
-
-                        edgeToDp[newEdge] = edgeToUpdate;
-                        edgeToDpR[newEdge] = child;
-                        edgeChild[newEdge] = B;
-                    } else if(dir==-1) {
-                        newEdge = newGraph.newEdge(nT, nS);
-
-                        isVirtual[newEdge] = true;
-
-                        virtualEdges.push_back(newEdge);
-
-                        edgeToDpR[newEdge] = child;
-                        edgeToDp[newEdge] = edgeToUpdate;
-                        edgeChild[newEdge] = B;
-
-
-                    } else {
-                        newEdge = newGraph.newEdge(nS, nT);
-                        isVirtual[newEdge] = true;
-
-                        virtualEdges.push_back(newEdge);
-
-
-                        edgeChild[newEdge] = B;
-                        edgeToDpR[newEdge] = child;
-
-                        edgeToDp[newEdge] = edgeToUpdate;
-
-                    }
-
-                    if(nS == nU && nT == nV) {
-                        localOutDeg[nS]+=child->localOutS;
-                        localInDeg[nS]+=child->localInS;
-
-                        localOutDeg[nT]+=child->localOutT;
-                        localInDeg[nT]+=child->localInT;
-                    } else {
-                        localOutDeg[nT]+=child->localOutT;
-                        localInDeg[nT]+=child->localInT;
-
-                        localOutDeg[nS]+=child->localOutS;
-                        localInDeg[nS]+=child->localInS;
-                    }
+                if (nS == nU && nT == nV) {
+                    localOutDeg[nS] += child->localOutS;
+                    localInDeg [nS] += child->localInS;
+                    localOutDeg[nT] += child->localOutT;
+                    localInDeg [nT] += child->localInT;
+                } else {
+                    localOutDeg[nT] += child->localOutT;
+                    localInDeg [nT] += child->localInT;
+                    localOutDeg[nS] += child->localOutS;
+                    localInDeg [nS] += child->localInS;
                 }
             }
 
-
-
-            {
-                //PROFILE_BLOCK("processNode:: mark source/sink and leakage");
-                for(node vN : newGraph.nodes) {
-                    node vG = mapNewToGlobal(vN);
-                    // node vB = skel.original(newToSkel[vN]);
-                    if(globIn[vG] == 0 || globOut[vG] == 0) {
-                        localSourceSinkCount++;
-                        isSourceSink[vN] = true;
-                    }
-
-                    if(globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
-                        localLeakageCount++;
-                        isLeaking[vN] = true;
-                    }
+            for (node vN : newGraph.nodes) {
+                node vG = mapNewToGlobal(vN);
+                if (globIn[vG] == 0 || globOut[vG] == 0) {
+                    localSourceSinkCount++;
+                    isSourceSink[vN] = true;
+                }
+                if (globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
+                    localLeakageCount++;
+                    isLeaking[vN] = true;
                 }
             }
 
-
-            // calculating ingoing dp states of direct st and ts edges in P node
             if (spqr.typeOf(A) == StaticSPQRTree::NodeType::PNode) {
-                //PROFILE_BLOCK("processNode:: P-node direct edge analysis");
                 node pole0Blk = nullptr, pole1Blk = nullptr;
                 {
                     auto it = skelGraph.nodes.begin();
@@ -1156,34 +957,29 @@ namespace solver {
                 node gPole0 = cc.toOrig[blk.toCc[pole0Blk]];
                 node gPole1 = cc.toOrig[blk.toCc[pole1Blk]];
 
-
                 int cnt01 = 0, cnt10 = 0;
                 for (edge e : skelGraph.edges) {
-                    if (!skel.isVirtual(e))
-                    {
+                    if (!skel.isVirtual(e)) {
                         node uG = mapNewToGlobal(skelToNew[e->source()]);
                         node vG = mapNewToGlobal(skelToNew[e->target()]);
-                        if (uG == gPole0 && vG == gPole1) ++cnt01;
+                        if      (uG == gPole0 && vG == gPole1) ++cnt01;
                         else if (uG == gPole1 && vG == gPole0) ++cnt10;
                     }
                 }
 
-
                 for (edge e : skelGraph.edges) {
-                    if (skel.isVirtual(e))
-                    {
-                        node  B = skel.twinTreeNode(e);
+                    if (skel.isVirtual(e)) {
+                        node  B     = skel.twinTreeNode(e);
                         edge  treeE = blk.skel2tree.at(e);
 
-                        SPQRsolve::EdgeDPState &st =
-                            (B == blk.parent(A) ? edge_dp[treeE].down
-                            : edge_dp[treeE].up);
+                        EdgeDPState &st =
+                            (B == blk.parent(A) ? edge_dp[treeE].up
+                                                : edge_dp[treeE].down);
 
                         if (st.s == pole0Blk && st.t == pole1Blk) {
                             st.directST |= (cnt01 > 0);
                             st.directTS |= (cnt10 > 0);
-                        }
-                        else if (st.s == pole1Blk && st.t == pole0Blk) {
+                        } else if (st.s == pole1Blk && st.t == pole0Blk) {
                             st.directST |= (cnt10 > 0);
                             st.directTS |= (cnt01 > 0);
                         }
@@ -1191,32 +987,27 @@ namespace solver {
                 }
             }
 
-
-
-            // Computing acyclicity
-            if(curr_state.outgoingCyclesCount>=2) {
-                //PROFILE_BLOCK("processNode:: acyclicity - multi-outgoing case");
-                for(edge e : virtualEdges) {
-                    if(edgeToDp[e]->acyclic) {
+            if (curr_state.outgoingCyclesCount >= 2) {
+                for (edge e : virtualEdges) {
+                    if (edgeToDp[e]->acyclic) {
                         node_dp[edgeChild[e]].outgoingCyclesCount++;
                         node_dp[edgeChild[e]].lastCycleNode = curr_node;
                     }
                     edgeToDp[e]->acyclic &= false;
                 }
-            } else if(node_dp[curr_node].outgoingCyclesCount == 1) {
-                //PROFILE_BLOCK("processNode:: acyclicity - single-outgoing case");
+            } else if (node_dp[curr_node].outgoingCyclesCount == 1) {
                 for (edge e : virtualEdges) {
-                    if(edgeChild[e] != curr_state.lastCycleNode) {
-                        if(edgeToDp[e]->acyclic) {
+                    if (edgeChild[e] != curr_state.lastCycleNode) {
+                        if (edgeToDp[e]->acyclic) {
                             node_dp[edgeChild[e]].outgoingCyclesCount++;
                             node_dp[edgeChild[e]].lastCycleNode = curr_node;
                         }
                         edgeToDp[e]->acyclic &= false;
                     } else {
-                        node  nU   = e->source();
-                        node  nV   = e->target();
-                        auto *st  = edgeToDp[e];
-                        auto *ts  = edgeToDpR[e];
+                        node nU    = e->source();
+                        node nV    = e->target();
+                        auto *st   = edgeToDp [e];
+                        auto *ts   = edgeToDpR[e];
                         auto *child = edgeChild[e];
                         bool  acyclic = false;
 
@@ -1229,7 +1020,7 @@ namespace solver {
                         edgeToDpR[eRest] = ts;
                         edgeChild[eRest] = child;
 
-                        if(edgeToDp[eRest]->acyclic && !acyclic) {
+                        if (edgeToDp[eRest]->acyclic && !acyclic) {
                             node_dp[edgeChild[eRest]].outgoingCyclesCount++;
                             node_dp[edgeChild[eRest]].lastCycleNode = curr_node;
                         }
@@ -1237,172 +1028,85 @@ namespace solver {
                         edgeToDp[eRest]->acyclic &= acyclic;
                     }
                 }
-
             } else {
-                //PROFILE_BLOCK("processNode:: acyclicity - FAS baseline");
-
                 FeedbackArcSet FAS(newGraph);
                 std::vector<edge> fas = FAS.run();
-                // find_feedback_arcs(newGraph, fas, toRemove);
 
                 EdgeArray<bool> isFas(newGraph, 0);
                 for (edge e : fas) isFas[e] = true;
 
                 for (edge e : virtualEdges) {
-
-                    if(edgeToDp[e]->acyclic && !isFas[e]) {
+                    if (edgeToDp[e]->acyclic && !isFas[e]) {
                         node_dp[edgeChild[e]].outgoingCyclesCount++;
                         node_dp[edgeChild[e]].lastCycleNode = curr_node;
                     }
-
                     edgeToDp[e]->acyclic &= isFas[e];
                 }
-
-
-                // NodeArray<int> comp(newGraph);
-                // int sccs = strongComponents(newGraph, comp);
-
-                // std::vector<int> size(sccs, 0);
-                // for (node v : newGraph.nodes) ++size[comp[v]];
-
-                // int trivial = 0, nonTrivial = 0, ntIdx = -1;
-
-                // for (int i = 0; i < sccs; ++i) {
-                //     if (size[i] > 1) { ++nonTrivial; ntIdx = i; }
-                //     else ++trivial;
-                // }
-
-                // if (nonTrivial >= 2){
-                //     for (edge e : virtualEdges) {
-                //         if(edgeToDp[e]->acyclic) {
-                //             node_dp[edgeChild[e]].outgoingCyclesCount++;
-                //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                //         }
-
-                //         edgeToDp[e]->acyclic &= false;
-                //     }
-                // } else if (nonTrivial == 1) {
-                //     // std::vector<node> toRemove;
-                //     // for (node v : newGraph.nodes)
-                //     //     if (comp[v] != ntIdx) toRemove.push_back(v);
-
-                //     FeedbackArcSet FAS(newGraph);
-                //     std::vector<edge> fas = FAS.run();
-                //     // find_feedback_arcs(newGraph, fas, toRemove);
-
-                //     EdgeArray<bool> isFas(newGraph, 0);
-                //     for (edge e : fas) isFas[e] = true;
-
-                //     for (edge e : virtualEdges) {
-
-                //         if(edgeToDp[e]->acyclic && !isFas[e]) {
-                //             node_dp[edgeChild[e]].outgoingCyclesCount++;
-                //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                //         }
-
-                //         edgeToDp[e]->acyclic &= isFas[e];
-                //     }
-                // }
             }
 
-
-
-            // computing global sources/sinks
-            {
-                //PROFILE_BLOCK("processNode:: compute global source/sink");
-                if(curr_state.outgoingSourceSinkCount >= 2) {
-                    // all ingoing have source
-                    for(edge e : virtualEdges) {
-                        if(!edgeToDp[e]->globalSourceSink) {
+            if (curr_state.outgoingSourceSinkCount >= 2) {
+                for (edge e : virtualEdges) {
+                    if (!edgeToDp[e]->globalSourceSink) {
+                        node_dp[edgeChild[e]].outgoingSourceSinkCount++;
+                        node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
+                    }
+                    edgeToDp[e]->globalSourceSink |= true;
+                }
+            } else if (curr_state.outgoingSourceSinkCount == 1) {
+                for (edge e : virtualEdges) {
+                    if (edgeChild[e] != curr_state.lastSourceSinkNode) {
+                        if (!edgeToDp[e]->globalSourceSink) {
                             node_dp[edgeChild[e]].outgoingSourceSinkCount++;
                             node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
                         }
-
-
                         edgeToDp[e]->globalSourceSink |= true;
-                    }
-                } else if(curr_state.outgoingSourceSinkCount == 1) {
-                    for(edge e : virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-                        if(edgeChild[e] != curr_state.lastSourceSinkNode) {
-                            if(!edgeToDp[e]->globalSourceSink) {
+                    } else {
+                        node vN = e->source();
+                        node uN = e->target();
+                        if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
+                            if (!edgeToDp[e]->globalSourceSink) {
                                 node_dp[edgeChild[e]].outgoingSourceSinkCount++;
                                 node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
                             }
-
                             edgeToDp[e]->globalSourceSink |= true;
-                        } else {
-                            node vN = e->source(), uN = e->target();
-                            if((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
-                                if(!edgeToDp[e]->globalSourceSink) {
-                                    node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                    node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                                }
-
-                                edgeToDp[e]->globalSourceSink |= true;
-                            }
                         }
                     }
-                } else {
-                    for(edge e : virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-                        node vN = e->source(), uN = e->target();
-                        if((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
-                            if(!edgeToDp[e]->globalSourceSink) {
-                                node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                            }
-
-                            edgeToDp[e]->globalSourceSink |= true;
+                }
+            } else {
+                for (edge e : virtualEdges) {
+                    node vN = e->source();
+                    node uN = e->target();
+                    if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
+                        if (!edgeToDp[e]->globalSourceSink) {
+                            node_dp[edgeChild[e]].outgoingSourceSinkCount++;
+                            node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
                         }
-
+                        edgeToDp[e]->globalSourceSink |= true;
                     }
                 }
             }
 
-
-            // computing leakage
-            {
-                //PROFILE_BLOCK("processNode:: compute leakage");
-                if(curr_state.outgoingLeakageCount >= 2) {
-                    for(edge e : virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-
-                        if(!edgeToDp[e]->hasLeakage) {
+            if (curr_state.outgoingLeakageCount >= 2) {
+                for (edge e : virtualEdges) {
+                    if (!edgeToDp[e]->hasLeakage) {
+                        node_dp[edgeChild[e]].outgoingLeakageCount++;
+                        node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+                    }
+                    edgeToDp[e]->hasLeakage |= true;
+                }
+            } else if (curr_state.outgoingLeakageCount == 1) {
+                for (edge e : virtualEdges) {
+                    if (edgeChild[e] != curr_state.lastLeakageNode) {
+                        if (!edgeToDp[e]->hasLeakage) {
                             node_dp[edgeChild[e]].outgoingLeakageCount++;
                             node_dp[edgeChild[e]].lastLeakageNode = curr_node;
                         }
-
                         edgeToDp[e]->hasLeakage |= true;
-                    }
-                } else if(curr_state.outgoingLeakageCount == 1) {
-                    for(edge e : virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-
-                        if(edgeChild[e] != curr_state.lastLeakageNode) {
-                            if(!edgeToDp[e]->hasLeakage) {
-                                node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                            }
-                            edgeToDp[e]->hasLeakage |= true;
-                        } else {
-                            node vN = e->source(), uN = e->target();
-                            if((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
-                                if(!edgeToDp[e]->hasLeakage) {
-                                    node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                    node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                                }
-                                edgeToDp[e]->hasLeakage |= true;
-                            }
-                        }
-                    }
-                } else {
-                    for(edge e : virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-
-                        node vN = e->source(), uN = e->target();
-                        if((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
-                            if(!edgeToDp[e]->hasLeakage) {
+                    } else {
+                        node vN = e->source();
+                        node uN = e->target();
+                        if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
+                            if (!edgeToDp[e]->hasLeakage) {
                                 node_dp[edgeChild[e]].outgoingLeakageCount++;
                                 node_dp[edgeChild[e]].lastLeakageNode = curr_node;
                             }
@@ -1410,29 +1114,30 @@ namespace solver {
                         }
                     }
                 }
-            }
-
-
-            // updating local degrees of poles of states going into A
-            {
-                //PROFILE_BLOCK("processNode:: update DP local degrees at poles");
-                for(edge e:virtualEdges) {
-                    // if(!isVirtual[e]) continue;
+            } else {
+                for (edge e : virtualEdges) {
                     node vN = e->source();
                     node uN = e->target();
-
-                    EdgeDPState *BA = edgeToDp[e];
-                    EdgeDPState *AB = edgeToDpR[e];
-
-                    BA->localInS = localInDeg[mapBlockToNew(BA->s)] - AB->localInS;
-                    BA->localInT = localInDeg[mapBlockToNew(BA->t)] - AB->localInT;
-
-                    BA->localOutS = localOutDeg[mapBlockToNew(BA->s)] - AB->localOutS;
-                    BA->localOutT = localOutDeg[mapBlockToNew(BA->t)] - AB->localOutT;
+                    if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
+                        if (!edgeToDp[e]->hasLeakage) {
+                            node_dp[edgeChild[e]].outgoingLeakageCount++;
+                            node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+                        }
+                        edgeToDp[e]->hasLeakage |= true;
+                    }
                 }
             }
-        }
 
+            for (edge e : virtualEdges) {
+                EdgeDPState *BA = edgeToDp [e];
+                EdgeDPState *AB = edgeToDpR[e];
+
+                BA->localInS  = localInDeg [mapBlockToNew(BA->s)] - AB->localInS;
+                BA->localInT  = localInDeg [mapBlockToNew(BA->t)] - AB->localInT;
+                BA->localOutS = localOutDeg[mapBlockToNew(BA->s)] - AB->localOutS;
+                BA->localOutT = localOutDeg[mapBlockToNew(BA->t)] - AB->localOutT;
+            }
+        }
 
 
         void tryBubblePNodeGrouping(
@@ -1560,73 +1265,24 @@ namespace solver {
         }
 
 
+
         void tryBubble(const EdgeDPState &curr,
-                    const EdgeDPState &back,
-                    const BlockData &blk,
-                    const CcData &cc,
-                    bool swap,
-                    bool additionalCheck
-                    ) {
+                       const EdgeDPState &back,
+                       const BlockData &blk,
+                       const CcData &/*cc*/,
+                       bool swap,
+                       bool additionalCheck)
+        {
             node S = swap ? blk.toOrig[curr.t] : blk.toOrig[curr.s];
             node T = swap ? blk.toOrig[curr.s] : blk.toOrig[curr.t];
 
-            // std::cout << ctx().node2name[S] << " " << ctx().node2name[T] << " " << (additionalCheck) << std::endl;
-
-
-            /* take the counts from the current direction … */
-
-            int outS = swap ? curr.localOutT  : curr.localOutS;
+            int outS = swap ? curr.localOutT : curr.localOutS;
             int outT = swap ? curr.localOutS : curr.localOutT;
             int inS  = swap ? curr.localInT  : curr.localInS;
-            int inT  = swap ? curr.localInS : curr.localInT;
+            int inT  = swap ? curr.localInS  : curr.localInT;
 
-
-            // if(curr.s && curr.t) {
-            //     std::cout << "s = " << ctx().node2name[curr.s] << ", ";
-            //     std::cout << "t = " << ctx().node2name[curr.t] << ", ";
-            //     std::cout << "acyclic = " << curr.acyclic << ", ";
-            //     std::cout << "global source = " << curr.globalSourceSink << ", ";
-            //     std::cout << "hasLeakage = " << curr.hasLeakage << ", ";
-            //     std::cout << "localInS = " << curr.localInS << ", ";
-            //     std::cout << "localOutS = " << curr.localOutS << ", ";
-            //     std::cout << "localInT = " << curr.localInT << ", ";
-            //     std::cout << "localOutT = " << curr.localOutT << ", ";
-            //     std::cout << "directST = " << curr.directST << ", ";
-            //     std::cout << "directTS = " << curr.directTS << ", ";
-
-            //     std::cout << std::endl;
-            // }
-
-            // if(back.s && back.t) {
-            //     std::cout << "s = " << ctx().node2name[back.s] << ", ";
-            //     std::cout << "t = " << ctx().node2name[back.t] << ", ";
-            //     std::cout << "acyclic = " << back.acyclic << ", ";
-            //     std::cout << "global source = " << back.globalSourceSink << ", ";
-            //     std::cout << "hasLeakage = " << back.hasLeakage << ", ";
-            //     std::cout << "localInS = " << back.localInS << ", ";
-            //     std::cout << "localOutS = " << back.localOutS << ", ";
-            //     std::cout << "localInT = " << back.localInT << ", ";
-            //     std::cout << "localOutT = " << back.localOutT << ", ";
-            //     std::cout << "directST = " << back.directST << ", ";
-            //     std::cout << "directTS = " << back.directTS << ", ";
-
-            //     std::cout << std::endl;
-            // }
-
-
-
-            // int outS = swap ? curr.localOutT + (int)back.directST : curr.localOutS + (int)back.directTS;
-            // int outT = swap ? curr.localOutS + (int)back.directTS : curr.localOutT + (int)back.directST;
-            // int inS  = swap ? curr.localInT + (int)back.directTS : curr.localInS + (int)back.directST;
-            // int inT  = swap ? curr.localInS + (int)back.directST: curr.localInT + (int)back.directTS;
-            // std::cout << "before: " << std::endl;
-            // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl;
-
-
-
-            if(back.directST) {
-                // std::cout << " added because back.directST" << std::endl;
-                if(!swap) {
+            if (back.directST) {
+                if (!swap) {
                     outS++;
                     inT++;
                 } else {
@@ -1634,9 +1290,8 @@ namespace solver {
                     outT++;
                 }
             }
-            if(back.directTS) {
-                // std::cout << " added because back.directTS" << std::endl;
-                if(!swap) {
+            if (back.directTS) {
+                if (!swap) {
                     inS++;
                     outT++;
                 } else {
@@ -1644,91 +1299,71 @@ namespace solver {
                     inT++;
                 }
             }
-
-            // std::cout << "after" << std::endl;
-            // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl;
 
             bool backGood = true;
-
             if (back.s == curr.s && back.t == curr.t) {
                 backGood &= (!back.directTS);
             } else if (back.s == curr.t && back.t == curr.s) {
                 backGood &= (!back.directST);
             }
 
-            bool acyclic = curr.acyclic;
-            bool noLeakage = !curr.hasLeakage;
-            bool noGSource = !curr.globalSourceSink;
+            bool acyclic    = curr.acyclic;
+            bool noLeakage  = !curr.hasLeakage;
+            bool noGSource  = !curr.globalSourceSink;
 
-
-
-            if (
-                !additionalCheck &&
+            if (!additionalCheck &&
                 acyclic &&
                 noGSource &&
                 noLeakage &&
                 backGood &&
                 outS > 0 &&
-                inT > 0 &&
+                inT  > 0 &&
                 ctx().outDeg[S] == outS &&
                 ctx().inDeg [T] == inT &&
                 !ctx().isEntry[S] &&
                 !ctx().isExit [T])
             {
-                if(additionalCheck) {
-                    if(!swap) {
-                        if(back.directST) addSuperbubble(S, T);
-                    } else {
-                        if(back.directTS) addSuperbubble(S, T);
-                    }
-                } else {
-                    addSuperbubble(S, T);
-                }
+                addSuperbubble(S, T);
             }
-
         }
 
 
 
-        void collectSuperbubbles(const CcData &cc, BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp) {
-            //PROFILE_FUNCTION();
+        void collectSuperbubbles(const CcData &cc,
+                                 BlockData &blk,
+                                 EdgeArray<EdgeDP> &edge_dp,
+                                 NodeArray<NodeDPState> &/*node_dp*/)
+        {
             const Graph &T = blk.spqr->tree();
-            // printAllStates(edge_dp, node_dp, T);
 
-            for(edge e : T.edges) {
-                // std::cout << "CHECKING FOR " << e->source() << " " << e->target() << std::endl;
+            for (edge e : T.edges) {
                 const EdgeDPState &down = edge_dp[e].down;
                 const EdgeDPState &up   = edge_dp[e].up;
 
-
-                // if(blk.spqr->typeOf(e->target()) != SPQRTree::NodeType::SNode) {
-                //     std::cout << "DOWN" << std::endl;
-                bool additionalCheck;
-
-                additionalCheck = (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
+                bool additionalCheck =
+                    (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode &&
+                     blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
                 tryBubble(down, up, blk, cc, false, additionalCheck);
                 tryBubble(down, up, blk, cc, true, additionalCheck);
-                // }
 
-                // if(blk.spqr->typeOf(e->source()) != SPQRTree::NodeType::SNode) {
-                // std::cout << "UP" << std::endl;
-                additionalCheck = (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
-
+                additionalCheck =
+                    (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode &&
+                     blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
                 tryBubble(up, down, blk, cc, false, additionalCheck);
                 tryBubble(up, down, blk, cc, true, additionalCheck);
-                // }
 
                 blk.isAcycic &= (down.acyclic && up.acyclic);
-
             }
-            for(node v : T.nodes) {
+
+            for (node v : T.nodes) {
                 tryBubblePNodeGrouping(v, cc, blk, edge_dp);
             }
         }
 
+
         }
 
-        void checkBlockByCutVertices(const BlockData &blk, const CcData &cc)
+        void checkBlockByCutVertices(const BlockData &blk, const CcData &/*cc*/)
         {
             MARK_SCOPE_MEM("sb/checkCutVertices");
 
@@ -1739,7 +1374,7 @@ namespace solver {
             auto &C      = ctx();
             const Graph &G = *blk.Gblk;
 
-            node src=nullptr, snk=nullptr;
+            node src = nullptr, snk = nullptr;
 
             for (node v : G.nodes) {
                 node vG   = blk.toOrig[v];
@@ -1751,11 +1386,11 @@ namespace solver {
 
                 if (isSrc ^ isSnk) {
                     if (isSrc) {
-                        if(src) return;
-                        src=v;
+                        if (src) return;
+                        src = v;
                     } else {
-                        if(snk) return;
-                        snk=v;
+                        if (snk) return;
+                        snk = v;
                     }
                 } else if (!(inL == inG && outL == outG)) {
                     return;
@@ -1766,34 +1401,36 @@ namespace solver {
                 return;
             }
 
-            NodeArray<bool> vis(G,false);
+            NodeArray<bool> vis(G, false);
             std::stack<node> S;
-            vis[src]=true;
+            vis[src] = true;
             S.push(src);
-            bool reach=false;
-            while(!S.empty() && !reach) {
-                node u=S.top();
+            bool reach = false;
+            while (!S.empty() && !reach) {
+                node u = S.top();
                 S.pop();
-                for(adjEntry a=u->firstAdj(); a; a=a->succ())
-                    if(a->isSource()) {
-                        node v=a->twinNode();
-                        if(!vis[v]) {
-                            if(v==snk) {
-                                reach=true;
+                for (adjEntry a = u->firstAdj(); a; a = a->succ())
+                    if (a->isSource()) {
+                        node v = a->twinNode();
+                        if (!vis[v]) {
+                            if (v == snk) {
+                                reach = true;
                                 break;
                             }
-                            vis[v]=true;
+                            vis[v] = true;
                             S.push(v);
                         }
                     }
             }
-            if(!reach) {
+            if (!reach) {
                 return;
             }
 
-            node srcG = blk.toOrig[src], snkG = blk.toOrig[snk];
+            node srcG = blk.toOrig[src];
+            node snkG = blk.toOrig[snk];
             addSuperbubble(srcG, snkG);
         }
+
 
 
 
@@ -2830,53 +2467,14 @@ namespace solver {
             };
 
 
-            void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData &blk, const Graph &T) {
-                auto& C = ctx();
-
-
-                std::cout << "Edge dp states:" << std::endl;
-                for(auto &e:T.edges) {
-                    {
-                        EdgeDPState state = edge_dp[e].down;
-                        if(state.s && state.t) {
-                            std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
-                            std::cout << "s = " << C.node2name[blk.nodeToOrig[state.s]] << ", ";
-                            std::cout << "t = " << C.node2name[blk.nodeToOrig[state.t]] << ", ";
-                            std::cout << "localMinusS: " << state.localMinusS << ", ";
-                            std::cout << "localMinusT: " << state.localMinusT << ", ";
-                            std::cout << "localPlusS: " << state.localPlusS << ", ";
-                            std::cout << "localPlusT: " << state.localPlusT << ", ";               
-                            std::cout << std::endl;
-                        }
-                    }
-
-                    {
-                        EdgeDPState state = edge_dp[e].up;
-                        if(state.s && state.t) {
-                            std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
-                            std::cout << "s = " << C.node2name[blk.nodeToOrig[state.s]] << ", ";
-                            std::cout << "t = " << C.node2name[blk.nodeToOrig[state.t]] << ", ";
-                            std::cout << "localMinusS: " << state.localMinusS << ", ";
-                            std::cout << "localMinusT: " << state.localMinusT << ", ";
-                            std::cout << "localPlusS: " << state.localPlusS << ", ";
-                            std::cout << "localPlusT: " << state.localPlusT << ", ";               
-                            std::cout << std::endl;
-                        }
-                    }
-                }
-
-            }
-
-            void printAllStates(const ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
-                auto& C = ctx();
-
+            void printAllStates(const ogdf::NodeArray<NodeDPState> &node_dp,
+                                const Graph &T)
+            {
                 std::cout << "Node dp states: " << std::endl;
-                for(node v : T.nodes) {
+                for (node v : T.nodes) {
                     std::cout << "Node " << v->index() << ", ";
-                    // std::cout << "cutsCnt: " << node_dp[v].cutsCnt << ", ";
                     std::cout << "GccCuts_last3: " << node_dp[v].GccCuts_last3.size();
                     std::cout << std::endl;
-                    
                 }
             }
 
@@ -2907,223 +2505,134 @@ namespace solver {
                 if(curr!=parent) edge_order.push_back(e);
             }
 
-            void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, const CcData &cc, BlockData &blk) {
-                //PROFILE_FUNCTION();
-                auto& C = ctx();
-                            
-                EdgeDPState &state = dp[curr_edge].down;
+
+            void processEdge(ogdf::edge curr_edge,
+                            ogdf::EdgeArray<EdgeDP> &dp,
+                            const CcData &/*cc*/,
+                            BlockData &blk)
+            {
+                EdgeDPState &state      = dp[curr_edge].down;
                 EdgeDPState &back_state = dp[curr_edge].up;
-                
+
                 const StaticSPQRTree &spqr = *blk.spqr;
-                            
                 ogdf::node A = curr_edge->source();
                 ogdf::node B = curr_edge->target();
 
-                // std::cout << "PROCESSING " << A << "->" << B << " EDGE\n";
-                
-                state.localPlusS = 0;
-                state.localPlusT = 0;
+                state.localPlusS  = 0;
+                state.localPlusT  = 0;
                 state.localMinusT = 0;
                 state.localMinusS = 0;
-                
-                const Skeleton &skel = spqr.skeleton(B);
-                const Graph &skelGraph = skel.getGraph();
 
+                const Skeleton &skel  = spqr.skeleton(B);
+                const Graph    &skelG = skel.getGraph();
 
-                auto mapSkeletonToGlobal = [&](ogdf::node vSkel) -> ogdf::node {
-                    if (!vSkel) return nullptr;
-
-                    ogdf::node vBlk  = skel.original(vSkel);
-                    if (!vBlk) return nullptr;
-
-                    ogdf::node vCc   = blk.toCc[vBlk];
-                    if (!vCc) return nullptr;
-
-                    return cc.nodeToOrig[vCc];
-                };
-
-
-                for(edge e : skelGraph.edges) {
-                    node u = e->source();
-                    node v = e->target();
-
+                // Déterminer s,t sur le bloc
+                for (edge e : skelG.edges) {
+                    if (!skel.isVirtual(e)) continue;
                     auto D = skel.twinTreeNode(e);
-
-
-                    if(D == A) {
-                        ogdf::node vBlk = skel.original(v);
-                        ogdf::node uBlk = skel.original(u);
-                        
+                    if (D == A) {
+                        ogdf::node vBlk = skel.original(e->target());
+                        ogdf::node uBlk = skel.original(e->source());
                         state.s = back_state.s = vBlk;
-                        state.t = back_state.t = uBlk;                        
+                        state.t = back_state.t = uBlk;
                         break;
                     }
                 }
 
+                for (edge e : skelG.edges) {
+                    // node u = e->source();
+                    // node v = e->target();
 
+                    if (!skel.isVirtual(e)) {
+                        ogdf::edge eG   = blk.edgeToOrig[skel.realEdge(e)];
+                        ogdf::node uG   = eG->source();
+                        ogdf::node vG   = eG->target();
+                        ogdf::node sG   = blk.nodeToOrig[state.s];
+                        ogdf::node tG   = blk.nodeToOrig[state.t];
 
-                for(edge e : skelGraph.edges) {
-                    node u = e->source();
-                    node v = e->target();
-
-                    
-                    ogdf::node uBlk = skel.original(u);
-                    ogdf::node vBlk = skel.original(v);
-
-
-                    
-                    
-                    if(!skel.isVirtual(e)) {
-                        ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
-
-                        ogdf::node uG = eG->source();
-                        ogdf::node vG = eG->target();
-    
-
-                        // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is " << (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-") << " - " << (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-") << "\n";
-                        if(uG == blk.nodeToOrig[state.s]) {
+                        if (uG == sG) {
                             auto t = getNodeEdgeType(uG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusS++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusS++;
-                            }
+                            if (t == EdgePartType::PLUS)  state.localPlusS++;
+                            if (t == EdgePartType::MINUS) state.localMinusS++;
                         }
-
-                        if(vG == blk.nodeToOrig[state.s]) {
+                        if (vG == sG) {
                             auto t = getNodeEdgeType(vG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusS++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusS++;
-                            }
+                            if (t == EdgePartType::PLUS)  state.localPlusS++;
+                            if (t == EdgePartType::MINUS) state.localMinusS++;
                         }
-
-                        if(uG == blk.nodeToOrig[state.t]) {
+                        if (uG == tG) {
                             auto t = getNodeEdgeType(uG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusT++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusT++;
-                            }
+                            if (t == EdgePartType::PLUS)  state.localPlusT++;
+                            if (t == EdgePartType::MINUS) state.localMinusT++;
                         }
-
-                        if(vG == blk.nodeToOrig[state.t]) {
+                        if (vG == tG) {
                             auto t = getNodeEdgeType(vG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusT++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusT++;
-                            }
+                            if (t == EdgePartType::PLUS)  state.localPlusT++;
+                            if (t == EdgePartType::MINUS) state.localMinusT++;
                         }
-
-                        continue;
-                    }
-                    
-                    auto D = skel.twinTreeNode(e);
-                    
-
-                    if(D == A) {
                         continue;
                     }
 
-
-                    edge treeE = blk.skel2tree.at(e);
+                    // arête virtuelle -> sous-bloc
+                    // auto  D     = skel.twinTreeNode(e);
+                    edge  treeE = blk.skel2tree.at(e);
                     OGDF_ASSERT(treeE != nullptr);
-
-
 
                     const EdgeDPState child = dp[treeE].down;
 
-                    ogdf::node nS = child.s;
-                    ogdf::node nT = child.t;
+                    if (state.s == child.s) {
+                        state.localPlusS  += child.localPlusS;
+                        state.localMinusS += child.localMinusS;
+                    } else if (state.s == child.t) {
+                        state.localPlusS  += child.localPlusT;
+                        state.localMinusS += child.localMinusT;
+                    }
 
-                    // ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
-                    // ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
-
-                    
-
-                    if(state.s == child.s) {
-                        // std::cout << "Adding " << child.localPlusS << " plus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-                        state.localPlusS+=child.localPlusS;
-                        // std::cout << "Adding " << child.localMinusS << " minus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl;
-                        state.localMinusS+=child.localMinusS;
-                    } 
-
-                    if(state.s == child.t) {
-                        state.localPlusS+=child.localPlusT;
-                        // std::cout << "Adding " << child.localPlusT << " plus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-                        state.localMinusS+=child.localMinusT;
-                        // std::cout << "Adding " << child.localMinusT << " minus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-
-                    } 
-
-                    if(state.t == child.t) {
-                        state.localPlusT+=child.localPlusT;
-                        // std::cout << "Adding " << child.localPlusT << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                        state.localMinusT+=child.localMinusT;
-                        // std::cout << "Adding " << child.localMinusT << " minus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl; 
-
-                    } 
-
-                    if(state.t == child.s) {
-                        state.localPlusT+=child.localPlusS;
-                        // std::cout << "Adding " << child.localPlusS << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                        state.localMinusT+=child.localMinusS;
-                        // std::cout << "Adding " << child.localMinusS << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                    } 
-
+                    if (state.t == child.t) {
+                        state.localPlusT  += child.localPlusT;
+                        state.localMinusT += child.localMinusT;
+                    } else if (state.t == child.s) {
+                        state.localPlusT  += child.localPlusS;
+                        state.localMinusT += child.localMinusS;
+                    }
                 }
-
             }
 
 
-            void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, const CcData &cc, BlockData &blk) {
-                auto& C = ctx();
+            void processNode(ogdf::node curr_node,
+                            ogdf::EdgeArray<EdgeDP> &edge_dp,
+                            const CcData &/*cc*/,
+                            BlockData &blk)
+            {
                 ogdf::node A = curr_node;
-                
-                const Graph &T = blk.spqr->tree();
-                
                 const StaticSPQRTree &spqr = *blk.spqr;
-                            
+                const Skeleton &skel      = spqr.skeleton(A);
+                const Graph    &skelG     = skel.getGraph();
 
-                const Skeleton &skel = spqr.skeleton(A);
-                const Graph &skelGraph = skel.getGraph();
-
-                
                 Graph newGraph;
 
-                NodeArray<node> skelToNew(skelGraph, nullptr);
-                for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
+                NodeArray<node> skelToNew(skelG, nullptr);
+                for (node v : skelG.nodes)
+                    skelToNew[v] = newGraph.newNode();
+
                 NodeArray<node> newToSkel(newGraph, nullptr);
-                for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+                for (node v : skelG.nodes)
+                    newToSkel[skelToNew[v]] = v;
 
-                for (ogdf::node h : skelGraph.nodes) {
-                    ogdf::node vB = skel.original(h);
-                }
-
-
-                for (ogdf::node h : skelGraph.nodes) {
+                for (ogdf::node h : skelG.nodes) {
                     ogdf::node vB = skel.original(h);
                     blk.blkToSkel[vB] = h;
                 }
-            
 
-                // GraphIO::drawGraph(skelGraph, "skel_" + to_string(curr_node->index()));
+                NodeArray<int> localPlusDeg (newGraph, 0);
+                NodeArray<int> localMinusDeg(newGraph, 0);
 
-                
-                NodeArray<int> localPlusDeg(newGraph, 0), localMinusDeg(newGraph, 0);
-                
-
-                EdgeArray<bool> isVirtual(newGraph, false);
-                EdgeArray<EdgeDPState*> edgeToDp(newGraph, nullptr);
+                EdgeArray<bool>         isVirtual(newGraph, false);
+                EdgeArray<EdgeDPState*> edgeToDp (newGraph, nullptr);
                 EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
-                EdgeArray<node> edgeChild(newGraph, nullptr);
-
-
+                EdgeArray<node>         edgeChild(newGraph, nullptr);
 
                 std::vector<edge> virtualEdges;
-
 
                 auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
                     ogdf::node sV = blk.blkToSkel[bV];
@@ -3131,559 +2640,263 @@ namespace solver {
                     return nV;
                 };
 
+                // construire newGraph
+                for (edge e : skelG.edges) {
+                    node u  = e->source();
+                    node v  = e->target();
 
+                    ogdf::node uBlk = skel.original(u);
+                    ogdf::node vBlk = skel.original(v);
 
-                auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
-                    if (!vN) return nullptr;
-                    ogdf::node vSkel = newToSkel[vN];
-                    if (!vSkel) return nullptr;
-                    ogdf::node vBlk  = skel.original(vSkel);
-                    if (!vBlk) return nullptr;
-                    ogdf::node vCc   = blk.toCc[vBlk];
-                    if (!vCc) return nullptr;
-                    return cc.nodeToOrig[vCc];
-                };
+                    ogdf::node uG = blk.nodeToOrig[uBlk];
+                    ogdf::node vG = blk.nodeToOrig[vBlk];
 
+                    node nU = skelToNew[u];
+                    node nV = skelToNew[v];
 
+                    if (!skel.isVirtual(e)) {
+                        ogdf::edge eG   = blk.edgeToOrig[skel.realEdge(e)];
+                        uG = eG->source();
+                        vG = eG->target();
 
+                        auto newEdge = newGraph.newEdge(nU, nV);
+                        isVirtual[newEdge] = false;
 
-
-
-                // auto printDegrees = [&]() {
-                //     for(node vN:newGraph.nodes) {
-                //         node vG = mapNewToGlobal(vN);
-                //     }
-                // };
-
-
-                // std::cout << "Processing node " << curr_node << "\n";
-
-                // Building new graph
-                {
-                    //PROFILE_BLOCK("processNode:: build oriented local graph");
-                    for(edge e : skelGraph.edges) {
-                        node u = e->source();
-                        node v = e->target();
-
-                        
-                        ogdf::node uBlk = skel.original(u);
-                        ogdf::node vBlk = skel.original(v);
-
-
-                        ogdf::node uG = blk.nodeToOrig[uBlk];
-                        ogdf::node vG = blk.nodeToOrig[vBlk];
-
-                        
-                        node nU = skelToNew[u];
-                        node nV = skelToNew[v];
-                        
-
-                        if(!skel.isVirtual(e)) {
-                            ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
-
-                            uG = eG->source();
-                            vG = eG->target();
-
-                            auto newEdge = newGraph.newEdge(nU, nV);
-
-                            // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is " << (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-") << " - " << (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-") << "\n";
-
-
-                            isVirtual[newEdge] = false;
-
-                            if(blk.nodeToOrig[skel.original(newToSkel[nU])] == uG) {
-                                localPlusDeg[nU]+=(getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nU]+=(getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                                localPlusDeg[nV]+=(getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nV]+=(getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
-                            } else {
-                                localPlusDeg[nU]+=(getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nU]+=(getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
-                                localPlusDeg[nV]+=(getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nV]+=(getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                            }
-
-
-
-                            continue;
-                        }
-
-
-                        // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is virtual\n";
-
-
-                        
-                        auto B = skel.twinTreeNode(e);
-                        
-                        edge treeE = blk.skel2tree.at(e);
-                        OGDF_ASSERT(treeE != nullptr);
-
-
-
-                        EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
-                        EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
-
-                        ogdf::node nS = mapBlockToNew(child->s);
-                        ogdf::node nT = mapBlockToNew(child->t);
-
-
-
-                        edge newEdge = newGraph.newEdge(nS, nT);
-                        
-                        isVirtual[newEdge] = true;
-
-                        virtualEdges.push_back(newEdge);
-
-                        edgeToDp[newEdge] = edgeToUpdate;
-                        edgeToDpR[newEdge] = child;
-                        edgeChild[newEdge] = B;
-
-
-                        if(nS == nU && nT == nV) {
-                            localMinusDeg[nS] += child->localMinusT;
-                            localPlusDeg[nS] += child->localPlusT;
-
-                            localMinusDeg[nT] += child->localMinusS;
-                            localPlusDeg[nT] += child->localPlusS;
+                        if (blk.nodeToOrig[skel.original(newToSkel[nU])] == uG) {
+                            localPlusDeg [nU] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nU] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
+                            localPlusDeg [nV] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nV] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
                         } else {
-                            localMinusDeg[nS] += child->localMinusS;
-                            localPlusDeg[nS] += child->localPlusS;
-
-                            localMinusDeg[nT] += child->localMinusT;
-                            localPlusDeg[nT] += child->localPlusT;
+                            localPlusDeg [nU] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nU] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
+                            localPlusDeg [nV] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nV] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
                         }
-                    //     for(auto &v:newGraph.nodes) {
-                    //        std::cout << C.node2name[blk.nodeToOrig[skel.original(newToSkel[v])]] << " has " << localPlusDeg[v] << " local plus and " << localMinusDeg[v] << " local minus. \n";
-                    //    }
+                        continue;
                     }
 
+                    // arête virtuelle
+                    auto B     = skel.twinTreeNode(e);
+                    edge treeE = blk.skel2tree.at(e);
+                    OGDF_ASSERT(treeE != nullptr);
 
-                }
+                    EdgeDPState *child        = (B == blk.parent(A) ? &edge_dp[treeE].up   : &edge_dp[treeE].down);
+                    EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
 
-                // std::cout << "Built new graph for " << curr_node << "\n";
+                    ogdf::node nS = mapBlockToNew(child->s);
+                    ogdf::node nT = mapBlockToNew(child->t);
 
+                    edge newEdge = newGraph.newEdge(nS, nT);
+                    isVirtual[newEdge] = true;
 
-                // updating local degrees of poles of states going into A
-                {
-                    // std::cout << "updating local degrees of poles of states going into A " << curr_node << "\n";
+                    virtualEdges.push_back(newEdge);
+                    edgeToDp [newEdge] = edgeToUpdate;
+                    edgeToDpR[newEdge] = child;
+                    edgeChild[newEdge] = B;
 
-                    //PROFILE_BLOCK("processNode:: update DP local degrees at poles");
-                    for(edge e:virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-                        node vN = e->source();
-                        node uN = e->target();
-
-                        EdgeDPState *BA = edgeToDp[e];
-                        EdgeDPState *AB = edgeToDpR[e];
-
-                        BA->localPlusS = localPlusDeg[mapBlockToNew(BA->s)] - AB->localPlusS; 
-                        BA->localPlusT = localPlusDeg[mapBlockToNew(BA->t)] - AB->localPlusT; 
-
-                        BA->localMinusS = localMinusDeg[mapBlockToNew(BA->s)] - AB->localMinusS; 
-                        BA->localMinusT = localMinusDeg[mapBlockToNew(BA->t)] - AB->localMinusT; 
+                    if (nS == nU && nT == nV) {
+                        localMinusDeg[nS] += child->localMinusT;
+                        localPlusDeg [nS] += child->localPlusT;
+                        localMinusDeg[nT] += child->localMinusS;
+                        localPlusDeg [nT] += child->localPlusS;
+                    } else {
+                        localMinusDeg[nS] += child->localMinusS;
+                        localPlusDeg [nS] += child->localPlusS;
+                        localMinusDeg[nT] += child->localMinusT;
+                        localPlusDeg [nT] += child->localPlusT;
                     }
-                    // std::cout << "UPDATED local degrees of poles of states going into A " << curr_node << "\n";
-
                 }
 
-                // for(auto &v:newGraph.nodes) {
-                //     std::cout << C.node2name[blk.nodeToOrig[skel.original(newToSkel[v])]] << " has " << localPlusDeg[v] << " local plus and " << localMinusDeg[v] << " local minus. \n";
-                // }
+                // Mise à jour des DP pour les arêtes virtuelles entrantes
+                for (edge e : virtualEdges) {
+                    EdgeDPState *BA = edgeToDp [e];
+                    EdgeDPState *AB = edgeToDpR[e];
 
+                    BA->localPlusS  = localPlusDeg [mapBlockToNew(BA->s)] - AB->localPlusS;
+                    BA->localPlusT  = localPlusDeg [mapBlockToNew(BA->t)] - AB->localPlusT;
+                    BA->localMinusS = localMinusDeg[mapBlockToNew(BA->s)] - AB->localMinusS;
+                    BA->localMinusT = localMinusDeg[mapBlockToNew(BA->t)] - AB->localMinusT;
+                }
             }
+
     
             
+            void solveS(ogdf::node sNode,
+                        NodeArray<NodeDPState> &node_dp,
+                        ogdf::EdgeArray<EdgeDP> &dp,
+                        BlockData &blk,
+                        const CcData &cc)
+            {
+                const Skeleton &skel    = blk.spqr->skeleton(sNode);
+                const Graph    &skelG   = skel.getGraph();
+                const Graph    &T       = blk.spqr->tree();
 
+                std::vector<ogdf::node> nodesInOrderGcc;
+                std::vector<ogdf::node> nodesInOrderSkel;
 
-            void solveS(ogdf::node sNode, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &dp, BlockData& blk, const CcData& cc) {
-                PROFILE_FUNCTION();
-                const Skeleton& skel = blk.spqr->skeleton(sNode);
-                const Graph& skelGraph = skel.getGraph();
-                const Graph& T = blk.spqr->tree();
-                
-                // std::cout << "Solving S node.." << std::endl;
-
-                std::vector<ogdf::node> nodesInOrderGcc; // In Gcc
-                std::vector<ogdf::node> nodesInOrderSkel; // In skel
-                
                 ogdf::EdgeArray<EdgeDPState*> skelToState(T);
 
-                // std::vector<EdgeDP> edgeT; // for i, nullptr if edge between i and i+1 is real, EdgeDp* if not 
+                std::vector<ogdf::edge> adjEdgesG;
+                std::vector<adjEntry>   adjEntriesSkel;
 
-
-
-
-                for(edge e : skelGraph.edges) {
-                    if(!skel.isVirtual(e)) continue;
-                    auto B = skel.twinTreeNode(e);
+                // Associer chaque edge virtuel à son état DP
+                for (edge e : skelG.edges) {
+                    if (!skel.isVirtual(e)) continue;
+                    auto B    = skel.twinTreeNode(e);
                     edge treeE = blk.skel2tree.at(e);
 
                     EdgeDPState *child = (B == blk.parent(sNode) ? &dp[treeE].up : &dp[treeE].down);
                     skelToState[treeE] = child;
                 }
 
-                std::vector<ogdf::edge> adjEdgesG_; 
-                std::vector<adjEntry> adjEntriesSkel; 
-
-
-
+                // DFS pour numéroter les sommets dans l'ordre
                 {
-                    std::function<void(ogdf::node, ogdf::node)> dfs = [&](ogdf::node u, ogdf::node prev) {          
-                        nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
-                        nodesInOrderSkel.push_back(u);
-                            
-                        for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    std::function<void(ogdf::node, ogdf::node)> dfs =
+                        [&](ogdf::node u, ogdf::node prev) {
+                            nodesInOrderGcc .push_back(blk.toCc[skel.original(u)]);
+                            nodesInOrderSkel.push_back(u);
 
-                            if(adj->twinNode() == prev) continue;
+                            for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
 
-                            if(adj->twinNode() == skelGraph.firstNode() && u != skelGraph.firstNode()) {
-                                if(skel.realEdge(adj->theEdge())) {
-                                    adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
-                                } else {
-                                    adjEdgesG_.push_back(nullptr);
+                                if (adj->twinNode() == prev) continue;
+
+                                if (adj->twinNode() == skelG.firstNode() && u != skelG.firstNode()) {
+                                    if (skel.realEdge(adj->theEdge())) {
+                                        adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                    } else {
+                                        adjEdgesG.push_back(nullptr);
+                                    }
+                                    adjEntriesSkel.push_back(adj);
                                 }
 
+                                if (adj->twinNode() == skelG.firstNode() || adj->twinNode() == prev)
+                                    continue;
+
+                                if (skel.realEdge(adj->theEdge())) {
+                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                } else {
+                                    adjEdgesG.push_back(nullptr);
+                                }
                                 adjEntriesSkel.push_back(adj);
-                            }
 
-                            if(adj->twinNode() == skelGraph.firstNode() || adj->twinNode() == prev) continue;
-                            {
-                                // if(skel.realEdge(adj->theEdge())) {
-                                //     node B = (skel.twinTreeNode(adj->theEdge()));
-                                //     if(blk.parent(sNode) == B) skelToState[adj->theEdge()] =
-                                //     else  skelToState[adj->theEdge()] =
-                                // } else {
-                                //     skelToState[adj->theEdge()] = nullptr;
-                                // }
+                                dfs(adj->twinNode(), u);
                             }
+                        };
 
-                            if(skel.realEdge(adj->theEdge())) {
-                                adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
-                            } else {
-                                adjEdgesG_.push_back(nullptr);
-                            }
-
-                            adjEntriesSkel.push_back(adj);
-                            dfs(adj->twinNode(), u);
-                        }
-                        
-                    };
-                    
-                    dfs(skelGraph.firstNode(), skelGraph.firstNode()->firstAdj()->twinNode());
+                    dfs(skelG.firstNode(), skelG.firstNode()->firstAdj()->twinNode());
                 }
 
                 std::vector<bool> cuts(nodesInOrderGcc.size(), false);
-
                 std::vector<std::string> res;
 
-
-                // for (size_t i = 0; i < nodesInOrderGcc.size(); i++) {
-                //     std::string s = ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[i]]], t = ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[(i+1)%nodesInOrderGcc.size()]]];
-                //     blk._adjInS.insert({ s, t});
-                // }
-
-
-                for (size_t i = 0; i < nodesInOrderGcc.size(); i++) {
+                for (size_t i = 0; i < nodesInOrderGcc.size(); ++i) {
                     auto uGcc = nodesInOrderGcc[i];
-                    auto uSkel = nodesInOrderSkel[i];
 
-                    std::vector<edge> adjEdgesSkel = {adjEntriesSkel[(i-1+adjEntriesSkel.size())%adjEntriesSkel.size()]->theEdge(), adjEntriesSkel[i]->theEdge()};
-                    std::vector<ogdf::edge> adjEdgesG = {adjEdgesG_[(i-1+adjEdgesG_.size())%adjEdgesG_.size()], adjEdgesG_[i]};
+                    std::vector<edge>    adjEdgesSkelLoc = {
+                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) % adjEntriesSkel.size()]->theEdge(),
+                        adjEntriesSkel[i]->theEdge()
+                    };
+                    std::vector<ogdf::edge> adjEdgesGLoc = {
+                        adjEdgesG[(i + adjEdgesG.size() - 1) % adjEdgesG.size()],
+                        adjEdgesG[i]
+                    };
 
-                    bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) || (!cc.isCutNode[uGcc]));
+                    bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) ||
+                                      (!cc.isCutNode[uGcc]));
 
                     EdgePartType t0 = EdgePartType::NONE;
                     EdgePartType t1 = EdgePartType::NONE;
 
-                    if(!skel.isVirtual(adjEdgesSkel[0])) {
-                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
+                    // edge 0
+                    if (!skel.isVirtual(adjEdgesSkelLoc[0])) {
+                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
                     } else {
-                        edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                        
-                        EdgeDPState* state0 = skelToState[treeE0];
-            
-                        if(blk.toCc[state0->s] == uGcc) {
-                            // take state0.s
-                            if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                            else if(state0->localMinusS == 0 && state0->localPlusS>0) {
+                        edge treeE0        = blk.skel2tree.at(adjEdgesSkelLoc[0]);
+                        EdgeDPState *state0 = skelToState[treeE0];
+                        if (blk.toCc[state0->s] == uGcc) {
+                            if (state0->localMinusS == 0 && state0->localPlusS > 0)
                                 t0 = EdgePartType::PLUS;
-                            } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
+                            else if (state0->localMinusS > 0 && state0->localPlusS == 0)
                                 t0 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
                         } else {
-                            // take state0.t
-                            if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                            else if(state0->localMinusT == 0 && state0->localPlusT>0) {
+                            if (state0->localMinusT == 0 && state0->localPlusT > 0)
                                 t0 = EdgePartType::PLUS;
-                            } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
+                            else if (state0->localMinusT > 0 && state0->localPlusT == 0)
                                 t0 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
                         }
                     }
 
-                    if(!skel.isVirtual(adjEdgesSkel[1])) {
-                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
+                    // edge 1
+                    if (!skel.isVirtual(adjEdgesSkelLoc[1])) {
+                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
                     } else {
-                        edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-                        
-                        EdgeDPState* state1 = skelToState[treeE1];
-            
-                        if(blk.toCc[state1->s] == uGcc) {
-                            // take state1.s
-                            if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                            else if(state1->localMinusS == 0 && state1->localPlusS>0) {
+                        edge treeE1        = blk.skel2tree.at(adjEdgesSkelLoc[1]);
+                        EdgeDPState *state1 = skelToState[treeE1];
+                        if (blk.toCc[state1->s] == uGcc) {
+                            if (state1->localMinusS == 0 && state1->localPlusS > 0)
                                 t1 = EdgePartType::PLUS;
-                            } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
+                            else if (state1->localMinusS > 0 && state1->localPlusS == 0)
                                 t1 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
                         } else {
-                            // take state1.t
-                            if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                            else if(state1->localMinusT == 0 && state1->localPlusT>0) {
+                            if (state1->localMinusT == 0 && state1->localPlusT > 0)
                                 t1 = EdgePartType::PLUS;
-                            } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
+                            else if (state1->localMinusT > 0 && state1->localPlusT == 0)
                                 t1 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
                         }
                     }
 
-                    nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
+                    nodeIsCut &= (t0 != EdgePartType::NONE &&
+                                  t1 != EdgePartType::NONE &&
+                                  t0 != t1);
 
-
-                    // if(!skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
-                    //     EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
-                    //     EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-
-
-                    //     nodeIsCut &= t0 != t1;
-                    // } else if(!skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
-                    //     EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
-                    //     EdgePartType t1 = EdgePartType::NONE;
-
-                    //     edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-
-                    //     EdgeDPState* state1 = skelToState[treeE1];
-
-                    //     if(blk.toCc[state1->s] == uGcc) {
-                    //         // take state1.s
-                    //         if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                    //         else if(state1->localMinusS == 0 && state1->localPlusS>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state1.t
-                    //         if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                    //         else if(state1->localMinusT == 0 && state1->localPlusT>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // } else if(skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
-                    //     // first is virtual, second is real
-                    //     // if(toPrint)
-                    //     // std::cout << "vir - real, " << std::endl;
-                    //     EdgePartType t0 = EdgePartType::NONE;
-                    //     EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-                        
-
-                    //     // std::cout << "33" << std::endl;
-                    //     edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                        
-                    //     EdgeDPState* state0 = skelToState[treeE0];
-                        
-                    //     // std::cout << "44" << std::endl;
-                    //     // std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
-                    //     // node B = skel.twinTreeNode(adjEdges[1])
-
-                    //     if(blk.toCc[state0->s] == uGcc) {
-                    //         // take state0.s
-                    //         if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                    //         else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state0.t
-                    //         if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                    //         else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                        
-
-
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // } else if(skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
-                    //     // both edges are virtual
-                    //     // if(toPrint)
-                    //     // std::cout << ctx().node2name[cc.nodeToOrig[uGcc]] << " vir - vir" << std::endl;
-                        
-                    //     EdgePartType t0 = EdgePartType::NONE;
-                    //     EdgePartType t1 = EdgePartType::NONE;
-                        
-                    //     edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                    //     edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-                        
-                    //     EdgeDPState* state0 = skelToState[treeE0];
-                    //     EdgeDPState* state1 = skelToState[treeE1];
-
-                    //     // if(toPrint) {
-                    //     //     std::cout << "S-" << skelToState[treeE0]->localMinusS << " " << "S+"  << skelToState[treeE0]->localPlusS << " " << "T-" << skelToState[treeE0]->localMinusT << " " << "T+" << skelToState[treeE0]->localPlusT << std::endl;
-                    //     //     std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
-                    //     // // node B = skel.twinTreeNode(adjEdges[1])
-                    //     // }
-                    //     assert(blk.nodeToOrig[state0->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state0->t] == cc.nodeToOrig[uGcc]);
-                    //     assert(blk.nodeToOrig[state1->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state1->t] == cc.nodeToOrig[uGcc]);
-
-                    //     // std::cout << ctx().node2name[cc.nodeToOrig[state0->s]] << " " << ctx().node2name[cc.nodeToOrig[state0->t]] << std::endl;
-                    //     // std::cout << ctx().node2name[state1->s] << " " << ctx().node2name[cc.nodeToOrig[state1->t]] << std::endl;
-
-                    //     if(blk.toCc[state0->s] == uGcc) {
-                    //         // take state0.s
-                    //         if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                    //         else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state0.t
-                    //         if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                    //         else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     if(blk.toCc[state1->s] == uGcc) {
-                    //         // take state1.s
-                    //         if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                    //         else if(state1->localMinusS == 0 && state1->localPlusS>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state1.t
-                    //         if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                    //         else if(state1->localMinusT == 0 && state1->localPlusT>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     // std::cout << (t0 == EdgePartType::NONE ? "NONE" : (t0 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << " - " << (t1 == EdgePartType::NONE ? "NONE" : (t1 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << std::endl;
-                        
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // }
-
-
-                    if(nodeIsCut) { 
-                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
-                        if(node_dp[sNode].GccCuts_last3.size() < 3) {
+                    if (nodeIsCut) {
+                        if (node_dp[sNode].GccCuts_last3.size() < 3)
                             node_dp[sNode].GccCuts_last3.push_back(uGcc);
-                        }
-                        // node_dp[sNode].cutsCnt++;
-                        // if(toPrint)
-                        // std::cout << "Found cut at " << ctx().node2name[cc.nodeToOrig[uGcc]] << std::endl;
-                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
-                        if(!skel.isVirtual(adjEdgesSkel[0])) {
-                            EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
 
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (t0 == EdgePartType::PLUS ? "+" : "-"));
+                        // côté gauche
+                        if (!skel.isVirtual(adjEdgesSkelLoc[0])) {
+                            EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
+                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                          (tt0 == EdgePartType::PLUS ? "+" : "-"));
                         } else {
-                            edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                            EdgeDPState* state0 = skelToState[treeE0];
-
-                            if(uGcc == blk.toCc[state0->s]) {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state0->localPlusS > 0 ? "+" : "-"));
+                            edge treeE0        = blk.skel2tree.at(adjEdgesSkelLoc[0]);
+                            EdgeDPState *state0 = skelToState[treeE0];
+                            if (uGcc == blk.toCc[state0->s]) {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state0->localPlusS > 0 ? "+" : "-"));
                             } else {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state0->localPlusT > 0 ? "+" : "-"));
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state0->localPlusT > 0 ? "+" : "-"));
                             }
                         }
 
-
-                        if(!skel.isVirtual(adjEdgesSkel[1])) {
-                            EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (t1 == EdgePartType::PLUS ? "+" : "-"));
+                        // côté droit
+                        if (!skel.isVirtual(adjEdgesSkelLoc[1])) {
+                            EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
+                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                          (tt1 == EdgePartType::PLUS ? "+" : "-"));
                         } else {
-                            edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-                            EdgeDPState* state1 = skelToState[treeE1];
-
-                            if(uGcc == blk.toCc[state1->s]) {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state1->localPlusS > 0 ? "+" : "-"));
+                            edge treeE1        = blk.skel2tree.at(adjEdgesSkelLoc[1]);
+                            EdgeDPState *state1 = skelToState[treeE1];
+                            if (uGcc == blk.toCc[state1->s]) {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state1->localPlusS > 0 ? "+" : "-"));
                             } else {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state1->localPlusT > 0 ? "+" : "-"));
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state1->localPlusT > 0 ? "+" : "-"));
                             }
                         }
-
                     }
-
-                    // if(toPrint)
-                    // std::cout << "Node " << ctx().node2name[cc.nodeToOrig[uGcc]] << " " << (nodeIsCut ? "cut" : "not cut") << std::endl;
                 }
-                
 
-                // std::cout << "done solving S" << std::endl;
-
-                
-                assert(res.size()%2==0);
-
-                if(res.size()>2) {
-                    for (size_t i = 1; i < res.size(); i+=2)
-                    {
-                        std::vector<std::string> v = {/*"S"+*/res[i], /*"S"+*/res[(i+1)%res.size()]};
-                        // std::cout << "S node snarl: ";
-                        // for(auto &s:v) std::cout << s << " ";
-                        // std::cout << std::endl;
+                OGDF_ASSERT(res.size() % 2 == 0);
+                if (res.size() > 2) {
+                    for (size_t i = 1; i < res.size(); i += 2) {
+                        std::vector<std::string> v = { res[i], res[(i + 1) % res.size()] };
                         addSnarl(v);
-
-                        // std::cout << res[i] <<":" << res[(i+1)%res.size()] << std::endl; 
                     }
                 }
-                
-
-                // for(auto &v:res) {
-                //     std::cout << v << "  ";
-                // }
-                // std::cout << std::endl;
-
             }
 
             void solveP(ogdf::node pNode, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
@@ -3812,169 +3025,73 @@ namespace solver {
                     }
                 }
             }
-
-            void solveRR(ogdf::edge rrEdge, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
-                PROFILE_FUNCTION();
+            void solveRR(ogdf::edge rrEdge,
+                         NodeArray<NodeDPState> &/*node_dp*/,
+                         ogdf::EdgeArray<EdgeDP> &edge_dp,
+                         BlockData &blk,
+                         const CcData &cc)
+            {
                 EdgeDPState &down = edge_dp[rrEdge].down;
-                EdgeDPState &up = edge_dp[rrEdge].up;
+                EdgeDPState &up   = edge_dp[rrEdge].up;
 
                 node pole0Blk = down.s, pole1Blk = down.t;
                 node pole0Gcc = blk.toCc[pole0Blk], pole1Gcc = blk.toCc[pole1Blk];
 
-                // if(ctx().node2name[cc.nodeToOrig[pole0Gcc]] == "3497" || ctx().node2name[cc.nodeToOrig[pole1Gcc]] == "3497") {
-                //     std::cout << "Processing RR edge with pole " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " and " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
-                // }
-
-                // if(cc.isCutNode[pole0Blk]) {
-                //     node pole0CutT = cc.bc->bcproper(pole0Gcc);
-                //     if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;                     
-                // }
-
-                // if(cc.isCutNode[pole1Blk]) {
-                //     node pole1CutT = cc.bc->bcproper(pole1Gcc);
-                //     if(cc.badCutCount[pole1CutT]>=2 || (cc.badCutCount[pole1CutT] == 1 && cc.lastBad[pole1CutT] != blk.bNode)) return;                     
-                // }
-
-
-
-
-                {
-                    // if(down.s == pole0Blk) {
-                    //     if((down.localMinusS>0) + (down.localPlusS>0) == 2) return;
-                    // } else {
-                    //     if((down.localMinusT>0) + (down.localPlusT>0) == 2) return;
-                    // }
-
-                    // if(up.s == pole0Blk) {
-                    //     if((up.localMinusS>0) + (up.localPlusS>0) == 2) return;
-                    // } else {
-                    //     if((up.localMinusT>0) + (up.localPlusT>0) == 2) return;
-                    // }
-                    if((up.localMinusS>0) + (up.localPlusS>0) == 2) return;
-                    if((up.localMinusT>0) + (up.localPlusT>0) == 2) return;
-                    if((down.localMinusS>0) + (down.localPlusS>0) == 2) return;
-                    if((down.localMinusT>0) + (down.localPlusT>0) == 2) return;
-
-
+                if ((up.localMinusS > 0 && up.localPlusS > 0) ||
+                    (up.localMinusT > 0 && up.localPlusT > 0) ||
+                    (down.localMinusS > 0 && down.localPlusS > 0) ||
+                    (down.localMinusT > 0 && down.localPlusT > 0)) {
+                    return;
                 }
 
-                EdgePartType pole0DownType = EdgePartType::NONE, pole0UpType = EdgePartType::NONE, pole1DownType = EdgePartType::NONE, pole1UpType = EdgePartType::NONE;
+                EdgePartType pole0DownType = EdgePartType::NONE;
+                EdgePartType pole0UpType   = EdgePartType::NONE;
+                EdgePartType pole1DownType = EdgePartType::NONE;
+                EdgePartType pole1UpType   = EdgePartType::NONE;
 
-                if(down.s == pole0Blk) {
+                if (down.s == pole0Blk)
                     pole0DownType = (down.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole0DownType = (down.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(up.s == pole0Blk) {
+                if (up.s == pole0Blk)
                     pole0UpType = (up.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole0UpType = (up.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(down.s == pole1Blk) {
+                if (down.s == pole1Blk)
                     pole1DownType = (down.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole1DownType = (down.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(up.s == pole1Blk) {
+                if (up.s == pole1Blk)
                     pole1UpType = (up.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole1UpType = (up.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
+                if (pole0DownType == pole0UpType) return;
+                if (pole1DownType == pole1UpType) return;
 
-                if(pole0DownType == pole0UpType) return;
-                if(pole1DownType == pole1UpType) return;
-
-
-
-                if(cc.isCutNode[pole0Gcc] || cc.isCutNode[pole1Gcc]) {
-                    assert(cc.badCutCount[pole0Gcc] >= 1);
-                    if(cc.badCutCount[pole0Gcc]>=2 || cc.badCutCount[pole1Gcc]>=2) return;
-                }
-
-
-                {
-                    string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0DownType == EdgePartType::PLUS ? "+" : "-");
-                    string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1DownType == EdgePartType::PLUS ? "+" : "-");
-
-                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
-                    // std::cout << "RR edge snarl: ";
-                    // for(auto &s:v) std::cout << s << " ";
-                    // std::cout << std::endl;
-                    addSnarl(v);
+                if (cc.isCutNode[pole0Gcc] || cc.isCutNode[pole1Gcc]) {
+                    if (cc.badCutCount[pole0Gcc] >= 2 || cc.badCutCount[pole1Gcc] >= 2) return;
                 }
 
                 {
-                    string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0UpType == EdgePartType::PLUS ? "+" : "-");
-                    string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1UpType == EdgePartType::PLUS ? "+" : "-");
-
-                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
-                    // std::cout << "RR edge snarl: ";
-                    // for(auto &s:v) std::cout << s << " ";
-                    // std::cout << std::endl;
-
+                    std::string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] +
+                                    (pole0DownType == EdgePartType::PLUS ? "+" : "-");
+                    std::string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] +
+                                    (pole1DownType == EdgePartType::PLUS ? "+" : "-");
+                    std::vector<std::string> v = { s, t };
                     addSnarl(v);
                 }
-
-
-
-
-                // if(cc.isCutNode[pole0Blk]) {
-                //     node pole0CutT = cc.bc->bcproper(pole0Gcc);
-                //     if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;        
-                //     // if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;                     
-                // }
-
-                // if(cc.isCutNode[pole1Blk]) {
-                //     node pole1CutT = cc.bc->bcproper(pole1Gcc);
-                //     if(cc.badCutCount[pole1CutT]>=2 || (cc.badCutCount[pole1CutT] == 1 && cc.lastBad[pole1CutT] != blk.bNode)) return;                     
-                // }
-
-
-                // std::array<EdgeDPState*, 2> states = { &down, &up };
-                
-                // for(auto &left:{EdgePartType::PLUS, EdgePartType::MINUS}) {
-                //     for(auto &right:{EdgePartType::PLUS, EdgePartType::MINUS}) {
-                //         std::vector<EdgeDPState*> leftPart, rightPart;
-
-
-
-                //         for(auto state : states) {                            
-                //             EdgePartType l, r;
-                //             if(state->s == pole0Blk) {
-                //                 l = (state->localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             } else {
-                //                 l = (state->localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             }
-
-                //             if(state->s == pole1Blk) {
-                //                 r = (state->localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             } else {
-                //                 r = (state->localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             }
-
-                //             if(l == left) leftPart.push_back(state);
-                            
-                //             if(r == right) rightPart.push_back(state);
-                //         }
-
-
-                //         if(leftPart.size() > 0 && leftPart == rightPart) {
-                //             string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-");
-                //             string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-");
-                            
-                //             std::vector<std::string> v={s,t};
-                //             addSnarl(v);
-
-                //             // std::cout << "SNARL RR: " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-") << ":" << ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-") << std::endl;
-                //         }                        
-
-                //     }
-                // }
-
+                {
+                    std::string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] +
+                                    (pole0UpType == EdgePartType::PLUS ? "+" : "-");
+                    std::string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] +
+                                    (pole1UpType == EdgePartType::PLUS ? "+" : "-");
+                    std::vector<std::string> v = { s, t };
+                    addSnarl(v);
+                }
             }
 
             void solveNodes(NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
@@ -4004,89 +3121,86 @@ namespace solver {
                     }
                 }
             }
-
-            void solveSPQR(BlockData& blk, const CcData& cc) {
+            void solveSPQR(BlockData &blk, const CcData &cc)
+            {
                 MARK_SCOPE_MEM("sn/solveSPQR");
 
-                PROFILE_FUNCTION();
-                if(!blk.spqr) return;
-                if(!blk.spqr || blk.Gblk->numberOfNodes() < 3) return;
+                if (!blk.spqr || blk.Gblk->numberOfNodes() < 3) return;
 
                 const Graph &T = blk.spqr->tree();
 
-                EdgeArray<SPQRsolve::EdgeDP> edge_dp(T);
-                NodeArray<SPQRsolve::NodeDPState> node_dp(T);
+                EdgeArray<EdgeDP>             edge_dp(T);
+                NodeArray<NodeDPState>        node_dp(T);
 
                 std::vector<ogdf::node> nodeOrder;
                 std::vector<ogdf::edge> edgeOrder;
 
-                SPQRsolve::dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder);
+                dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder);
+                blk.blkToSkel.init(*blk.Gblk, nullptr);
 
-                ogdf::NodeArray<ogdf::node> blkToSkel(*blk.Gblk, nullptr);
-                blk.blkToSkel = blkToSkel;
-
-                for(auto e:edgeOrder) {
-                    SPQRsolve::processEdge(e, edge_dp, cc, blk);
-                }
-
-                for(auto v:nodeOrder) {
-                    SPQRsolve::processNode(v, edge_dp, cc, blk);
-                }
+                for (auto e : edgeOrder)
+                    processEdge(e, edge_dp, cc, blk);
+                for (auto v : nodeOrder)
+                    processNode(v, edge_dp, cc, blk);
 
                 solveNodes(node_dp, edge_dp, blk, cc);
 
+                // partie edges -> snarls
+                for (edge eGblk : blk.Gblk->edges) {
+                    edge eG = blk.edgeToOrig[eGblk];
 
-                {
-                    // PROFILE_BLOCK("sn/eachEdge");
-                    for(edge eGblk: blk.Gblk->edges) {
-                        edge eG = blk.edgeToOrig[eGblk];
+                    node uGcc = blk.nodeToOrig[eGblk->source()];
+                    node vGcc = blk.nodeToOrig[eGblk->target()];
 
-                        node uGcc = blk.nodeToOrig[eGblk->source()];
-                        node vGcc = blk.nodeToOrig[eGblk->target()];
+                    node uG = cc.nodeToOrig[uGcc];
+                    node vG = cc.nodeToOrig[vGcc];
 
-                        node uG = cc.nodeToOrig[uGcc];
-                        node vG = cc.nodeToOrig[vGcc];
+                    if (ctx().node2name[uG] == "_trash" || ctx().node2name[vG] == "_trash") {
+                        continue;
+                    }
 
-                        if(ctx().node2name[uG] == "_trash" || ctx().node2name[vG] == "_trash") {
-                            continue;
+                    if (cc.isTip[uGcc] || cc.isTip[vGcc]) {
+                        continue;
+                    }
+
+                    if ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] > 0) ||
+                        (cc.isCutNode[vGcc] && cc.badCutCount[vGcc] > 0)) {
+                        continue;
+                    }
+
+                    int uPlusCnt = cc.degPlus[uGcc]  - (getNodeEdgeType(uG, eG) == EdgePartType::PLUS  ? 1 : 0);
+                    int uMinusCnt= cc.degMinus[uGcc] - (getNodeEdgeType(uG, eG) == EdgePartType::MINUS ? 1 : 0);
+                    int vPlusCnt = cc.degPlus[vGcc]  - (getNodeEdgeType(vG, eG) == EdgePartType::PLUS  ? 1 : 0);
+                    int vMinusCnt= cc.degMinus[vGcc] - (getNodeEdgeType(vG, eG) == EdgePartType::MINUS ? 1 : 0);
+
+                    bool ok = false;
+                    if ((uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt == 0 && vMinusCnt > 0) ||
+                        (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt > 0 && vMinusCnt == 0) ||
+                        (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt == 0 && vMinusCnt > 0) ||
+                        (uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt > 0 && vMinusCnt == 0)) {
+                        ok = true;
+                    }
+
+                    if (ok) {
+                        std::string s = ctx().node2name[uG];
+                        std::string t = ctx().node2name[vG];
+
+                        std::vector<std::string> v1 = {
+                            s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-"),
+                            t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-")
+                        };
+                        addSnarl(v1);
+
+                        node tNode = blk.spqr->skeletonOfReal(eGblk).treeNode();
+                        if (blk.spqr->typeOf(tNode) != SPQRTree::NodeType::SNode) {
+                            std::vector<std::string> v2 = {
+                                s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "-" : "+"),
+                                t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "-" : "+")
+                            };
+                            addSnarl(v2);
                         }
-
-                        if(cc.isTip[uGcc] || cc.isTip[vGcc]) {
-                            continue;
-                        }
-
-                        if((cc.isCutNode[uGcc] && cc.badCutCount[uGcc]>0) || (cc.isCutNode[vGcc] && cc.badCutCount[vGcc]>0)) {
-                            continue;
-                        }
-
-                        int uPlusCnt = cc.degPlus[uGcc] - (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? 1 : 0), uMinusCnt = cc.degMinus[uGcc] - (getNodeEdgeType(uG, eG) == EdgePartType::MINUS ? 1 : 0);
-                        int vPlusCnt = cc.degPlus[vGcc] - (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? 1 : 0), vMinusCnt = cc.degMinus[vGcc] - (getNodeEdgeType(vG, eG) == EdgePartType::MINUS ? 1 : 0);
-                    
-
-                        bool ok = false;
-
-                        string s = ctx().node2name[cc.nodeToOrig[uGcc]];
-                        string t = ctx().node2name[cc.nodeToOrig[vGcc]];
-
-
-                        if((uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt == 0 && vMinusCnt > 0) || (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt > 0 && vMinusCnt == 0) || (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt == 0 && vMinusCnt > 0) || (uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt > 0 && vMinusCnt == 0)) {
-                            ok = true;
-                        }
-
-                        if(ok) {
-                            std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-")};
-                            addSnarl(v);
-
-                            node tNode = blk.spqr->skeletonOfReal(eGblk).treeNode();
-                            if(blk.spqr->typeOf(tNode) != SPQRTree::NodeType::SNode) {
-                                std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "-" : "+"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "-" : "+")};
-                                addSnarl(v);
-                            }
-                        } 
                     }
                 }
-                    
-
             }
 
 
@@ -4156,66 +3270,91 @@ namespace solver {
         }
 
 
-        void findCutSnarl(CcData &cc) {
+        void findCutSnarl(CcData &cc)
+        {
             MARK_SCOPE_MEM("sn/findCutSnarl");
-            PROFILE_FUNCTION();
-            ogdf::NodeArray<std::pair<bool, bool>> visited(*cc.Gcc, {false, false}); // first: minus visited, second: plus visited
 
-            std::function<void(ogdf::node, ogdf::node, EdgePartType, std::vector<std::string> &)>  dfs=[&](ogdf::node node, ogdf::node prev, EdgePartType edgeType, std::vector<std::string> &goodNodes) -> void {
-                if((cc.isGoodCutNode[node] || cc.isTip[node]) && ctx().node2name[cc.nodeToOrig[node]] != "_trash") {
-                    goodNodes.push_back(ctx().node2name[cc.nodeToOrig[node]]+(edgeType == EdgePartType::PLUS ? "+" : "-"));
+            ogdf::NodeArray<std::pair<bool, bool>> visited(
+                *cc.Gcc, {false, false}); // (minusVisited, plusVisited)
+
+            std::function<void(ogdf::node,
+                               ogdf::node,
+                               EdgePartType,
+                               std::vector<std::string> &)> dfs =
+                [&](ogdf::node node,
+                    ogdf::node /*prev*/,
+                    EdgePartType edgeType,
+                    std::vector<std::string> &goodNodes) -> void
+            {
+                if ((cc.isGoodCutNode[node] || cc.isTip[node]) &&
+                    ctx().node2name[cc.nodeToOrig[node]] != "_trash") {
+                    goodNodes.push_back(
+                        ctx().node2name[cc.nodeToOrig[node]] +
+                        (edgeType == EdgePartType::PLUS ? "+" : "-"));
                 }
 
-                if(!cc.isGoodCutNode[node] && !cc.isTip[node]) {
-                    visited[node].first = visited[node].second = true;
+                if (!cc.isGoodCutNode[node] && !cc.isTip[node]) {
+                    visited[node].first  = true;
+                    visited[node].second = true;
                 } else {
-                    if(edgeType == EdgePartType::MINUS) visited[node].first = true;
-                    else visited[node].second = true;
+                    if (edgeType == EdgePartType::MINUS)
+                        visited[node].first  = true;
+                    else
+                        visited[node].second = true;
                 }
 
                 std::vector<ogdf::AdjElement*> sameOutEdges, otherOutEdges;
-                getAllOutgoingEdgesOfType(cc, node, (edgeType == EdgePartType::PLUS ? EdgePartType::PLUS : EdgePartType::MINUS), sameOutEdges);
-                getAllOutgoingEdgesOfType(cc, node, (edgeType == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS), otherOutEdges);
+                getAllOutgoingEdgesOfType(cc, node,
+                    (edgeType == EdgePartType::PLUS ? EdgePartType::PLUS
+                                                    : EdgePartType::MINUS),
+                    sameOutEdges);
+                getAllOutgoingEdgesOfType(cc, node,
+                    (edgeType == EdgePartType::PLUS ? EdgePartType::MINUS
+                                                    : EdgePartType::PLUS),
+                    otherOutEdges);
 
                 bool canGoOther = !cc.isGoodCutNode[node] && !cc.isTip[node];
 
-                for(auto &adjE:sameOutEdges) {
+                for (auto &adjE : sameOutEdges) {
                     ogdf::node otherNode = adjE->twinNode();
-                    ogdf::edge e = adjE->theEdge();
-                    EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode], cc.edgeToOrig[e]);
-
-                    if((inType == EdgePartType::PLUS && !visited[otherNode].second) || (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
+                    ogdf::edge e        = adjE->theEdge();
+                    EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode],
+                                                          cc.edgeToOrig[e]);
+                    if ((inType == EdgePartType::PLUS && !visited[otherNode].second) ||
+                        (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
                         dfs(otherNode, node, inType, goodNodes);
                     }
                 }
 
-                if(canGoOther) {
-                    for(auto &adjE:otherOutEdges) {
+                if (canGoOther) {
+                    for (auto &adjE : otherOutEdges) {
                         ogdf::node otherNode = adjE->twinNode();
-                        ogdf::edge e = adjE->theEdge();
-
-                        EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode], cc.edgeToOrig[e]);
-
-                        if((inType == EdgePartType::PLUS && !visited[otherNode].second) || (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
+                        ogdf::edge e        = adjE->theEdge();
+                        EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode],
+                                                              cc.edgeToOrig[e]);
+                        if ((inType == EdgePartType::PLUS && !visited[otherNode].second) ||
+                            (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
                             dfs(otherNode, node, inType, goodNodes);
                         }
                     }
                 }
             };
 
-            for(node v : cc.Gcc->nodes) {
-                for(auto &t : {EdgePartType::PLUS, EdgePartType::MINUS}) {
-                    if(t == EdgePartType::PLUS && visited[v].second) continue;
-                    if(t == EdgePartType::MINUS && visited[v].first) continue;
+            for (node v : cc.Gcc->nodes) {
+                for (auto t : {EdgePartType::PLUS, EdgePartType::MINUS}) {
+                    if (t == EdgePartType::PLUS && visited[v].second) continue;
+                    if (t == EdgePartType::MINUS && visited[v].first)  continue;
+
                     std::vector<std::string> goodNodes;
                     dfs(v, nullptr, t, goodNodes);
 
-                    if(goodNodes.size()>=2) {
+                    if (goodNodes.size() >= 2) {
                         addSnarl(goodNodes);
                     }
                 }
-            }   
+            }
         }
+
 
 
         void buildBlockData(BlockData& blk, CcData& cc) {
@@ -5054,7 +4193,7 @@ int main(int argc, char** argv) {
         //MEM_TIME_BLOCK("I/O: read graph");
         MARK_SCOPE_MEM("io/read_graph");
         PROFILE_BLOCK("Graph reading");
-        GraphIO::readGraph();
+        ::GraphIO::readGraph();
     }
 
     if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE) {
@@ -5072,7 +4211,7 @@ int main(int argc, char** argv) {
         MARK_SCOPE_MEM("io/write_output");
         PROFILE_BLOCK("Writing output");
         TIME_BLOCK("Writing output");
-        GraphIO::writeSuperbubbles();
+        ::GraphIO::writeSuperbubbles();
     }
 
     std::cout << "Snarls found: " << snarlsFound << std::endl;

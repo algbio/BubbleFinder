@@ -1,15 +1,18 @@
 #pragma once
-#include <ogdf/basic/Graph.h>
-#include <ogdf/basic/NodeArray.h>
+
+#include "util/ogdf_all.hpp"
+
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <string>
+#include <utility>
 
 enum class EdgePartType { PLUS, MINUS, NONE };
 
 struct Context
 {
-    enum LogLevel { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
+    enum LogLevel  { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
     enum BubbleType { SUPERBUBBLE, SNARL };
 
     struct PairHash {
@@ -18,40 +21,33 @@ struct Context
         }
     };
 
-    std::string graphPath = "";
-    std::string outputPath = "";
-    bool gfaInput = false;
-    bool doubleGraph = false;
-    LogLevel logLevel = LogLevel::LOG_INFO;
-    bool timingEnabled = true;
-
-    ogdf::Graph                       G;
-
-    ogdf::NodeArray<int>              inDeg;
-    ogdf::NodeArray<int>              outDeg;
-    ogdf::NodeArray<bool>             isEntry;
-    ogdf::NodeArray<bool>             isExit;
-
-    unsigned threads = 1;
+    ogdf::Graph           G;
+    ogdf::NodeArray<int>  inDeg;
+    ogdf::NodeArray<int>  outDeg;
+    ogdf::NodeArray<bool> isEntry;
+    ogdf::NodeArray<bool> isExit;
 
 
-    size_t stackSize = 1ULL * 1024ULL * 1024ULL * 1024ULL;
+    std::string graphPath   = "";
+    std::string outputPath  = "";
+    bool        gfaInput    = false;
+    bool        doubleGraph = false;
+    LogLevel    logLevel    = LOG_INFO;
+    bool        timingEnabled = true;
+    unsigned    threads     = 1;
+    std::size_t stackSize   = 1ULL * 1024ULL * 1024ULL * 1024ULL; 
 
-    // int type = 0;
+    BubbleType  bubbleType  = SUPERBUBBLE;
 
-    BubbleType bubbleType = SUPERBUBBLE;
-
-    ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> _edge2types; // for bidirected graphs/snarls
-    ogdf::EdgeArray<std::pair<int, int>> _edge2cnt; // for bidirected graphs/snarls
-
-    ogdf::NodeArray<bool> _goodCutVertices; // for bidirected graphs/snarls
-
+    ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> _edge2types; 
+    ogdf::EdgeArray<std::pair<int, int>>                   _edge2cnt;   
+    ogdf::NodeArray<bool>                                  _goodCutVertices;
 
     std::unordered_set<std::pair<int,int>, PairHash> _edges;
 
     std::unordered_map<std::string, ogdf::node> name2node;
-    std::unordered_map<ogdf::node,std::string>  node2name;
-    std::vector<std::pair<ogdf::node,ogdf::node>> superbubbles;
+    std::unordered_map<ogdf::node, std::string> node2name;
+    std::vector<std::pair<ogdf::node, ogdf::node>> superbubbles;
 
     struct VectorStringHash {
         std::size_t operator()(const std::vector<std::string>& v) const {
@@ -72,14 +68,9 @@ struct Context
     };
 
     std::unordered_set<std::vector<std::string>, VectorStringHash, VectorStringEqual> snarls;
-    
-
 
     Context();
     Context(const Context&) = delete;
 };
-
-
-
 
 Context& ctx();

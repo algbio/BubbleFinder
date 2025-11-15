@@ -1,8 +1,6 @@
 #pragma once
-#include <ogdf/basic/Graph.h>
+#include "util/ogdf_all.hpp"
 #include "util/context.hpp"
-#include <ogdf/decomposition/BCTree.h>  
-#include <ogdf/basic/simple_graph_alg.h>
 #include <memory>
 
 // enum EdgePartType { PLUS, MINUS, NONE };
@@ -177,7 +175,7 @@ namespace GraphIO {
 
     void readStandard();
     void readGFA();
-    void drawGraph(const ogdf::Graph& G, const std::string& file);;
+    void drawGraph(const ogdf::Graph& G, const std::string& file);
 
     void writeSuperbubbles();
 }

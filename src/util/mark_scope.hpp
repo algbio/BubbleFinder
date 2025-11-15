@@ -1,4 +1,5 @@
 #pragma once
+
 #include <atomic>
 #include <chrono>
 #include <vector>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <string>
 #include <cstdio>
+
 #include "util/logger.hpp"
 #include "util/mem_time.hpp"
 
@@ -16,13 +18,12 @@ struct Stat {
     std::atomic<long long> ns{0};
     std::atomic<long long> calls{0};
 
-
     std::atomic<long long> mem_calls{0};
-    std::atomic<long long> rss_delta_sum{0}; 
-    
-    std::atomic<long long> hwm_delta_sum{0}; 
+    std::atomic<long long> rss_delta_sum{0};
+    std::atomic<long long> hwm_delta_sum{0};
+
     std::atomic<unsigned long long> rss_max{0};
-    std::atomic<unsigned long long> hwm_max{0}; 
+    std::atomic<unsigned long long> hwm_max{0};
 
     const char* name{nullptr};
 };
@@ -31,10 +32,12 @@ inline std::mutex& registry_mutex() {
     static std::mutex m;
     return m;
 }
+
 inline std::unordered_map<const char*, Stat*>& registry_map() {
     static std::unordered_map<const char*, Stat*> m;
     return m;
 }
+
 inline std::vector<Stat*>& registry_list() {
     static std::vector<Stat*> v;
     return v;
@@ -45,6 +48,7 @@ inline Stat* register_label(const char* label) {
     std::lock_guard<std::mutex> lk(registry_mutex());
     auto it = m.find(label);
     if (it != m.end()) return it->second;
+
     Stat* s = new Stat();
     s->name = label;
     m[label] = s;
@@ -59,7 +63,9 @@ struct Scope {
     size_t rss0{0}, hwm0{0};
 
     Scope(Stat* statPtr, bool enableMem)
-        : s(statPtr), doMem(enableMem), t0(std::chrono::steady_clock::now()) {
+        : s(statPtr), doMem(enableMem),
+          t0(std::chrono::steady_clock::now())
+    {
         if (doMem) {
             rss0 = memtime::currentRSSBytes();
             hwm0 = memtime::peakRSSBytes();
@@ -85,17 +91,19 @@ struct Scope {
 
             auto prevRss = s->rss_max.load(std::memory_order_relaxed);
             while (prevRss < rss1 &&
-                   !s->rss_max.compare_exchange_weak(prevRss, (unsigned long long)rss1,
-                                                     std::memory_order_relaxed)) {
-
-            }
+                   !s->rss_max.compare_exchange_weak(
+                        prevRss,
+                        static_cast<unsigned long long>(rss1),
+                        std::memory_order_relaxed))
+            {}
 
             auto prevHwm = s->hwm_max.load(std::memory_order_relaxed);
             while (prevHwm < hwm1 &&
-                   !s->hwm_max.compare_exchange_weak(prevHwm, (unsigned long long)hwm1,
-                                                     std::memory_order_relaxed)) {
-
-            }
+                   !s->hwm_max.compare_exchange_weak(
+                        prevHwm,
+                        static_cast<unsigned long long>(hwm1),
+                        std::memory_order_relaxed))
+            {}
         }
     }
 };
@@ -103,7 +111,7 @@ struct Scope {
 inline void report(std::size_t topN = 0) {
     auto &lst = registry_list();
     std::vector<Stat*> v(lst.begin(), lst.end());
-    std::sort(v.begin(), v.end(), [](const Stat* a, const Stat* b){
+    std::sort(v.begin(), v.end(), [](const Stat* a, const Stat* b) {
         return a->ns.load(std::memory_order_relaxed) > b->ns.load(std::memory_order_relaxed);
     });
     if (topN > 0 && v.size() > topN) v.resize(topN);
@@ -114,22 +122,22 @@ inline void report(std::size_t topN = 0) {
         const long long calls  = s->calls.load(std::memory_order_relaxed);
         const long long mcalls = s->mem_calls.load(std::memory_order_relaxed);
 
-        const double rssSumMB  = s->rss_delta_sum.load(std::memory_order_relaxed) / (1024.0*1024.0);
-        const double hwmSumMB  = s->hwm_delta_sum.load(std::memory_order_relaxed) / (1024.0*1024.0);
-        const double hwmMaxMB  = s->hwm_max.load(std::memory_order_relaxed) / (1024.0*1024.0);
+        const double rssSumMB  = s->rss_delta_sum.load(std::memory_order_relaxed) / (1024.0 * 1024.0);
+        const double hwmSumMB  = s->hwm_delta_sum.load(std::memory_order_relaxed) / (1024.0 * 1024.0);
+        const double hwmMaxMB  = s->hwm_max.load(std::memory_order_relaxed) / (1024.0 * 1024.0);
 
         const char* name = (s->name ? s->name : "(null)");
 
-        logger::info("  {:8.3f}s | {:8} calls | mem {:7} | ΔRSSsum {:9.2f} MiB | ΔHWMsum {:9.2f} MiB | HWMmax {:9.2f} MiB | {}",
-                     secs, calls, mcalls, rssSumMB, hwmSumMB, hwmMaxMB, name);
+        logger::info(
+            "  {:8.3f}s | {:8} calls | mem {:7} | ΔRSSsum {:9.2f} MiB | ΔHWMsum {:9.2f} MiB | HWMmax {:9.2f} MiB | {}",
+            secs, calls, mcalls, rssSumMB, hwmSumMB, hwmMaxMB, name);
     }
 }
-
 
 inline void report_to_json(const std::string& path, std::size_t topN = 0) {
     auto &lst = registry_list();
     std::vector<Stat*> v(lst.begin(), lst.end());
-    std::sort(v.begin(), v.end(), [](const Stat* a, const Stat* b){
+    std::sort(v.begin(), v.end(), [](const Stat* a, const Stat* b) {
         return a->ns.load(std::memory_order_relaxed) > b->ns.load(std::memory_order_relaxed);
     });
     if (topN > 0 && v.size() > topN) v.resize(topN);
@@ -154,7 +162,8 @@ inline void report_to_json(const std::string& path, std::size_t topN = 0) {
 
         const char* name = (s->name ? s->name : "(null)");
 
-        std::fprintf(f,
+        std::fprintf(
+            f,
             "    {\"label\": \"%s\", "
             "\"seconds\": %.9f, "
             "\"calls\": %lld, "
@@ -162,8 +171,7 @@ inline void report_to_json(const std::string& path, std::size_t topN = 0) {
             "\"rss_delta_sum_bytes\": %lld, "
             "\"hwm_delta_sum_bytes\": %lld, "
             "\"rss_max_bytes\": %llu, "
-            "\"hwm_max_bytes\": %llu}"
-            "%s\n",
+            "\"hwm_max_bytes\": %llu}%s\n",
             name, secs, calls, mcalls,
             rssSum, hwmSum, rssMax, hwmMax,
             (i + 1 < v.size()) ? "," : "");
@@ -173,21 +181,19 @@ inline void report_to_json(const std::string& path, std::size_t topN = 0) {
     logger::info("Detailed time marks written to JSON {}", path);
 }
 
-}
-
-
-#define MARK_JOIN_IMPL(a,b) a##b
-#define MARK_JOIN(a,b)      MARK_JOIN_IMPL(a,b)
+} 
+#define MARK_JOIN_IMPL(a, b) a##b
+#define MARK_JOIN(a, b)      MARK_JOIN_IMPL(a, b)
 
 #if defined(__COUNTER__)
 #  define MARK_UNIQ() __COUNTER__
 #else
-#  define MARK_UNIQ() __LINE__  
+#  define MARK_UNIQ() __LINE__
 #endif
 
 #define MARK_SCOPE_MEM(label_literal) \
     MARK_SCOPE_MEM_IMPL(label_literal, MARK_UNIQ())
 
-#define MARK_SCOPE_MEM_IMPL(label_literal, N) \
-    static mark::Stat* MARK_JOIN(__mark_mstat_, N) = mark::register_label(label_literal); \
-    mark::Scope        MARK_JOIN(__mark_mscope_, N)(MARK_JOIN(__mark_mstat_, N), true)
+#define MARK_SCOPE_MEM_IMPL(label_literal, N)                                      \
+    static mark::Stat* MARK_JOIN(mark_mstat_, N) = mark::register_label(label_literal); \
+    mark::Scope        MARK_JOIN(mark_mscope_, N)(MARK_JOIN(mark_mstat_, N), true)

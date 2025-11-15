@@ -1,8 +1,6 @@
 #include "graph_io.hpp"
 #include "util/context.hpp"
 #include "util/timer.hpp"
-#include <ogdf/energybased/FMMMLayout.h> 
-#include <ogdf/fileformats/GraphIO.h>
 #include <fstream>
 #include <regex>
 #include <unordered_set>
