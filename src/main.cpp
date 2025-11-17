@@ -70,6 +70,9 @@
 #include <errno.h>
 
 
+bool VERBOSE = false;
+#define VLOG if (VERBOSE) std::cerr
+
 namespace metrics {
 
     enum class Phase : uint8_t { IO = 0, BUILD = 1, LOGIC = 2, COUNT = 3 };
@@ -2840,9 +2843,9 @@ namespace solver {
                 else if (std::strcmp(tag, "E")   == 0) g_cnt_E++;
             }
 
-            std::cerr << "[SNARL][" << (tag ? tag : "?") << "] ";
-            for (auto &x : s) std::cerr << x << " ";
-            std::cerr << "\n";
+            VLOG << "[SNARL][" << (tag ? tag : "?") << "] ";
+            for (auto &x : s) VLOG << x << " ";
+            VLOG << "\n";
 
             addSnarl(std::move(s));
         }
@@ -3299,7 +3302,7 @@ namespace solver {
                 }
 
                 if (!state.s || !state.t) {
-                    std::cerr << "[snarls] processEdge: impossible de trouver les pôles pour "
+                    VLOG << "[snarls] processEdge: impossible de trouver les pôles pour "
                             << "l'arête SPQR (" << A->index() << " -> " << B->index() << ")\n";
                     return;
                 }
@@ -3354,7 +3357,7 @@ namespace solver {
                     const EdgeDPState child = dp[treeE].down;
 
                     if (!child.s || !child.t) {
-                        std::cerr << "[snarls] processEdge: état DP enfant incomplet sur treeE="
+                        VLOG << "[snarls] processEdge: état DP enfant incomplet sur treeE="
                                 << treeE->index() << "\n";
                         continue;
                     }
@@ -3561,11 +3564,10 @@ namespace solver {
                 const Skeleton& skel      = blk.spqr->skeleton(sNode);
                 const Graph&    skelGraph = skel.getGraph();
                 const Graph&    T         = blk.spqr->tree();
-
-                std::cerr << "[SPQR-S] ==== solveS on tree node " << sNode->index() << " ====\n";
+                VLOG << "[SPQR-S] ==== solveS on tree node " << sNode->index() << " ====\n";
 
                 if (skelGraph.numberOfNodes() == 0) {
-                    std::cerr << "[SPQR-S]  skeleton empty, abort\n";
+                    VLOG << "[SPQR-S]  skeleton empty, abort\n";
                     return;
                 }
 
@@ -3576,7 +3578,7 @@ namespace solver {
                     ogdf::node B  = skel.twinTreeNode(e);
                     auto itTree   = blk.skel2tree.find(e);
                     if (itTree == blk.skel2tree.end() || !(itTree->second)) {
-                        std::cerr << "[SPQR-S]  virtual edge " << e->index()
+                        VLOG << "[SPQR-S]  virtual edge " << e->index()
                                 << " has no tree edge\n";
                         continue;
                     }
@@ -3595,7 +3597,7 @@ namespace solver {
                 {
                     ogdf::node rootSkel = skelGraph.firstNode();
                     if (!rootSkel || !rootSkel->firstAdj()) {
-                        std::cerr << "[SPQR-S]  skeleton has no edges, abort\n";
+                        VLOG << "[SPQR-S]  skeleton has no edges, abort\n";
                         return;
                     }
 
@@ -3638,19 +3640,19 @@ namespace solver {
                     adjEntriesSkel.size() != nodesInOrderGcc.size() ||
                     adjEdgesG_.size()     != nodesInOrderGcc.size())
                 {
-                    std::cerr << "[SPQR-S]  inconsistent sizes: nodes=" << nodesInOrderGcc.size()
+                    VLOG << "[SPQR-S]  inconsistent sizes: nodes=" << nodesInOrderGcc.size()
                             << " adjSkel=" << adjEntriesSkel.size()
                             << " adjG="    << adjEdgesG_.size() << "\n";
                     return;
                 }
 
-                std::cerr << "[SPQR-S]  cycle order (Gcc/orig names):";
+                VLOG << "[SPQR-S]  cycle order (Gcc/orig names):";
                 for (size_t i = 0; i < nodesInOrderGcc.size(); ++i) {
                     ogdf::node vGcc = nodesInOrderGcc[i];
                     ogdf::node vG   = cc.nodeToOrig[vGcc];
-                    std::cerr << " " << C.node2name[vG];
+                    VLOG << " " << C.node2name[vG];
                 }
-                std::cerr << "\n";
+                VLOG << "\n";
 
                 std::vector<std::string> res;
 
@@ -3739,7 +3741,7 @@ namespace solver {
                                 t0 != t1);
 
 
-                    std::cerr << "[SPQR-S]  node " << uname
+                    VLOG << "[SPQR-S]  node " << uname
                             << " (cutNode=" << cc.isCutNode[uGcc]
                             << " badCutCount=" << cc.badCutCount[uGcc]
                             << " isTip=" << cc.isTip[uGcc]
@@ -3818,25 +3820,25 @@ namespace solver {
                 }
 
                 if (res.size() % 2 != 0) {
-                    std::cerr << "[SPQR-S]  WARNING: res.size()="
+                    VLOG << "[SPQR-S]  WARNING: res.size()="
                             << res.size() << " is odd\n";
                     return;
                 }
 
                 if (res.size() > 2) {
-                    std::cerr << "[SPQR-S]  final cut sequence:";
-                    for (auto &x : res) std::cerr << " " << x;
-                    std::cerr << "\n";
+                    VLOG << "[SPQR-S]  final cut sequence:";
+                    for (auto &x : res) VLOG << " " << x;
+                    VLOG << "\n";
 
                     for (size_t i = 1; i < res.size(); i += 2) {
                         std::vector<std::string> v = { res[i], res[(i+1) % res.size()] };
-                        std::cerr << "[SPQR-S]  emitting S-snarl: "
+                        VLOG << "[SPQR-S]  emitting S-snarl: "
                                 << v[0] << "  " << v[1] << "\n";
                         addSnarlTagged("S", std::move(v));
                     }
                 }
 
-                std::cerr << "[SPQR-S] ==== end solveS on tree node "
+                VLOG << "[SPQR-S] ==== end solveS on tree node "
                         << sNode->index() << " ====\n";
             }
 
@@ -3875,7 +3877,7 @@ namespace solver {
                 std::string name1 = C.node2name[cc.nodeToOrig[pole1Gcc]];
 
 
-                std::cerr << "[SPQR-P] node " << pNode->index()
+                VLOG << "[SPQR-P] node " << pNode->index()
                         << " poles: " << name0 << " , " << name1 << "\n";
 
 
@@ -3891,7 +3893,7 @@ namespace solver {
                     if (cc.badCutCount[pole0Gcc] >= 2 ||
                         (cc.badCutCount[pole0Gcc] == 1 && cc.lastBad[pole0Gcc] != blk.bNode))
                     {
-                        std::cerr << "[SPQR-P]  rejected by cut-node filter at pole0\n";
+                        VLOG << "[SPQR-P]  rejected by cut-node filter at pole0\n";
                         return;
                     }
                 }
@@ -3899,7 +3901,7 @@ namespace solver {
                     if (cc.badCutCount[pole1Gcc] >= 2 ||
                         (cc.badCutCount[pole1Gcc] == 1 && cc.lastBad[pole1Gcc] != blk.bNode))
                     {
-                        std::cerr << "[SPQR-P]  rejected by cut-node filter at pole1\n";
+                        VLOG << "[SPQR-P]  rejected by cut-node filter at pole1\n";
                         return;
                     }
                 }
@@ -3928,24 +3930,24 @@ namespace solver {
 
                     if (state.s == pole0Blk) {
                         if ((state.localMinusS > 0) + (state.localPlusS > 0) == 2) {
-                            std::cerr << "[SPQR-P]  pole0 mixed sign on edge " << treeE->index() << "\n";
+                            VLOG << "[SPQR-P]  pole0 mixed sign on edge " << treeE->index() << "\n";
                             return;
                         }
                     } else {
                         if ((state.localMinusT > 0) + (state.localPlusT > 0) == 2) {
-                            std::cerr << "[SPQR-P]  pole0 mixed sign via T on edge " << treeE->index() << "\n";
+                            VLOG << "[SPQR-P]  pole0 mixed sign via T on edge " << treeE->index() << "\n";
                             return;
                         }
                     }
 
                     if (state.s == pole1Blk) {
                         if ((state.localMinusS > 0) + (state.localPlusS > 0) == 2) {
-                            std::cerr << "[SPQR-P]  pole1 mixed sign on edge " << treeE->index() << "\n";
+                            VLOG << "[SPQR-P]  pole1 mixed sign on edge " << treeE->index() << "\n";
                             return;
                         }
                     } else {
                         if ((state.localMinusT > 0) + (state.localPlusT > 0) == 2) {
-                            std::cerr << "[SPQR-P]  pole1 mixed sign via T on edge " << treeE->index() << "\n";
+                            VLOG << "[SPQR-P]  pole1 mixed sign via T on edge " << treeE->index() << "\n";
                             return;
                         }
                     }
@@ -4034,7 +4036,7 @@ namespace solver {
                                     C.node2name[cc.nodeToOrig[pole1Gcc]] +
                                     (right == EdgePartType::PLUS ? "+" : "-");
 
-                                std::cerr << "[SPQR-P]  found P-snarl candidate " << s
+                                VLOG << "[SPQR-P]  found P-snarl candidate " << s
                                         << "  " << t << "\n";
 
                                 std::vector<std::string> v = { s, t };
