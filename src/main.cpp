@@ -63,6 +63,13 @@
 #endif
 #include <sys/resource.h>
 
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
+
+
 namespace metrics {
 
     enum class Phase : uint8_t { IO = 0, BUILD = 1, LOGIC = 2, COUNT = 3 };
@@ -182,6 +189,7 @@ static void usage(const char* prog) {
     std::cerr << "Usage: " << prog
               << " -g <graphFile> -o <outputFile> [--gfa] "
               << "[--superbubbles | --snarls] "
+              << "[--block-stats <file>] "
               << "[-j <threads>] "
               << "[--report-json <file>] "
               << "[-m <stack size in bytes>]\n";
@@ -200,48 +208,6 @@ static std::string nextArgOrDie(const std::vector<std::string>& a, std::size_t& 
 }
 
 
-
-void readArgs(int argc, char** argv) {
-    auto& C = ctx();
-
-    std::vector<std::string> args(argv, argv+argc);
-
-    for (std::size_t i = 1; i < args.size(); ++i) {
-        const std::string& s = args[i];
-
-        if (s == "-g") {
-            C.graphPath = nextArgOrDie(args, i, "-g");
-
-        } else if (s == "-o") {
-            C.outputPath = nextArgOrDie(args, i, "-o");
-
-        } else if (s == "--gfa") {
-            C.gfaInput = true;
-
-        } else if (s == "--report-json") {
-            g_report_json_path = nextArgOrDie(args, i, "--report-json");
-
-        } else if (s == "-h" || s == "--help") {
-            usage(args[0].c_str());
-
-        } else if (s == "-j") {
-            C.threads = std::stoi(nextArgOrDie(args, i, "-j"));
-
-        } else if (s == "--superbubbles") {
-            C.bubbleType = Context::BubbleType::SUPERBUBBLE;
-
-        } else if (s == "--snarls") {
-            C.bubbleType = Context::BubbleType::SNARL;
-
-        } else if(s == "-m") {
-            C.stackSize = std::stoull(nextArgOrDie(args, i, "-m"));
-
-        } else {
-            std::cerr << "Unknown argument: " << s << "\n";
-            usage(args[0].c_str());
-        }
-    }
-}
 
 
 
@@ -306,6 +272,117 @@ struct OgdfAcc {
 
 
 namespace solver {
+
+    namespace blockstats {
+
+        bool g_run_block_stats = false;      
+        std::string g_output_path;           
+
+        void compute_block_sizes_and_write()
+        {
+            auto &C = ctx();
+            ogdf::Graph &G = C.G;
+
+            if (G.numberOfNodes() == 0) {
+                std::cerr << "[blockstats] graph is empty, nothing to do\n";
+                return;
+            }
+            // 1) connected components of the overall graph
+            ogdf::NodeArray<int> compIdx(G);
+            int nCC = ogdf::connectedComponents(G, compIdx);
+
+            std::vector<std::vector<ogdf::node>> bucket(nCC);
+            std::vector<std::vector<ogdf::edge>> edgeBuckets(nCC);
+
+            for (ogdf::node v : G.nodes) {
+                bucket[compIdx[v]].push_back(v);
+            }
+            for (ogdf::edge e : G.edges) {
+                edgeBuckets[compIdx[e->source()]].push_back(e);
+            }
+
+            std::vector<size_t> blockSizes;
+            blockSizes.reserve(G.numberOfNodes());  
+
+
+            // 2) For each component, rebuild Gcc + BCTree and collect the block sizes
+
+            for (int cid = 0; cid < nCC; ++cid) {
+
+                ogdf::Graph Gcc;
+                ogdf::NodeArray<ogdf::node> nodeToOrig(Gcc, nullptr);
+                ogdf::EdgeArray<ogdf::edge> edgeToOrig(Gcc, nullptr);
+
+                std::unordered_map<ogdf::node, ogdf::node> orig_to_cc;
+                orig_to_cc.reserve(bucket[cid].size());
+
+                for (ogdf::node vG : bucket[cid]) {
+                    ogdf::node vC = Gcc.newNode();
+                    nodeToOrig[vC] = vG;
+                    orig_to_cc[vG] = vC;
+                }
+
+                for (ogdf::edge eG : edgeBuckets[cid]) {
+                    ogdf::node uC = orig_to_cc[eG->source()];
+                    ogdf::node vC = orig_to_cc[eG->target()];
+                    ogdf::edge eC = Gcc.newEdge(uC, vC);
+                    edgeToOrig[eC] = eG;
+                }
+
+                ogdf::BCTree bc(Gcc);
+
+                for (ogdf::node bNode : bc.bcTree().nodes) {
+                    if (bc.typeOfBNode(bNode) != ogdf::BCTree::BNodeType::BComp)
+                        continue;
+
+                    std::vector<ogdf::edge> edgesCc;
+                    edgesCc.reserve(bc.hEdges(bNode).size());
+                    for (ogdf::edge hE : bc.hEdges(bNode)) {
+                        ogdf::edge eCc = bc.original(hE);
+                        if (eCc) edgesCc.push_back(eCc);
+                    }
+
+                    std::sort(edgesCc.begin(), edgesCc.end(),
+                            [](ogdf::edge a, ogdf::edge b) { return a->index() < b->index(); });
+                    edgesCc.erase(std::unique(edgesCc.begin(), edgesCc.end(),
+                                            [](ogdf::edge a, ogdf::edge b) { return a->index() == b->index(); }),
+                                edgesCc.end());
+
+                    std::vector<ogdf::node> vertsCc;
+                    vertsCc.reserve(edgesCc.size() * 2);
+                    for (ogdf::edge eCc : edgesCc) {
+                        vertsCc.push_back(eCc->source());
+                        vertsCc.push_back(eCc->target());
+                    }
+                    std::sort(vertsCc.begin(), vertsCc.end(),
+                            [](ogdf::node a, ogdf::node b) { return a->index() < b->index(); });
+                    vertsCc.erase(std::unique(vertsCc.begin(), vertsCc.end()), vertsCc.end());
+
+                    size_t blockSize = vertsCc.size() + edgesCc.size();      
+
+                    blockSizes.push_back(blockSize);
+                }
+            }
+
+            std::ofstream ofs(g_output_path);
+            if (!ofs) {
+                std::cerr << "[blockstats] cannot open '" << g_output_path
+                        << "' for writing block sizes\n";
+                return;
+            }
+
+            for (size_t s : blockSizes) {
+                ofs << s << '\n';
+            }
+
+            ofs.close();
+
+            std::cerr << "[blockstats] wrote " << blockSizes.size()
+                    << " block sizes to " << g_output_path << "\n";
+        }
+
+    } 
+
     namespace superbubble {
         namespace {
             thread_local std::vector<std::pair<ogdf::node, ogdf::node>> *tls_superbubble_collector = nullptr;
@@ -592,34 +669,46 @@ namespace solver {
             }
         }
 
-
         void dfsSPQR_order(
-            SPQRTree &spqr,
-            std::vector<ogdf::edge> &edge_order, // order of edges to process
+            ogdf::StaticSPQRTree &spqr,
+            std::vector<ogdf::edge> &edge_order, 
             std::vector<ogdf::node> &node_order,
-            node curr = nullptr,
-            node parent = nullptr,
-            edge e = nullptr
+            ogdf::node curr = nullptr,
+            ogdf::node parent = nullptr,
+            ogdf::edge e = nullptr
         ) {
-            //PROFILE_FUNCTION();
-            if(curr == nullptr) {
+            PROFILE_FUNCTION();
+            if (curr == nullptr) {
                 curr = spqr.rootNode();
                 parent = curr;
                 dfsSPQR_order(spqr, edge_order, node_order, curr, parent);
                 return;
             }
 
-
-
-            // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
             node_order.push_back(curr);
-            for (adjEntry adj : curr->adjEntries) {
-                node child = adj->twinNode();
+
+            std::vector<std::pair<ogdf::node, ogdf::edge>> children;
+            children.reserve(curr->degree());
+            for (ogdf::adjEntry adj = curr->firstAdj(); adj; adj = adj->succ()) {
+                ogdf::node child = adj->twinNode();
                 if (child == parent) continue;
-                dfsSPQR_order(spqr, edge_order, node_order, child, curr, adj->theEdge());
+                children.emplace_back(child, adj->theEdge());
             }
-            if(curr!=parent) edge_order.push_back(e);
+            std::sort(children.begin(), children.end(),
+                    [](const auto &A, const auto &B){
+                        if (A.first->index() != B.first->index())
+                            return A.first->index() < B.first->index();
+                        return A.second->index() < B.second->index();
+                    });
+
+            for (auto &ch : children) {
+                dfsSPQR_order(spqr, edge_order, node_order, ch.first, curr, ch.second);
+            }
+
+            if (curr != parent) edge_order.push_back(e);
         }
+
+
 
 
 
@@ -2460,7 +2549,6 @@ namespace solver {
   
     }
 
-
     namespace snarls {
         static inline uint64_t nowMicros() {
             using namespace std::chrono;
@@ -2556,23 +2644,92 @@ namespace solver {
 
             static std::mutex g_snarls_mtx;
 
-            inline void flushThreadLocalSnarls(std::vector<std::vector<std::string>>& local) {
-                auto &C = ctx();
-                std::lock_guard<std::mutex> lk(g_snarls_mtx);
-                for (auto &s : local) {
-                    snarlsFound += s.size() * (s.size() - 1) / 2;
-                    C.snarls.insert(s);
-
-
-                    // std::sort(s.begin(), s.end());
-                    // for(size_t i = 0; i < s.size(); i++) {
-                    //     for(size_t j = i + 1; j < s.size(); j++) {
-                    //         std::string source = s[i], sink = s[j];
-                    //         // if(source == "_trash+" || sink == "_trash+") continue;
-                    //         C.snarls.insert({source, sink});
-                    //     }
-                    // }
+            static inline bool write_all_fd(int fd, const void* buf, size_t n) {
+                const uint8_t* p = static_cast<const uint8_t*>(buf);
+                size_t done = 0;
+                while (done < n) {
+                    ssize_t w = ::write(fd, p + done, n - done);
+                    if (w < 0) {
+                        if (errno == EINTR) continue;
+                        return false;
+                    }
+                    if (w == 0) return false;
+                    done += static_cast<size_t>(w);
                 }
+                return true;
+            }
+
+            static inline bool read_all_fd(int fd, void* buf, size_t n) {
+                uint8_t* p = static_cast<uint8_t*>(buf);
+                size_t done = 0;
+                while (done < n) {
+                    ssize_t r = ::read(fd, p + done, n - done);
+                    if (r < 0) {
+                        if (errno == EINTR) continue;
+                        return false;
+                    }
+                    if (r == 0) return false;
+                    done += static_cast<size_t>(r);
+                }
+                return true;
+            }
+
+            static bool g_is_child_process = false;
+            static int g_snarl_out_fd = -1;
+            static std::string g_snarl_out_path;
+            static std::string g_snarl_counts_path;  
+
+            inline void flushThreadLocalSnarls(std::vector<std::vector<std::string>>& local) {
+                if (local.empty()) return;
+
+                if (!g_is_child_process) {
+                    auto &C = ctx();
+                    std::lock_guard<std::mutex> lk(g_snarls_mtx);
+                    for (auto &s : local) {
+                        std::sort(s.begin(), s.end());
+                        snarlsFound += s.size() * (s.size() - 1) / 2;
+                        C.snarls.insert(s);
+                    }
+                    local.clear();
+                    return;
+                }
+
+                if (g_snarl_out_fd < 0) {
+                    std::string base = "/dev/shm";
+                    int test = ::access(base.c_str(), W_OK);
+                    if (test != 0) base = "/tmp";
+                    g_snarl_out_path = base + "/snarls_" + std::to_string(::getpid()) + ".bin";
+                    g_snarl_out_fd = ::open(g_snarl_out_path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+                    if (g_snarl_out_fd < 0) {
+                        std::fprintf(stderr, "[child %d] open(%s) failed: %s\n",
+                                    (int)::getpid(), g_snarl_out_path.c_str(), std::strerror(errno));
+                        _exit(111);
+                    }
+                }
+
+                for (auto &sn : local) {
+                    std::sort(sn.begin(), sn.end());
+
+                    uint32_t k = static_cast<uint32_t>(sn.size());
+                    if (!write_all_fd(g_snarl_out_fd, &k, sizeof(k))) {
+                        std::fprintf(stderr, "[child %d] write(k) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                        _exit(112);
+                    }
+                    for (const auto &s : sn) {
+                        uint32_t len = static_cast<uint32_t>(s.size());
+                        if (!write_all_fd(g_snarl_out_fd, &len, sizeof(len))) {
+                            std::fprintf(stderr, "[child %d] write(len) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                            _exit(113);
+                        }
+                        if (len > 0) {
+                            if (!write_all_fd(g_snarl_out_fd, s.data(), len)) {
+                                std::fprintf(stderr, "[child %d] write(data) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                                _exit(114);
+                            }
+                        }
+                    }
+                }
+
                 local.clear();
             }
 
@@ -2587,96 +2744,121 @@ namespace solver {
             std::unordered_set<std::pair<std::string, std::string>, pair_hash> tls_snarls_collector;
         }
 
-        static void tryCommitSnarl(std::vector<std::string> s) {
-            auto &C = ctx();
-            // PROFILE_BLOCK("tryCommitSnarl");
-
-
-            // if(std::count(s[0].begin(), s[0].end(), ':') == 0) {
-            std::lock_guard<std::mutex> lk(g_snarls_mtx);
-
-            snarlsFound += s.size()*(s.size()-1)/2;
-            // }
-            // std::cout << "S SIZE: " << s.size() << std::endl;
-            // std::sort(s.begin(), s.end());
-            // for (size_t i = 0; i < s.size(); i++)
-            // {
-            //     for (size_t j = i + 1; j < s.size(); j++)
-            //     {
-
-            //         std::string source = s[i], sink = s[j];
-            //         if(source == "_trash+" || sink == "_trash+") continue;
-            C.snarls.insert(std::move(s));
-                    // C.snarls.insert({source, sink});
-            //     }
-            // }
-            
-            // C.snarls.push_back(s);
-
-
-            // if(s.size()==2) {
-            //     // string source = s[0], sink = s[1];
-            //     // if(source>sink) std::swap(source, sink);
-    
-            //     // if(tls_snarls_collector.count({source, sink})) return 0;
-    
-            //     // tls_snarls_collector.insert({source, sink});
-            //     // C.isEntry[source] = true;
-            //     // C.isExit[sink] = true;
-            //     C.snarls.push_back({source, sink});
-            //     // std::cout << "Added " << C.node2name[source] << " " << C.node2name[sink] << " as superbubble\n";
-            //     return true;
-            // } else if(s.size()>2) {
-            //     C.snarls.push_back(s);
-            // }
-
+        static inline void normalize_snarl(std::vector<std::string>& s) {
+            std::sort(s.begin(), s.end());
         }
+        static void tryCommitSnarl(std::vector<std::string> s) {
+            std::sort(s.begin(), s.end()); 
 
+            if (g_is_child_process) {
+                if (tls_snarl_buffer) {
+                    tls_snarl_buffer->push_back(std::move(s));
+                    return;
+                }
 
+                if (g_snarl_out_fd < 0) {
+                    std::string base = "/dev/shm";
+                    int test = ::access(base.c_str(), W_OK);
+                    if (test != 0) base = "/tmp";
+                    g_snarl_out_path = base + "/snarls_" + std::to_string(::getpid()) + ".bin";
+                    g_snarl_out_fd = ::open(g_snarl_out_path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+                    if (g_snarl_out_fd < 0) {
+                        std::fprintf(stderr, "[child %d] open(%s) failed: %s\n",
+                                    (int)::getpid(), g_snarl_out_path.c_str(), std::strerror(errno));
+                        _exit(111);
+                    }
+                }
 
-
-        // void addSnarl(std::string source, std::string sink) {
-        //     // if (tls_snarls_collector) {
-        //     //     tls_superbubble_collector->emplace_back(source, sink);
-        //     //         return;
-        //     //     }
-        //     // Otherwise, commit directly to global state (sequential behavior)
-        //     tryCommitSnarl(source, sink);
-
-
-        //     // if(C.isEntry[source] || C.isExit[sink]) {
-        //     //     std::cerr << ("Superbubble already exists for source %s and sink %s", C.node2name[source].c_str(), C.node2name[sink].c_str());
-        //     //     return;
-        //     // }
-        //     // C.isEntry[source] = true;
-        //     // C.isExit[sink] = true;
-        //     // C.superbubbles.emplace_back(source, sink);
-
-        // }
-
-        void addSnarl(std::vector<std::string> s) {
-            // if (tls_snarls_collector) {
-            //     tls_superbubble_collector->emplace_back(source, sink);
-            //         return;
-            //     }
-            // Otherwise, commit directly to global state (sequential behavior)
-            // tryCommitSnarl(source, sink);
-            if (tls_snarl_buffer) {
-                tls_snarl_buffer->push_back(std::move(s));
+                uint32_t k = static_cast<uint32_t>(s.size());
+                if (!write_all_fd(g_snarl_out_fd, &k, sizeof(k))) {
+                    std::fprintf(stderr, "[child %d] write(k) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                    _exit(112);
+                }
+                for (auto &str : s) {
+                    uint32_t len = static_cast<uint32_t>(str.size());
+                    if (!write_all_fd(g_snarl_out_fd, &len, sizeof(len))) {
+                        std::fprintf(stderr, "[child %d] write(len) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                        _exit(113);
+                    }
+                    if (len > 0) {
+                        if (!write_all_fd(g_snarl_out_fd, str.data(), len)) {
+                            std::fprintf(stderr, "[child %d] write(data) failed: %s\n", (int)::getpid(), std::strerror(errno));
+                            _exit(114);
+                        }
+                    }
+                }
                 return;
             }
-            tryCommitSnarl(std::move(s));
 
-            // if(C.isEntry[source] || C.isExit[sink]) {
-            //     std::cerr << ("Superbubble already exists for source %s and sink %s", C.node2name[source].c_str(), C.node2name[sink].c_str());
-            //     return;
-            // }
-            // C.isEntry[source] = true;
-            // C.isExit[sink] = true;
-            // C.superbubbles.emplace_back(source, sink);
+            auto &C = ctx();
+            std::lock_guard<std::mutex> lk(g_snarls_mtx);
+            snarlsFound += s.size() * (s.size() - 1) / 2;
+            C.snarls.insert(std::move(s));
+        }
+
+
+        std::atomic<uint64_t> g_cnt_cut{0}, g_cnt_S{0}, g_cnt_P{0}, g_cnt_RR{0}, g_cnt_E{0};
+
+        struct SnarlTypeCounts {
+            uint64_t cut;
+            uint64_t S;
+            uint64_t P;
+            uint64_t RR;
+            uint64_t E;
+
+        };  
+        void addSnarl(std::vector<std::string> s) {
+                // if (tls_snarls_collector) {
+                //     tls_superbubble_collector->emplace_back(source, sink);
+                //         return;
+                //     }
+                // Otherwise, commit directly to global state (sequential behavior)
+                // tryCommitSnarl(source, sink);
+                if (tls_snarl_buffer) {
+                    tls_snarl_buffer->push_back(std::move(s));
+                    return;
+                }
+                tryCommitSnarl(std::move(s));
+
+                // if(C.isEntry[source] || C.isExit[sink]) {
+                //     std::cerr << ("Superbubble already exists for source %s and sink %s", C.node2name[source].c_str(), C.node2name[sink].c_str());
+                //     return;
+                // }
+                // C.isEntry[source] = true;
+                // C.isExit[sink] = true;
+                // C.superbubbles.emplace_back(source, sink);
 
         }
 
+
+        inline void addSnarlTagged(const char *tag, std::vector<std::string> s) {
+            if (tag) {
+                if      (std::strcmp(tag, "CUT") == 0) g_cnt_cut++;
+                else if (std::strcmp(tag, "S")   == 0) g_cnt_S++;
+                else if (std::strcmp(tag, "P")   == 0) g_cnt_P++;
+                else if (std::strcmp(tag, "RR")  == 0) g_cnt_RR++;
+                else if (std::strcmp(tag, "E")   == 0) g_cnt_E++;
+            }
+
+            std::cerr << "[SNARL][" << (tag ? tag : "?") << "] ";
+            for (auto &x : s) std::cerr << x << " ";
+            std::cerr << "\n";
+
+            addSnarl(std::move(s));
+        }
+        
+
+
+        inline void print_snarl_type_counters() {
+            if (g_is_child_process) return; 
+            std::cout << "[SNARLS] by type: "
+                    << "CUT=" << g_cnt_cut.load()
+                    << " S="   << g_cnt_S.load()
+                    << " P="   << g_cnt_P.load()
+                    << " RR="  << g_cnt_RR.load()
+                    << " E="   << g_cnt_E.load()
+                    << std::endl;
+        }
 
 
         struct BlockData {
@@ -2684,27 +2866,21 @@ namespace solver {
             ogdf::NodeArray<ogdf::node> toCc;
             ogdf::NodeArray<ogdf::node> nodeToOrig;
             ogdf::EdgeArray<ogdf::edge> edgeToOrig;
-            
 
             std::unique_ptr<ogdf::StaticSPQRTree> spqr;
-            // std::unique_ptr<ogdf::LCA> lcaSpqrTree;
-
             ogdf::NodeArray<ogdf::node> blkToSkel;
 
-
-            std::unordered_map<ogdf::edge, ogdf::edge> skel2tree; // mapping from skeleton virtual edge to tree edge
-            ogdf::NodeArray<ogdf::node> parent; // mapping from node to parent in SPQR tree, it is possible since it is rooted, 
-                                                // parent of root is nullptr
-
-            // ogdf::NodeArray<ogdf::node> nodeBlkToSkel;
-            // ogdf::NodeArray<ogdf::node> edgeBlkToSkel;
-
-            // std::unordered_set<std::pair<std::string, std::string>, pair_hash> _adjInS;
+            std::unordered_map<ogdf::edge, ogdf::edge> skel2tree; 
+            ogdf::NodeArray<ogdf::node> parent; 
 
             ogdf::node bNode {nullptr};
 
             bool isAcycic {true};
-        
+
+            // NOUVEAU : degrés + / - dans ce bloc H
+            ogdf::NodeArray<int> degPlusBlk;
+            ogdf::NodeArray<int> degMinusBlk;
+            
             BlockData() {}
         };
 
@@ -2725,14 +2901,7 @@ namespace solver {
             ogdf::NodeArray<int> badCutCount; // number of adjacent bad blocks for cut nodes
             
             ogdf::EdgeArray<ogdf::edge> auxToOriginal;
-            // ogdf::NodeArray<std::array<std::vector<ogdf::node>, 3>> cutToBlocks; // 0-all -, 1 - all +, 2 - mixed
             
-            
-            // ogdf::NodeArray<ogdf::node> toCopy;
-            // ogdf::NodeArray<ogdf::node> toBlk;
-
-
-
 
             std::unique_ptr<ogdf::BCTree> bc;
             std::vector<BlockData> blocks;
@@ -2754,17 +2923,193 @@ namespace solver {
             }
         }
 
-        // Given block "vB" and graph node "uG", find all outgoing edges from "uG" inside the block with out type "type"
+
+        static bool g_bf_adj_built = false;
+
+        struct BfAdjEntry {
+            int nb;               
+            EdgePartType here;    
+            EdgePartType nbType;  
+        };
+
+
+        static bool bfs_split_block(
+            const std::vector<std::vector<BfAdjEntry>>& adj,
+            int iu, int iv,
+            EdgePartType d_u, EdgePartType d_v,
+            std::vector<int>* comp 
+        ) {
+            const int N = (int)adj.size();
+            const int X  = iu;       
+            const int Y  = iv;       
+            const int Xp = N;        
+            const int Yp = N + 1;    
+
+            std::vector<char> visited(N + 2, 0);
+            std::queue<int> q;
+
+            visited[X] = 1;
+            q.push(X);
+
+            if (comp) {
+                comp->clear();
+                comp->push_back(X);
+            }
+
+            auto push_if_new = [&](int w) {
+                if (!visited[w]) {
+                    visited[w] = 1;
+                    q.push(w);
+                    if (comp && w != Xp && w != Yp) {
+                        comp->push_back(w);
+                    }
+                }
+            };
+
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+
+                if (u == X) {
+                    for (const auto &inc : adj[X]) {
+                        int nb = inc.nb;
+                        EdgePartType sHere = inc.here;
+                        EdgePartType sNb   = inc.nbType;
+
+                        if (sHere != d_u) continue; 
+
+                        int vPhys;
+                        if (nb == Y) {
+                            vPhys = (sNb == d_v ? Y : Yp);
+                        } else {
+                            vPhys = nb;
+                        }
+                        push_if_new(vPhys);
+                    }
+
+                } else if (u == Xp) {
+                    for (const auto &inc : adj[X]) {
+                        int nb = inc.nb;
+                        EdgePartType sHere = inc.here;
+                        EdgePartType sNb   = inc.nbType;
+
+                        if (sHere == d_u) continue;
+
+                        int vPhys;
+                        if (nb == Y) {
+                            vPhys = (sNb == d_v ? Y : Yp);
+                        } else {
+                            vPhys = nb;
+                        }
+                        push_if_new(vPhys);
+                    }
+
+                } else if (u == Y) {
+                    for (const auto &inc : adj[Y]) {
+                        int nb = inc.nb;
+                        EdgePartType sHere = inc.here;
+                        EdgePartType sNb   = inc.nbType;
+
+                        if (sHere != d_v) continue;
+
+                        int vPhys;
+                        if (nb == X) {
+                            vPhys = (sNb == d_u ? X : Xp);
+                        } else {
+                            vPhys = nb;
+                        }
+                        push_if_new(vPhys);
+                    }
+
+                } else if (u == Yp) {
+                    for (const auto &inc : adj[Y]) {
+                        int nb = inc.nb;
+                        EdgePartType sHere = inc.here;
+                        EdgePartType sNb   = inc.nbType;
+
+                        if (sHere == d_v) continue;
+
+                        int vPhys;
+                        if (nb == X) {
+                            vPhys = (sNb == d_u ? X : Xp);
+                        } else {
+                            vPhys = nb;
+                        }
+                        push_if_new(vPhys);
+                    }
+
+                } else {
+                    for (const auto &inc : adj[u]) {
+                        int nb = inc.nb;
+                        EdgePartType sHere = inc.here; 
+                        EdgePartType sNb   = inc.nbType;
+
+                        int vPhys;
+                        if (nb == X) {
+                            vPhys = (sNb == d_u ? X : Xp);
+                        } else if (nb == Y) {
+                            vPhys = (sNb == d_v ? Y : Yp);
+                        } else {
+                            vPhys = nb;
+                        }
+                        push_if_new(vPhys);
+                    }
+                }
+            }
+
+            return (visited[Y] && !visited[Xp] && !visited[Yp]);
+        }
+
+
+        static bool is_edge_snarl_block(
+            const std::vector<std::vector<BfAdjEntry>>& adj,
+            int iu, int iv,
+            EdgePartType d_u, EdgePartType d_v
+        ) {
+            std::vector<int> comp;
+            if (!bfs_split_block(adj, iu, iv, d_u, d_v, &comp)) {
+                return false; // not separable
+            }
+
+            const int N = (int)adj.size();
+
+            for (int z : comp) {
+                if (z == iu || z == iv) continue;
+
+                bool hasPlusZ  = false;
+                bool hasMinusZ = false;
+
+                for (const auto &inc : adj[z]) {
+                    if (inc.here == EdgePartType::PLUS)  hasPlusZ = true;
+                    if (inc.here == EdgePartType::MINUS) hasMinusZ = true;
+                    if (hasPlusZ && hasMinusZ) break;
+                }
+
+                if (hasPlusZ) {
+                    if (bfs_split_block(adj, iu, z, d_u, EdgePartType::PLUS, nullptr) &&
+                        bfs_split_block(adj, z,  iv, EdgePartType::MINUS, d_v, nullptr)) {
+                        return false; // not minimal
+                    }
+                }
+                if (hasMinusZ) {
+                    if (bfs_split_block(adj, iu, z, d_u, EdgePartType::MINUS, nullptr) &&
+                        bfs_split_block(adj, z,  iv, EdgePartType::PLUS,  d_v, nullptr)) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
         void getOutgoingEdgesInBlock(const CcData& cc, ogdf::node uG, ogdf::node vB, EdgePartType type, std::vector<ogdf::edge>& outEdges) {
             outEdges.clear();
             ogdf::node uB = cc.bc->repVertex(uG, vB);
             
-            // std::cout << "Getting outgoing edges in block for graph node " << uG << " in block node " << vB << " " << uB->adjEntries.size() << std::endl;
-
             for(auto adjE : uB->adjEntries) {
-                ogdf::edge eAux = adjE->theEdge();               // edge in auxiliary graph
-                ogdf::edge eCc = cc.bc->original(eAux);          // edge in cc.Gcc
-                ogdf::edge eG = cc.edgeToOrig[eCc];             // edge in original graph
+                ogdf::edge eAux = adjE->theEdge();               
+                ogdf::edge eCc = cc.bc->original(eAux);          
+                ogdf::edge eG = cc.edgeToOrig[eCc];            
 
                 auto outType = getNodeEdgeType(cc.nodeToOrig[uG], eG);
 
@@ -2810,6 +3155,7 @@ namespace solver {
         }
 
 
+        
         namespace SPQRsolve {
             struct EdgeDPState {
                 node s{nullptr};      
@@ -2908,231 +3254,178 @@ namespace solver {
                 if(curr!=parent) edge_order.push_back(e);
             }
 
-            void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, const CcData &cc, BlockData &blk) {
+
+            void processEdge(ogdf::edge curr_edge,
+                            ogdf::EdgeArray<EdgeDP> &dp,
+                            const CcData &cc,
+                            BlockData &blk)
+            {
                 //PROFILE_FUNCTION();
-                auto& C = ctx();
-                            
-                EdgeDPState &state = dp[curr_edge].down;
-                EdgeDPState &back_state = dp[curr_edge].up;
-                
+                auto &C = ctx();
+
                 const StaticSPQRTree &spqr = *blk.spqr;
-                            
+
                 ogdf::node A = curr_edge->source();
                 ogdf::node B = curr_edge->target();
 
-                // std::cout << "PROCESSING " << A << "->" << B << " EDGE\n";
-                
-                state.localPlusS = 0;
-                state.localPlusT = 0;
-                state.localMinusT = 0;
-                state.localMinusS = 0;
-                
+                EdgeDPState &state      = dp[curr_edge].down;
+                EdgeDPState &back_state = dp[curr_edge].up;
+
+                state.s = state.t = nullptr;
+                state.localPlusS = state.localPlusT = 0;
+                state.localMinusS = state.localMinusT = 0;
+
+                back_state.s = back_state.t = nullptr;
+                back_state.localPlusS = back_state.localPlusT = 0;
+                back_state.localMinusS = back_state.localMinusT = 0;
+
                 const Skeleton &skel = spqr.skeleton(B);
                 const Graph &skelGraph = skel.getGraph();
 
-
-                auto mapSkeletonToGlobal = [&](ogdf::node vSkel) -> ogdf::node {
-                    if (!vSkel) return nullptr;
-
-                    ogdf::node vBlk  = skel.original(vSkel);
-                    if (!vBlk) return nullptr;
-
-                    ogdf::node vCc   = blk.toCc[vBlk];
-                    if (!vCc) return nullptr;
-
-                    return cc.nodeToOrig[vCc];
-                };
-
-
-                for(edge e : skelGraph.edges) {
+                for (edge e : skelGraph.edges) {
                     node u = e->source();
                     node v = e->target();
 
                     auto D = skel.twinTreeNode(e);
 
-
-                    if(D == A) {
+                    if (D == A) {
                         ogdf::node vBlk = skel.original(v);
                         ogdf::node uBlk = skel.original(u);
-                        
+
                         state.s = back_state.s = vBlk;
-                        state.t = back_state.t = uBlk;                        
+                        state.t = back_state.t = uBlk;
                         break;
                     }
                 }
 
+                if (!state.s || !state.t) {
+                    std::cerr << "[snarls] processEdge: impossible de trouver les pôles pour "
+                            << "l'arête SPQR (" << A->index() << " -> " << B->index() << ")\n";
+                    return;
+                }
 
-
-                for(edge e : skelGraph.edges) {
+                for (edge e : skelGraph.edges) {
                     node u = e->source();
                     node v = e->target();
 
-                    
                     ogdf::node uBlk = skel.original(u);
                     ogdf::node vBlk = skel.original(v);
 
-
-                    
-                    
-                    if(!skel.isVirtual(e)) {
+                    if (!skel.isVirtual(e)) {
                         ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
 
                         ogdf::node uG = eG->source();
                         ogdf::node vG = eG->target();
-    
 
-                        // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is " << (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-") << " - " << (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-") << "\n";
-                        if(uG == blk.nodeToOrig[state.s]) {
+                        // Contributions incidentes à state.s
+                        if (uG == blk.nodeToOrig[state.s]) {
                             auto t = getNodeEdgeType(uG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusS++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusS++;
-                            }
+                            if      (t == EdgePartType::PLUS)  state.localPlusS++;
+                            else if (t == EdgePartType::MINUS) state.localMinusS++;
                         }
-
-                        if(vG == blk.nodeToOrig[state.s]) {
+                        if (vG == blk.nodeToOrig[state.s]) {
                             auto t = getNodeEdgeType(vG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusS++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusS++;
-                            }
+                            if      (t == EdgePartType::PLUS)  state.localPlusS++;
+                            else if (t == EdgePartType::MINUS) state.localMinusS++;
                         }
 
-                        if(uG == blk.nodeToOrig[state.t]) {
+                        if (uG == blk.nodeToOrig[state.t]) {
                             auto t = getNodeEdgeType(uG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusT++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusT++;
-                            }
+                            if      (t == EdgePartType::PLUS)  state.localPlusT++;
+                            else if (t == EdgePartType::MINUS) state.localMinusT++;
                         }
-
-                        if(vG == blk.nodeToOrig[state.t]) {
+                        if (vG == blk.nodeToOrig[state.t]) {
                             auto t = getNodeEdgeType(vG, eG);
-                            if(t== EdgePartType::PLUS) {
-                                state.localPlusT++;
-                            } else if(t == EdgePartType::MINUS) {
-                                state.localMinusT++;
-                            }
+                            if      (t == EdgePartType::PLUS)  state.localPlusT++;
+                            else if (t == EdgePartType::MINUS) state.localMinusT++;
                         }
 
                         continue;
                     }
-                    
+
                     auto D = skel.twinTreeNode(e);
-                    
-
-                    if(D == A) {
+                    if (D == A) {
                         continue;
                     }
-
 
                     edge treeE = blk.skel2tree.at(e);
                     OGDF_ASSERT(treeE != nullptr);
 
-
-
                     const EdgeDPState child = dp[treeE].down;
 
-                    ogdf::node nS = child.s;
-                    ogdf::node nT = child.t;
+                    if (!child.s || !child.t) {
+                        std::cerr << "[snarls] processEdge: état DP enfant incomplet sur treeE="
+                                << treeE->index() << "\n";
+                        continue;
+                    }
 
-                    // ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
-                    // ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
-
-                    
-
-                    if(state.s == child.s) {
-                        // std::cout << "Adding " << child.localPlusS << " plus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-                        state.localPlusS+=child.localPlusS;
-                        // std::cout << "Adding " << child.localMinusS << " minus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl;
-                        state.localMinusS+=child.localMinusS;
-                    } 
-
-                    if(state.s == child.t) {
-                        state.localPlusS+=child.localPlusT;
-                        // std::cout << "Adding " << child.localPlusT << " plus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-                        state.localMinusS+=child.localMinusT;
-                        // std::cout << "Adding " << child.localMinusT << " minus to " << C.node2name[blk.nodeToOrig[state.s]] << std::endl; 
-
-                    } 
-
-                    if(state.t == child.t) {
-                        state.localPlusT+=child.localPlusT;
-                        // std::cout << "Adding " << child.localPlusT << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                        state.localMinusT+=child.localMinusT;
-                        // std::cout << "Adding " << child.localMinusT << " minus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl; 
-
-                    } 
-
-                    if(state.t == child.s) {
-                        state.localPlusT+=child.localPlusS;
-                        // std::cout << "Adding " << child.localPlusS << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                        state.localMinusT+=child.localMinusS;
-                        // std::cout << "Adding " << child.localMinusS << " plus to " << C.node2name[blk.nodeToOrig[state.t]] << std::endl;
-                    } 
-
+                    if (state.s == child.s) {
+                        state.localPlusS  += child.localPlusS;
+                        state.localMinusS += child.localMinusS;
+                    }
+                    if (state.s == child.t) {
+                        state.localPlusS  += child.localPlusT;
+                        state.localMinusS += child.localMinusT;
+                    }
+                    if (state.t == child.t) {
+                        state.localPlusT  += child.localPlusT;
+                        state.localMinusT += child.localMinusT;
+                    }
+                    if (state.t == child.s) {
+                        state.localPlusT  += child.localPlusS;
+                        state.localMinusT += child.localMinusS;
+                    }
                 }
-
             }
 
-
-            void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, const CcData &cc, BlockData &blk) {
+            void processNode(ogdf::node curr_node,
+                            ogdf::EdgeArray<EdgeDP> &edge_dp,
+                            const CcData &cc,
+                            BlockData &blk)
+            {
                 auto& C = ctx();
                 ogdf::node A = curr_node;
-                
-                const Graph &T = blk.spqr->tree();
-                
-                const StaticSPQRTree &spqr = *blk.spqr;
-                            
 
-                const Skeleton &skel = spqr.skeleton(A);
-                const Graph &skelGraph = skel.getGraph();
+                const ogdf::Graph &T    = blk.spqr->tree();
+                const ogdf::StaticSPQRTree &spqr = *blk.spqr;
 
-                
-                Graph newGraph;
+                const ogdf::Skeleton &skel      = spqr.skeleton(A);
+                const ogdf::Graph    &skelGraph = skel.getGraph();
 
-                NodeArray<node> skelToNew(skelGraph, nullptr);
-                for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
-                NodeArray<node> newToSkel(newGraph, nullptr);
-                for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+                ogdf::Graph newGraph;
 
-                for (ogdf::node h : skelGraph.nodes) {
-                    ogdf::node vB = skel.original(h);
+                ogdf::NodeArray<ogdf::node> skelToNew(skelGraph, nullptr);
+                for (ogdf::node v : skelGraph.nodes) {
+                    skelToNew[v] = newGraph.newNode();
+                }
+                ogdf::NodeArray<ogdf::node> newToSkel(newGraph, nullptr);
+                for (ogdf::node v : skelGraph.nodes) {
+                    newToSkel[skelToNew[v]] = v;
                 }
 
-
                 for (ogdf::node h : skelGraph.nodes) {
                     ogdf::node vB = skel.original(h);
+                    if (!vB) continue;
                     blk.blkToSkel[vB] = h;
                 }
-            
 
-                // GraphIO::drawGraph(skelGraph, "skel_" + to_string(curr_node->index()));
+                ogdf::NodeArray<int> localPlusDeg(newGraph,  0);
+                ogdf::NodeArray<int> localMinusDeg(newGraph, 0);
 
-                
-                NodeArray<int> localPlusDeg(newGraph, 0), localMinusDeg(newGraph, 0);
-                
+                ogdf::EdgeArray<bool>         isVirtual(newGraph, false);
+                ogdf::EdgeArray<EdgeDPState*> edgeToDp(newGraph, nullptr);
+                ogdf::EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
+                ogdf::EdgeArray<ogdf::node>   edgeChild(newGraph, nullptr);
 
-                EdgeArray<bool> isVirtual(newGraph, false);
-                EdgeArray<EdgeDPState*> edgeToDp(newGraph, nullptr);
-                EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
-                EdgeArray<node> edgeChild(newGraph, nullptr);
-
-
-
-                std::vector<edge> virtualEdges;
-
+                std::vector<ogdf::edge> virtualEdges;
 
                 auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
+                    if (!bV) return nullptr;
                     ogdf::node sV = blk.blkToSkel[bV];
+                    if (!sV) return nullptr;
                     ogdf::node nV = skelToNew[sV];
                     return nV;
                 };
-
-
 
                 auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
                     if (!vN) return nullptr;
@@ -3145,837 +3438,708 @@ namespace solver {
                     return cc.nodeToOrig[vCc];
                 };
 
+                auto getTreeEdge = [&](ogdf::edge eSkel) -> ogdf::edge {
+                    auto it = blk.skel2tree.find(eSkel);
+                    if (it == blk.skel2tree.end() || !(it->second)) {
+                        return nullptr;
+                    }
+                    return it->second;
+                };
 
+                for (ogdf::edge e : skelGraph.edges) {
+                    ogdf::node u = e->source();
+                    ogdf::node v = e->target();
 
+                    ogdf::node uBlk = skel.original(u);
+                    ogdf::node vBlk = skel.original(v);
+                    if (!uBlk || !vBlk) continue;
 
+                    ogdf::node uG = blk.nodeToOrig[uBlk];
+                    ogdf::node vG = blk.nodeToOrig[vBlk];
 
+                    ogdf::node nU = skelToNew[u];
+                    ogdf::node nV = skelToNew[v];
 
-                // auto printDegrees = [&]() {
-                //     for(node vN:newGraph.nodes) {
-                //         node vG = mapNewToGlobal(vN);
-                //     }
-                // };
+                    if (!skel.isVirtual(e)) {
+                        ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
+                        if (!eG) continue;
 
+                        uG = eG->source();
+                        vG = eG->target();
 
-                // std::cout << "Processing node " << curr_node << "\n";
+                        ogdf::edge newEdge = newGraph.newEdge(nU, nV);
+                        isVirtual[newEdge] = false;
 
-                // Building new graph
-                {
-                    //PROFILE_BLOCK("processNode:: build oriented local graph");
-                    for(edge e : skelGraph.edges) {
-                        node u = e->source();
-                        node v = e->target();
+                        if (blk.nodeToOrig[skel.original(newToSkel[nU])] == uG) {
+                            localPlusDeg[nU]  += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nU] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
 
-                        
-                        ogdf::node uBlk = skel.original(u);
-                        ogdf::node vBlk = skel.original(v);
-
-
-                        ogdf::node uG = blk.nodeToOrig[uBlk];
-                        ogdf::node vG = blk.nodeToOrig[vBlk];
-
-                        
-                        node nU = skelToNew[u];
-                        node nV = skelToNew[v];
-                        
-
-                        if(!skel.isVirtual(e)) {
-                            ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
-
-                            uG = eG->source();
-                            vG = eG->target();
-
-                            auto newEdge = newGraph.newEdge(nU, nV);
-
-                            // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is " << (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-") << " - " << (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-") << "\n";
-
-
-                            isVirtual[newEdge] = false;
-
-                            if(blk.nodeToOrig[skel.original(newToSkel[nU])] == uG) {
-                                localPlusDeg[nU]+=(getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nU]+=(getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                                localPlusDeg[nV]+=(getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nV]+=(getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
-                            } else {
-                                localPlusDeg[nU]+=(getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nU]+=(getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
-                                localPlusDeg[nV]+=(getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                                localMinusDeg[nV]+=(getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                            }
-
-
-
-                            continue;
-                        }
-
-
-                        // std::cout << "Type of " << C.node2name[uG] << "-" << C.node2name[vG] << " is virtual\n";
-
-
-                        
-                        auto B = skel.twinTreeNode(e);
-                        
-                        edge treeE = blk.skel2tree.at(e);
-                        OGDF_ASSERT(treeE != nullptr);
-
-
-
-                        EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
-                        EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
-
-                        ogdf::node nS = mapBlockToNew(child->s);
-                        ogdf::node nT = mapBlockToNew(child->t);
-
-
-
-                        edge newEdge = newGraph.newEdge(nS, nT);
-                        
-                        isVirtual[newEdge] = true;
-
-                        virtualEdges.push_back(newEdge);
-
-                        edgeToDp[newEdge] = edgeToUpdate;
-                        edgeToDpR[newEdge] = child;
-                        edgeChild[newEdge] = B;
-
-
-                        if(nS == nU && nT == nV) {
-                            localMinusDeg[nS] += child->localMinusT;
-                            localPlusDeg[nS] += child->localPlusT;
-
-                            localMinusDeg[nT] += child->localMinusS;
-                            localPlusDeg[nT] += child->localPlusS;
+                            localPlusDeg[nV]  += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nV] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
                         } else {
-                            localMinusDeg[nS] += child->localMinusS;
-                            localPlusDeg[nS] += child->localPlusS;
+                            localPlusDeg[nU]  += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nU] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
 
-                            localMinusDeg[nT] += child->localMinusT;
-                            localPlusDeg[nT] += child->localPlusT;
+                            localPlusDeg[nV]  += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            localMinusDeg[nV] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
                         }
-                    //     for(auto &v:newGraph.nodes) {
-                    //        std::cout << C.node2name[blk.nodeToOrig[skel.original(newToSkel[v])]] << " has " << localPlusDeg[v] << " local plus and " << localMinusDeg[v] << " local minus. \n";
-                    //    }
+
+                        continue;
                     }
 
+                    ogdf::node B = skel.twinTreeNode(e);
+                    ogdf::edge treeE = getTreeEdge(e);
+                    if (!treeE) continue;
 
-                }
+                    SPQRsolve::EdgeDP &st = edge_dp[treeE];
 
-                // std::cout << "Built new graph for " << curr_node << "\n";
+                    EdgeDPState *child =
+                        (B == blk.parent(A) ? &st.up : &st.down);
+                    EdgeDPState *edgeToUpdate =
+                        (B == blk.parent(A) ? &st.down : &st.up);
 
-
-                // updating local degrees of poles of states going into A
-                {
-                    // std::cout << "updating local degrees of poles of states going into A " << curr_node << "\n";
-
-                    //PROFILE_BLOCK("processNode:: update DP local degrees at poles");
-                    for(edge e:virtualEdges) {
-                        // if(!isVirtual[e]) continue;
-                        node vN = e->source();
-                        node uN = e->target();
-
-                        EdgeDPState *BA = edgeToDp[e];
-                        EdgeDPState *AB = edgeToDpR[e];
-
-                        BA->localPlusS = localPlusDeg[mapBlockToNew(BA->s)] - AB->localPlusS; 
-                        BA->localPlusT = localPlusDeg[mapBlockToNew(BA->t)] - AB->localPlusT; 
-
-                        BA->localMinusS = localMinusDeg[mapBlockToNew(BA->s)] - AB->localMinusS; 
-                        BA->localMinusT = localMinusDeg[mapBlockToNew(BA->t)] - AB->localMinusT; 
+                    if (!child || !child->s || !child->t) {
+                        continue;
                     }
-                    // std::cout << "UPDATED local degrees of poles of states going into A " << curr_node << "\n";
 
+                    ogdf::node nS = mapBlockToNew(child->s);
+                    ogdf::node nT = mapBlockToNew(child->t);
+                    if (!nS || !nT) continue;
+
+                    ogdf::edge newEdge = newGraph.newEdge(nS, nT);
+
+                    isVirtual[newEdge] = true;
+                    virtualEdges.push_back(newEdge);
+
+                    edgeToDp[newEdge]  = edgeToUpdate;
+                    edgeToDpR[newEdge] = child;
+                    edgeChild[newEdge] = B;
+
+                    if (nS == nU && nT == nV) {
+                        localMinusDeg[nS] += child->localMinusT;
+                        localPlusDeg[nS]  += child->localPlusT;
+
+                        localMinusDeg[nT] += child->localMinusS;
+                        localPlusDeg[nT]  += child->localPlusS;
+                    } else {
+                        localMinusDeg[nS] += child->localMinusS;
+                        localPlusDeg[nS]  += child->localPlusS;
+
+                        localMinusDeg[nT] += child->localMinusT;
+                        localPlusDeg[nT]  += child->localPlusT;
+                    }
                 }
 
-                // for(auto &v:newGraph.nodes) {
-                //     std::cout << C.node2name[blk.nodeToOrig[skel.original(newToSkel[v])]] << " has " << localPlusDeg[v] << " local plus and " << localMinusDeg[v] << " local minus. \n";
-                // }
+                for (ogdf::edge e : virtualEdges) {
+                    EdgeDPState *BA = edgeToDp[e];
+                    EdgeDPState *AB = edgeToDpR[e];
 
+                    if (!BA || !AB || !BA->s || !BA->t || !AB->s || !AB->t) {
+                        continue;
+                    }
+
+                    ogdf::node sNew = mapBlockToNew(BA->s);
+                    ogdf::node tNew = mapBlockToNew(BA->t);
+                    if (!sNew || !tNew) continue;
+
+                    BA->localPlusS  = localPlusDeg[sNew]  - AB->localPlusS;
+                    BA->localPlusT  = localPlusDeg[tNew]  - AB->localPlusT;
+                    BA->localMinusS = localMinusDeg[sNew] - AB->localMinusS;
+                    BA->localMinusT = localMinusDeg[tNew] - AB->localMinusT;
+                }
             }
-    
             
-
-
-            void solveS(ogdf::node sNode, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &dp, BlockData& blk, const CcData& cc) {
+            void solveS(ogdf::node sNode,
+                        ogdf::NodeArray<SPQRsolve::NodeDPState> &node_dp,
+                        ogdf::EdgeArray<SPQRsolve::EdgeDP> &dp,
+                        BlockData& blk,
+                        const CcData& cc)
+            {
                 PROFILE_FUNCTION();
-                const Skeleton& skel = blk.spqr->skeleton(sNode);
-                const Graph& skelGraph = skel.getGraph();
-                const Graph& T = blk.spqr->tree();
-                
-                // std::cout << "Solving S node.." << std::endl;
+                auto &C = ctx();
 
-                std::vector<ogdf::node> nodesInOrderGcc; // In Gcc
-                std::vector<ogdf::node> nodesInOrderSkel; // In skel
-                
-                ogdf::EdgeArray<EdgeDPState*> skelToState(T);
+                const Skeleton& skel      = blk.spqr->skeleton(sNode);
+                const Graph&    skelGraph = skel.getGraph();
+                const Graph&    T         = blk.spqr->tree();
 
-                // std::vector<EdgeDP> edgeT; // for i, nullptr if edge between i and i+1 is real, EdgeDp* if not 
+                std::cerr << "[SPQR-S] ==== solveS on tree node " << sNode->index() << " ====\n";
 
+                if (skelGraph.numberOfNodes() == 0) {
+                    std::cerr << "[SPQR-S]  skeleton empty, abort\n";
+                    return;
+                }
 
+                ogdf::EdgeArray<EdgeDPState*> skelToState(T, nullptr);
 
-
-                for(edge e : skelGraph.edges) {
-                    if(!skel.isVirtual(e)) continue;
-                    auto B = skel.twinTreeNode(e);
-                    edge treeE = blk.skel2tree.at(e);
-
-                    EdgeDPState *child = (B == blk.parent(sNode) ? &dp[treeE].up : &dp[treeE].down);
+                for (edge e : skelGraph.edges) {
+                    if (!skel.isVirtual(e)) continue;
+                    ogdf::node B  = skel.twinTreeNode(e);
+                    auto itTree   = blk.skel2tree.find(e);
+                    if (itTree == blk.skel2tree.end() || !(itTree->second)) {
+                        std::cerr << "[SPQR-S]  virtual edge " << e->index()
+                                << " has no tree edge\n";
+                        continue;
+                    }
+                    edge treeE   = itTree->second;
+                    EdgeDPState *child =
+                        (B == blk.parent[sNode] ? &dp[treeE].up : &dp[treeE].down);
                     skelToState[treeE] = child;
                 }
 
-                std::vector<ogdf::edge> adjEdgesG_; 
-                std::vector<adjEntry> adjEntriesSkel; 
+                std::vector<ogdf::node> nodesInOrderGcc;  
+                std::vector<ogdf::node> nodesInOrderSkel;  
 
-
+                std::vector<ogdf::edge>     adjEdgesG_;
+                std::vector<ogdf::adjEntry> adjEntriesSkel;
 
                 {
-                    std::function<void(ogdf::node, ogdf::node)> dfs = [&](ogdf::node u, ogdf::node prev) {          
+                    ogdf::node rootSkel = skelGraph.firstNode();
+                    if (!rootSkel || !rootSkel->firstAdj()) {
+                        std::cerr << "[SPQR-S]  skeleton has no edges, abort\n";
+                        return;
+                    }
+
+                    std::function<void(ogdf::node, ogdf::node)> dfs =
+                        [&](ogdf::node u, ogdf::node prev)
+                    {
                         nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
                         nodesInOrderSkel.push_back(u);
-                            
+
                         for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                            ogdf::node v = adj->twinNode();
+                            if (v == prev) continue;
 
-                            if(adj->twinNode() == prev) continue;
-
-                            if(adj->twinNode() == skelGraph.firstNode() && u != skelGraph.firstNode()) {
-                                if(skel.realEdge(adj->theEdge())) {
-                                    adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
-                                } else {
+                            if (v == skelGraph.firstNode() && u != skelGraph.firstNode()) {
+                                if (skel.realEdge(adj->theEdge()))
+                                    adjEdgesG_.push_back(
+                                        blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                else
                                     adjEdgesG_.push_back(nullptr);
-                                }
-
                                 adjEntriesSkel.push_back(adj);
                             }
 
-                            if(adj->twinNode() == skelGraph.firstNode() || adj->twinNode() == prev) continue;
-                            {
-                                // if(skel.realEdge(adj->theEdge())) {
-                                //     node B = (skel.twinTreeNode(adj->theEdge()));
-                                //     if(blk.parent(sNode) == B) skelToState[adj->theEdge()] =
-                                //     else  skelToState[adj->theEdge()] =
-                                // } else {
-                                //     skelToState[adj->theEdge()] = nullptr;
-                                // }
-                            }
+                            if (v == skelGraph.firstNode() || v == prev) continue;
 
-                            if(skel.realEdge(adj->theEdge())) {
-                                adjEdgesG_.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
-                            } else {
+                            if (skel.realEdge(adj->theEdge()))
+                                adjEdgesG_.push_back(
+                                    blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                            else
                                 adjEdgesG_.push_back(nullptr);
-                            }
 
                             adjEntriesSkel.push_back(adj);
-                            dfs(adj->twinNode(), u);
+                            dfs(v, u);
                         }
-                        
                     };
-                    
-                    dfs(skelGraph.firstNode(), skelGraph.firstNode()->firstAdj()->twinNode());
+
+                    dfs(rootSkel, rootSkel->firstAdj()->twinNode());
                 }
 
-                std::vector<bool> cuts(nodesInOrderGcc.size(), false);
+                if (nodesInOrderGcc.empty() ||
+                    adjEntriesSkel.size() != nodesInOrderGcc.size() ||
+                    adjEdgesG_.size()     != nodesInOrderGcc.size())
+                {
+                    std::cerr << "[SPQR-S]  inconsistent sizes: nodes=" << nodesInOrderGcc.size()
+                            << " adjSkel=" << adjEntriesSkel.size()
+                            << " adjG="    << adjEdgesG_.size() << "\n";
+                    return;
+                }
+
+                std::cerr << "[SPQR-S]  cycle order (Gcc/orig names):";
+                for (size_t i = 0; i < nodesInOrderGcc.size(); ++i) {
+                    ogdf::node vGcc = nodesInOrderGcc[i];
+                    ogdf::node vG   = cc.nodeToOrig[vGcc];
+                    std::cerr << " " << C.node2name[vG];
+                }
+                std::cerr << "\n";
 
                 std::vector<std::string> res;
 
-
-                // for (size_t i = 0; i < nodesInOrderGcc.size(); i++) {
-                //     std::string s = ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[i]]], t = ctx().node2name[cc.nodeToOrig[nodesInOrderGcc[(i+1)%nodesInOrderGcc.size()]]];
-                //     blk._adjInS.insert({ s, t});
-                // }
-
-
                 for (size_t i = 0; i < nodesInOrderGcc.size(); i++) {
-                    auto uGcc = nodesInOrderGcc[i];
-                    auto uSkel = nodesInOrderSkel[i];
+                    ogdf::node uGcc  = nodesInOrderGcc[i];
+                    ogdf::node uSkel = nodesInOrderSkel[i];
+                    ogdf::node uG    = cc.nodeToOrig[uGcc];
+                    std::string uname = C.node2name[uG];
 
-                    std::vector<edge> adjEdgesSkel = {adjEntriesSkel[(i-1+adjEntriesSkel.size())%adjEntriesSkel.size()]->theEdge(), adjEntriesSkel[i]->theEdge()};
-                    std::vector<ogdf::edge> adjEdgesG = {adjEdgesG_[(i-1+adjEdgesG_.size())%adjEdgesG_.size()], adjEdgesG_[i]};
+                    ogdf::edge eSkelL =
+                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) %
+                                    adjEntriesSkel.size()]->theEdge();
+                    ogdf::edge eSkelR = adjEntriesSkel[i]->theEdge();
 
-                    bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) || (!cc.isCutNode[uGcc]));
+                    ogdf::edge eGL =
+                        adjEdgesG_[(i + adjEdgesG_.size() - 1) % adjEdgesG_.size()];
+                    ogdf::edge eGR = adjEdgesG_[i];
+
+                    std::array<ogdf::edge,2> adjSkelArr = { eSkelL, eSkelR };
+                    std::array<ogdf::edge,2> adjGArr    = { eGL,    eGR    };
+
+                    bool nodeIsCut =
+                        ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) ||
+                        (!cc.isCutNode[uGcc]));
 
                     EdgePartType t0 = EdgePartType::NONE;
                     EdgePartType t1 = EdgePartType::NONE;
 
-                    if(!skel.isVirtual(adjEdgesSkel[0])) {
-                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
+                    auto getTreeEdge = [&](ogdf::edge eSkel) -> ogdf::edge {
+                        auto it = blk.skel2tree.find(eSkel);
+                        if (it == blk.skel2tree.end() || !(it->second)) return nullptr;
+                        return it->second;
+                    };
+
+                    if (!skel.isVirtual(adjSkelArr[0])) {
+                        if (adjGArr[0]) {
+                            t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjGArr[0]);
+                        }
                     } else {
-                        edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                        
-                        EdgeDPState* state0 = skelToState[treeE0];
-            
-                        if(blk.toCc[state0->s] == uGcc) {
-                            // take state0.s
-                            if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                            else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                                t0 = EdgePartType::PLUS;
-                            } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                                t0 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
-                        } else {
-                            // take state0.t
-                            if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                            else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                                t0 = EdgePartType::PLUS;
-                            } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                                t0 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
-                        }
-                    }
-
-                    if(!skel.isVirtual(adjEdgesSkel[1])) {
-                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-                    } else {
-                        edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-                        
-                        EdgeDPState* state1 = skelToState[treeE1];
-            
-                        if(blk.toCc[state1->s] == uGcc) {
-                            // take state1.s
-                            if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                            else if(state1->localMinusS == 0 && state1->localPlusS>0) {
-                                t1 = EdgePartType::PLUS;
-                            } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
-                                t1 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
-                        } else {
-                            // take state1.t
-                            if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                            else if(state1->localMinusT == 0 && state1->localPlusT>0) {
-                                t1 = EdgePartType::PLUS;
-                            } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
-                                t1 = EdgePartType::MINUS;
-                            } else {
-                                assert(false);
-                            }
-                        }
-                    }
-
-                    nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-
-
-                    // if(!skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
-                    //     EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
-                    //     EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-
-
-                    //     nodeIsCut &= t0 != t1;
-                    // } else if(!skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
-                    //     EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
-                    //     EdgePartType t1 = EdgePartType::NONE;
-
-                    //     edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-
-                    //     EdgeDPState* state1 = skelToState[treeE1];
-
-                    //     if(blk.toCc[state1->s] == uGcc) {
-                    //         // take state1.s
-                    //         if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                    //         else if(state1->localMinusS == 0 && state1->localPlusS>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state1.t
-                    //         if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                    //         else if(state1->localMinusT == 0 && state1->localPlusT>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // } else if(skel.isVirtual(adjEdgesSkel[0]) && !skel.isVirtual(adjEdgesSkel[1])) {
-                    //     // first is virtual, second is real
-                    //     // if(toPrint)
-                    //     // std::cout << "vir - real, " << std::endl;
-                    //     EdgePartType t0 = EdgePartType::NONE;
-                    //     EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-                        
-
-                    //     // std::cout << "33" << std::endl;
-                    //     edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                        
-                    //     EdgeDPState* state0 = skelToState[treeE0];
-                        
-                    //     // std::cout << "44" << std::endl;
-                    //     // std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
-                    //     // node B = skel.twinTreeNode(adjEdges[1])
-
-                    //     if(blk.toCc[state0->s] == uGcc) {
-                    //         // take state0.s
-                    //         if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                    //         else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state0.t
-                    //         if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                    //         else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                        
-
-
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // } else if(skel.isVirtual(adjEdgesSkel[0]) && skel.isVirtual(adjEdgesSkel[1])) {
-                    //     // both edges are virtual
-                    //     // if(toPrint)
-                    //     // std::cout << ctx().node2name[cc.nodeToOrig[uGcc]] << " vir - vir" << std::endl;
-                        
-                    //     EdgePartType t0 = EdgePartType::NONE;
-                    //     EdgePartType t1 = EdgePartType::NONE;
-                        
-                    //     edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
-                    //     edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
-                        
-                    //     EdgeDPState* state0 = skelToState[treeE0];
-                    //     EdgeDPState* state1 = skelToState[treeE1];
-
-                    //     // if(toPrint) {
-                    //     //     std::cout << "S-" << skelToState[treeE0]->localMinusS << " " << "S+"  << skelToState[treeE0]->localPlusS << " " << "T-" << skelToState[treeE0]->localMinusT << " " << "T+" << skelToState[treeE0]->localPlusT << std::endl;
-                    //     //     std::cout << "S-" << skelToState[treeE1]->localMinusS << " " << "S+"  << skelToState[treeE1]->localPlusS << " " << "T-" << skelToState[treeE1]->localMinusT << " " << "T+" << skelToState[treeE1]->localPlusT << std::endl;
-                    //     // // node B = skel.twinTreeNode(adjEdges[1])
-                    //     // }
-                    //     assert(blk.nodeToOrig[state0->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state0->t] == cc.nodeToOrig[uGcc]);
-                    //     assert(blk.nodeToOrig[state1->s] == cc.nodeToOrig[uGcc] || cc.nodeToOrig[state1->t] == cc.nodeToOrig[uGcc]);
-
-                    //     // std::cout << ctx().node2name[cc.nodeToOrig[state0->s]] << " " << ctx().node2name[cc.nodeToOrig[state0->t]] << std::endl;
-                    //     // std::cout << ctx().node2name[state1->s] << " " << ctx().node2name[cc.nodeToOrig[state1->t]] << std::endl;
-
-                    //     if(blk.toCc[state0->s] == uGcc) {
-                    //         // take state0.s
-                    //         if(state0->localMinusS>0 && state0->localPlusS>0) {}
-                    //         else if(state0->localMinusS == 0 && state0->localPlusS>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusS > 0 && state0->localPlusS==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state0.t
-                    //         if(state0->localMinusT>0 && state0->localPlusT>0) {}
-                    //         else if(state0->localMinusT == 0 && state0->localPlusT>0) {
-                    //             t0 = EdgePartType::PLUS;
-                    //         } else if(state0->localMinusT > 0 && state0->localPlusT==0) {
-                    //             t0 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     if(blk.toCc[state1->s] == uGcc) {
-                    //         // take state1.s
-                    //         if(state1->localMinusS>0 && state1->localPlusS>0) {}
-                    //         else if(state1->localMinusS == 0 && state1->localPlusS>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusS > 0 && state1->localPlusS==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     } else {
-                    //         // take state1.t
-                    //         if(state1->localMinusT>0 && state1->localPlusT>0) {}
-                    //         else if(state1->localMinusT == 0 && state1->localPlusT>0) {
-                    //             t1 = EdgePartType::PLUS;
-                    //         } else if(state1->localMinusT > 0 && state1->localPlusT==0) {
-                    //             t1 = EdgePartType::MINUS;
-                    //         } else {
-                    //             assert(false);
-                    //         }
-                    //     }
-
-                    //     // std::cout << (t0 == EdgePartType::NONE ? "NONE" : (t0 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << " - " << (t1 == EdgePartType::NONE ? "NONE" : (t1 == EdgePartType::PLUS ? "PLUS" : "MINUS")) << std::endl;
-                        
-                    //     nodeIsCut &= (t0 != EdgePartType::NONE && t1!= EdgePartType::NONE && t0 != t1);
-                    // }
-
-
-                    if(nodeIsCut) { 
-                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
-                        if(node_dp[sNode].GccCuts_last3.size() < 3) {
-                            node_dp[sNode].GccCuts_last3.push_back(uGcc);
-                        }
-                        // node_dp[sNode].cutsCnt++;
-                        // if(toPrint)
-                        // std::cout << "Found cut at " << ctx().node2name[cc.nodeToOrig[uGcc]] << std::endl;
-                        // std::cout << node_dp[sNode].cutsCnt << std::endl;
-                        if(!skel.isVirtual(adjEdgesSkel[0])) {
-                            EdgePartType t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[0]);
-
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (t0 == EdgePartType::PLUS ? "+" : "-"));
-                        } else {
-                            edge treeE0 = blk.skel2tree.at(adjEdgesSkel[0]);
+                        ogdf::edge treeE0 = getTreeEdge(adjSkelArr[0]);
+                        if (treeE0) {
                             EdgeDPState* state0 = skelToState[treeE0];
-
-                            if(uGcc == blk.toCc[state0->s]) {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state0->localPlusS > 0 ? "+" : "-"));
-                            } else {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state0->localPlusT > 0 ? "+" : "-"));
+                            if (state0) {
+                                if (blk.toCc[state0->s] == uGcc) {
+                                    if      (state0->localMinusS == 0 && state0->localPlusS > 0)
+                                        t0 = EdgePartType::PLUS;
+                                    else if (state0->localMinusS > 0 && state0->localPlusS == 0)
+                                        t0 = EdgePartType::MINUS;
+                                } else {
+                                    if      (state0->localMinusT == 0 && state0->localPlusT > 0)
+                                        t0 = EdgePartType::PLUS;
+                                    else if (state0->localMinusT > 0 && state0->localPlusT == 0)
+                                        t0 = EdgePartType::MINUS;
+                                }
                             }
                         }
+                    }
 
-
-                        if(!skel.isVirtual(adjEdgesSkel[1])) {
-                            EdgePartType t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesG[1]);
-
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (t1 == EdgePartType::PLUS ? "+" : "-"));
-                        } else {
-                            edge treeE1 = blk.skel2tree.at(adjEdgesSkel[1]);
+                    if (!skel.isVirtual(adjSkelArr[1])) {
+                        if (adjGArr[1]) {
+                            t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjGArr[1]);
+                        }
+                    } else {
+                        ogdf::edge treeE1 = getTreeEdge(adjSkelArr[1]);
+                        if (treeE1) {
                             EdgeDPState* state1 = skelToState[treeE1];
-
-                            if(uGcc == blk.toCc[state1->s]) {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state1->localPlusS > 0 ? "+" : "-"));
-                            } else {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] + (state1->localPlusT > 0 ? "+" : "-"));
+                            if (state1) {
+                                if (blk.toCc[state1->s] == uGcc) {
+                                    if      (state1->localMinusS == 0 && state1->localPlusS > 0)
+                                        t1 = EdgePartType::PLUS;
+                                    else if (state1->localMinusS > 0 && state1->localPlusS == 0)
+                                        t1 = EdgePartType::MINUS;
+                                } else {
+                                    if      (state1->localMinusT == 0 && state1->localPlusT > 0)
+                                        t1 = EdgePartType::PLUS;
+                                    else if (state1->localMinusT > 0 && state1->localPlusT == 0)
+                                        t1 = EdgePartType::MINUS;
+                                }
                             }
                         }
-
                     }
 
-                    // if(toPrint)
-                    // std::cout << "Node " << ctx().node2name[cc.nodeToOrig[uGcc]] << " " << (nodeIsCut ? "cut" : "not cut") << std::endl;
-                }
-                
+                    bool before = nodeIsCut;
+                    nodeIsCut &= (t0 != EdgePartType::NONE &&
+                                t1 != EdgePartType::NONE &&
+                                t0 != t1);
 
-                // std::cout << "done solving S" << std::endl;
 
-                
-                assert(res.size()%2==0);
+                    std::cerr << "[SPQR-S]  node " << uname
+                            << " (cutNode=" << cc.isCutNode[uGcc]
+                            << " badCutCount=" << cc.badCutCount[uGcc]
+                            << " isTip=" << cc.isTip[uGcc]
+                            << ") t0=" << (t0 == EdgePartType::PLUS  ? "+" :
+                                            t0 == EdgePartType::MINUS ? "-" : "0")
+                            << " t1=" << (t1 == EdgePartType::PLUS  ? "+" :
+                                            t1 == EdgePartType::MINUS ? "-" : "0")
+                            << " -> nodeIsCut=" << nodeIsCut
+                            << " (before=" << before << ")\n";
 
-                if(res.size()>2) {
-                    for (size_t i = 1; i < res.size(); i+=2)
-                    {
-                        std::vector<std::string> v = {/*"S"+*/res[i], /*"S"+*/res[(i+1)%res.size()]};
-                        // std::cout << "S node snarl: ";
-                        // for(auto &s:v) std::cout << s << " ";
-                        // std::cout << std::endl;
-                        addSnarl(v);
+                    if (!nodeIsCut) continue;
 
-                        // std::cout << res[i] <<":" << res[(i+1)%res.size()] << std::endl; 
+
+                    if (node_dp[sNode].GccCuts_last3.size() < 3) {
+                        node_dp[sNode].GccCuts_last3.push_back(uGcc);
+                    }
+
+
+                    if (!skel.isVirtual(adjSkelArr[0])) {
+                        if (adjGArr[0]) {
+                            EdgePartType tt0 =
+                                getNodeEdgeType(cc.nodeToOrig[uGcc], adjGArr[0]);
+                            res.push_back(
+                                C.node2name[cc.nodeToOrig[uGcc]] +
+                                (tt0 == EdgePartType::PLUS ? "+" : "-")
+                            );
+                        }
+                    } else {
+                        ogdf::edge treeE0 = getTreeEdge(adjSkelArr[0]);
+                        if (treeE0) {
+                            EdgeDPState* state0 = skelToState[treeE0];
+                            if (state0) {
+                                if (uGcc == blk.toCc[state0->s]) {
+                                    res.push_back(
+                                        C.node2name[cc.nodeToOrig[uGcc]] +
+                                        (state0->localPlusS > 0 ? "+" : "-")
+                                    );
+                                } else {
+                                    res.push_back(
+                                        C.node2name[cc.nodeToOrig[uGcc]] +
+                                        (state0->localPlusT > 0 ? "+" : "-")
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if (!skel.isVirtual(adjSkelArr[1])) {
+                        if (adjGArr[1]) {
+                            EdgePartType tt1 =
+                                getNodeEdgeType(cc.nodeToOrig[uGcc], adjGArr[1]);
+                            res.push_back(
+                                C.node2name[cc.nodeToOrig[uGcc]] +
+                                (tt1 == EdgePartType::PLUS ? "+" : "-")
+                            );
+                        }
+                    } else {
+                        ogdf::edge treeE1 = getTreeEdge(adjSkelArr[1]);
+                        if (treeE1) {
+                            EdgeDPState* state1 = skelToState[treeE1];
+                            if (state1) {
+                                if (uGcc == blk.toCc[state1->s]) {
+                                    res.push_back(
+                                        C.node2name[cc.nodeToOrig[uGcc]] +
+                                        (state1->localPlusS > 0 ? "+" : "-")
+                                    );
+                                } else {
+                                    res.push_back(
+                                        C.node2name[cc.nodeToOrig[uGcc]] +
+                                        (state1->localPlusT > 0 ? "+" : "-")
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
-                
 
-                // for(auto &v:res) {
-                //     std::cout << v << "  ";
-                // }
-                // std::cout << std::endl;
+                if (res.size() % 2 != 0) {
+                    std::cerr << "[SPQR-S]  WARNING: res.size()="
+                            << res.size() << " is odd\n";
+                    return;
+                }
 
+                if (res.size() > 2) {
+                    std::cerr << "[SPQR-S]  final cut sequence:";
+                    for (auto &x : res) std::cerr << " " << x;
+                    std::cerr << "\n";
+
+                    for (size_t i = 1; i < res.size(); i += 2) {
+                        std::vector<std::string> v = { res[i], res[(i+1) % res.size()] };
+                        std::cerr << "[SPQR-S]  emitting S-snarl: "
+                                << v[0] << "  " << v[1] << "\n";
+                        addSnarlTagged("S", std::move(v));
+                    }
+                }
+
+                std::cerr << "[SPQR-S] ==== end solveS on tree node "
+                        << sNode->index() << " ====\n";
             }
 
-            void solveP(ogdf::node pNode, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
+            
+            void solveP(ogdf::node pNode,
+                        ogdf::NodeArray<SPQRsolve::NodeDPState> &node_dp,
+                        ogdf::EdgeArray<SPQRsolve::EdgeDP> &edge_dp,
+                        BlockData& blk,
+                        const CcData& cc)
+            {
                 PROFILE_FUNCTION();
-                const Skeleton& skel = blk.spqr->skeleton(pNode);
-                const Graph& skelGraph = skel.getGraph();
+                auto &C = ctx();
 
-                std::vector<ogdf::adjEntry> edgeOrdering; // pole0Skel -> pole1Skel
-
-                node pole0Skel = nullptr, pole1Skel = nullptr;
-                {
-                    auto it = skelGraph.nodes.begin();
-                    if (it != skelGraph.nodes.end()) pole0Skel = *it++;
-                    if (it != skelGraph.nodes.end()) pole1Skel = *it;
-                }                
+                const ogdf::Skeleton& skel      = blk.spqr->skeleton(pNode);
+                const ogdf::Graph&    skelGraph = skel.getGraph();
 
 
-                node pole0Blk = skel.original(pole0Skel), pole1Blk = skel.original(pole1Skel);
-                node pole0Gcc = blk.toCc[pole0Blk], pole1Gcc = blk.toCc[pole1Blk];
+                std::vector<ogdf::node> poles;
+                for (ogdf::node v : skelGraph.nodes) poles.push_back(v);
+                std::sort(poles.begin(), poles.end(),
+                        [](ogdf::node a, ogdf::node b){ return a->index() < b->index(); });
+                if (poles.size() < 2) return;
 
-                // if(ctx().node2name[cc.nodeToOrig[pole0Gcc]] == "3497" || ctx().node2name[cc.nodeToOrig[pole1Gcc]] == "3497") {
-                //     std::cout << "Processing P node with pole " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " and " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
-                // }
+                ogdf::node pole0Skel = poles[0];
+                ogdf::node pole1Skel = poles[1];
+
+                ogdf::node pole0Blk = skel.original(pole0Skel);
+                ogdf::node pole1Blk = skel.original(pole1Skel);
+                if (!pole0Blk || !pole1Blk) return;
+
+                ogdf::node pole0Gcc = blk.toCc[pole0Blk];
+                ogdf::node pole1Gcc = blk.toCc[pole1Blk];
+                if (!pole0Gcc || !pole1Gcc) return;
+
+                std::string name0 = C.node2name[cc.nodeToOrig[pole0Gcc]];
+                std::string name1 = C.node2name[cc.nodeToOrig[pole1Gcc]];
 
 
-                for (ogdf::adjEntry adj = pole0Skel->firstAdj(); adj; adj = adj->succ()) {
+                std::cerr << "[SPQR-P] node " << pNode->index()
+                        << " poles: " << name0 << " , " << name1 << "\n";
+
+
+                std::vector<ogdf::adjEntry> edgeOrdering;
+                for (ogdf::adjEntry adj = pole0Skel->firstAdj(); adj; adj = adj->succ())
                     edgeOrdering.push_back(adj);
+                std::sort(edgeOrdering.begin(), edgeOrdering.end(),
+                        [](ogdf::adjEntry a, ogdf::adjEntry b) {
+                            return a->theEdge()->index() < b->theEdge()->index();
+                        });
+
+                if (cc.isCutNode[pole0Gcc]) {
+                    if (cc.badCutCount[pole0Gcc] >= 2 ||
+                        (cc.badCutCount[pole0Gcc] == 1 && cc.lastBad[pole0Gcc] != blk.bNode))
+                    {
+                        std::cerr << "[SPQR-P]  rejected by cut-node filter at pole0\n";
+                        return;
+                    }
+                }
+                if (cc.isCutNode[pole1Gcc]) {
+                    if (cc.badCutCount[pole1Gcc] >= 2 ||
+                        (cc.badCutCount[pole1Gcc] == 1 && cc.lastBad[pole1Gcc] != blk.bNode))
+                    {
+                        std::cerr << "[SPQR-P]  rejected by cut-node filter at pole1\n";
+                        return;
+                    }
                 }
 
-                if(cc.isCutNode[pole0Gcc]) {
-                    if(cc.badCutCount[pole0Gcc] >= 2 || (cc.badCutCount[pole0Gcc] == 1 && cc.lastBad[pole0Gcc] != blk.bNode)) return;
-                }
-
-                if(cc.isCutNode[pole1Gcc]) {
-                    if(cc.badCutCount[pole1Gcc] >= 2 || (cc.badCutCount[pole1Gcc] == 1 && cc.lastBad[pole1Gcc] != blk.bNode)) return;
-                }
+                auto getTreeEdge = [&](ogdf::edge eSkel) -> ogdf::edge {
+                    auto it = blk.skel2tree.find(eSkel);
+                    if (it == blk.skel2tree.end() || !(it->second)) {
+                        return nullptr;
+                    }
+                    return it->second;
+                };
 
                 for (size_t i = 0; i < edgeOrdering.size(); i++) {
-                    edge eSkel = edgeOrdering[i]->theEdge();
-                    if(!skel.isVirtual(eSkel)) continue;
-                    node B = (blk.skel2tree[eSkel]->source() == pNode ? blk.skel2tree[eSkel]->target() : blk.skel2tree[eSkel]->source());
-                    auto state = (blk.parent(pNode) == B ? edge_dp[blk.skel2tree[eSkel]].up : edge_dp[blk.skel2tree[eSkel]].down);
-                    if(state.s == pole0Blk) {
-                        if((state.localMinusS>0) + (state.localPlusS>0) == 2) return;
+                    ogdf::edge eSkel = edgeOrdering[i]->theEdge();
+                    if (!skel.isVirtual(eSkel)) continue;
+
+                    ogdf::edge treeE = getTreeEdge(eSkel);
+                    if (!treeE) continue;
+
+                    ogdf::node B = (treeE->source() == pNode ? treeE->target() : treeE->source());
+                    SPQRsolve::EdgeDP &st = edge_dp[treeE];
+                    SPQRsolve::EdgeDPState &state =
+                        (blk.parent[pNode] == B ? st.up : st.down);
+
+                    if (!state.s || !state.t) continue;
+
+                    if (state.s == pole0Blk) {
+                        if ((state.localMinusS > 0) + (state.localPlusS > 0) == 2) {
+                            std::cerr << "[SPQR-P]  pole0 mixed sign on edge " << treeE->index() << "\n";
+                            return;
+                        }
                     } else {
-                        if((state.localMinusT>0) + (state.localPlusT>0) == 2) return;
+                        if ((state.localMinusT > 0) + (state.localPlusT > 0) == 2) {
+                            std::cerr << "[SPQR-P]  pole0 mixed sign via T on edge " << treeE->index() << "\n";
+                            return;
+                        }
                     }
 
-                    if(state.s == pole1Blk) {
-                        if((state.localMinusS>0) + (state.localPlusS>0) == 2) return;
+                    if (state.s == pole1Blk) {
+                        if ((state.localMinusS > 0) + (state.localPlusS > 0) == 2) {
+                            std::cerr << "[SPQR-P]  pole1 mixed sign on edge " << treeE->index() << "\n";
+                            return;
+                        }
                     } else {
-                        if((state.localMinusT>0) + (state.localPlusT>0) == 2) return;
+                        if ((state.localMinusT > 0) + (state.localPlusT > 0) == 2) {
+                            std::cerr << "[SPQR-P]  pole1 mixed sign via T on edge " << treeE->index() << "\n";
+                            return;
+                        }
                     }
                 }
-                
 
 
-                // std::cout << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
-                // std::cout << "P NODE CHECKING.." << std::endl;
-                
-                for(auto &left:{EdgePartType::PLUS, EdgePartType::MINUS}) {
-                    for(auto &right:{EdgePartType::PLUS, EdgePartType::MINUS}) {
+                for (auto &left  : {EdgePartType::PLUS, EdgePartType::MINUS}) {
+                    for (auto &right : {EdgePartType::PLUS, EdgePartType::MINUS}) {
+
                         std::vector<ogdf::edge> leftPart, rightPart;
+
                         for (size_t i = 0; i < edgeOrdering.size(); i++) {
-                            edge eSkel = edgeOrdering[i]->theEdge();
-                            if(!skel.isVirtual(eSkel)) {
-                                EdgePartType l=getNodeEdgeType(cc.nodeToOrig[pole0Gcc], blk.edgeToOrig[skel.realEdge(eSkel)]), r = getNodeEdgeType(cc.nodeToOrig[pole1Gcc], blk.edgeToOrig[skel.realEdge(eSkel)]);
-                                if(l == left) leftPart.push_back(eSkel);
-                                if(r == right) rightPart.push_back(eSkel);
-                            } else {    
-                                node B = (blk.skel2tree[eSkel]->source() == pNode ? blk.skel2tree[eSkel]->target() : blk.skel2tree[eSkel]->source());
-                                auto state = (blk.parent(pNode) == B ? edge_dp[blk.skel2tree[eSkel]].up : edge_dp[blk.skel2tree[eSkel]].down);
+                            ogdf::edge eSkel = edgeOrdering[i]->theEdge();
 
-                                
+                            if (!skel.isVirtual(eSkel)) {
+                                ogdf::edge eG = blk.edgeToOrig[skel.realEdge(eSkel)];
+                                if (!eG) continue;
+
+                                EdgePartType l = getNodeEdgeType(cc.nodeToOrig[pole0Gcc], eG);
+                                EdgePartType r = getNodeEdgeType(cc.nodeToOrig[pole1Gcc], eG);
+
+                                if (l == left)  leftPart.push_back(eSkel);
+                                if (r == right) rightPart.push_back(eSkel);
+                            } else {
+                                ogdf::edge treeE = getTreeEdge(eSkel);
+                                if (!treeE) continue;
+
+                                ogdf::node B = (treeE->source() == pNode
+                                                ? treeE->target()
+                                                : treeE->source());
+                                SPQRsolve::EdgeDP &st = edge_dp[treeE];
+                                SPQRsolve::EdgeDPState &state =
+                                    (blk.parent[pNode] == B ? st.up : st.down);
+
+                                if (!state.s || !state.t) continue;
+
                                 EdgePartType l, r;
-                                if(state.s == pole0Blk) {
-                                    l = (state.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
+                                if (state.s == pole0Blk) {
+                                    l = (state.localPlusS > 0 ? EdgePartType::PLUS
+                                                            : EdgePartType::MINUS);
                                 } else {
-                                    l = (state.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
+                                    l = (state.localPlusT > 0 ? EdgePartType::PLUS
+                                                            : EdgePartType::MINUS);
                                 }
 
-                                if(state.s == pole1Blk) {
-                                    r = (state.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
+                                if (state.s == pole1Blk) {
+                                    r = (state.localPlusS > 0 ? EdgePartType::PLUS
+                                                            : EdgePartType::MINUS);
                                 } else {
-                                    r = (state.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
+                                    r = (state.localPlusT > 0 ? EdgePartType::PLUS
+                                                            : EdgePartType::MINUS);
                                 }
 
-                                if(l == left) leftPart.push_back(eSkel);
-                                if(r == right) rightPart.push_back(eSkel);
+                                if (l == left)  leftPart.push_back(eSkel);
+                                if (r == right) rightPart.push_back(eSkel);
                             }
                         }
 
-                        if(leftPart.size() > 0 && leftPart == rightPart) {
+                        if (!leftPart.empty() && leftPart == rightPart) {
                             bool ok = true;
-                            if(leftPart.size()==1) {
-                                node B = (blk.skel2tree[leftPart[0]]->source() == pNode ? blk.skel2tree[leftPart[0]]->target() : blk.skel2tree[leftPart[0]]->source());
-                                
-
-
-                                if(blk.spqr->typeOf(B) == SPQRTree::NodeType::SNode /*&& node_dp[B].cutsCnt >= 3*/) {
-                                    for(auto &gccCut:node_dp[B].GccCuts_last3) {
-                                        if(gccCut != pole0Gcc && gccCut != pole1Gcc) {
-                                            // std::cout << "FAILED due to S node " << ctx().node2name[cc.nodeToOrig[gccCut]] << std::endl;
-                                            ok = false;
-                                            break;
+                            if (leftPart.size() == 1) {
+                                ogdf::edge eSkel = leftPart[0];
+                                ogdf::edge treeE = getTreeEdge(eSkel);
+                                if (treeE) {
+                                    ogdf::node B = (treeE->source() == pNode
+                                                    ? treeE->target()
+                                                    : treeE->source());
+                                    if (blk.spqr->typeOf(B) ==
+                                        ogdf::StaticSPQRTree::NodeType::SNode)
+                                    {
+                                        for (auto &gccCut : node_dp[B].GccCuts_last3) {
+                                            if (gccCut != pole0Gcc && gccCut != pole1Gcc) {
+                                                ok = false;
+                                                break;
+                                            }
                                         }
                                     }
-                                    // ok = false;
                                 }
                             }
 
-                            if(ok) {
-                                // std::cout << "SNARL: " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-") << ":" << ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-") << std::endl;
-                                string s = /*"P"+*/ ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-");
-                                string t = /*"P"+*/ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-");
-                                
-                                std::vector<std::string> v={s,t};
-                                // std::cout << "P node snarl: ";
-                                // for(auto &s:v) std::cout << s << " ";
-                                // std::cout << std::endl;
-                                addSnarl(v);
+                            if (ok) {
+                                std::string s =
+                                    C.node2name[cc.nodeToOrig[pole0Gcc]] +
+                                    (left == EdgePartType::PLUS ? "+" : "-");
+                                std::string t =
+                                    C.node2name[cc.nodeToOrig[pole1Gcc]] +
+                                    (right == EdgePartType::PLUS ? "+" : "-");
 
+                                std::cerr << "[SPQR-P]  found P-snarl candidate " << s
+                                        << "  " << t << "\n";
+
+                                std::vector<std::string> v = { s, t };
+                                addSnarlTagged("P", std::move(v));
                             }
-                        }                        
-
+                        }
                     }
                 }
             }
 
-            void solveRR(ogdf::edge rrEdge, NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
+            void solveRR(ogdf::edge rrEdge,
+                        ogdf::NodeArray<SPQRsolve::NodeDPState> &node_dp,
+                        ogdf::EdgeArray<EdgeDP> &edge_dp,
+                        BlockData& blk,
+                        const CcData& cc)
+            {
                 PROFILE_FUNCTION();
+                auto &C = ctx();
+
                 EdgeDPState &down = edge_dp[rrEdge].down;
-                EdgeDPState &up = edge_dp[rrEdge].up;
+                EdgeDPState &up   = edge_dp[rrEdge].up;
 
-                node pole0Blk = down.s, pole1Blk = down.t;
-                node pole0Gcc = blk.toCc[pole0Blk], pole1Gcc = blk.toCc[pole1Blk];
-
-                // if(ctx().node2name[cc.nodeToOrig[pole0Gcc]] == "3497" || ctx().node2name[cc.nodeToOrig[pole1Gcc]] == "3497") {
-                //     std::cout << "Processing RR edge with pole " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] << " and " << ctx().node2name[cc.nodeToOrig[pole1Gcc]] << std::endl;
-                // }
-
-                // if(cc.isCutNode[pole0Blk]) {
-                //     node pole0CutT = cc.bc->bcproper(pole0Gcc);
-                //     if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;                     
-                // }
-
-                // if(cc.isCutNode[pole1Blk]) {
-                //     node pole1CutT = cc.bc->bcproper(pole1Gcc);
-                //     if(cc.badCutCount[pole1CutT]>=2 || (cc.badCutCount[pole1CutT] == 1 && cc.lastBad[pole1CutT] != blk.bNode)) return;                     
-                // }
-
-
-
-
-                {
-                    // if(down.s == pole0Blk) {
-                    //     if((down.localMinusS>0) + (down.localPlusS>0) == 2) return;
-                    // } else {
-                    //     if((down.localMinusT>0) + (down.localPlusT>0) == 2) return;
-                    // }
-
-                    // if(up.s == pole0Blk) {
-                    //     if((up.localMinusS>0) + (up.localPlusS>0) == 2) return;
-                    // } else {
-                    //     if((up.localMinusT>0) + (up.localPlusT>0) == 2) return;
-                    // }
-                    if((up.localMinusS>0) + (up.localPlusS>0) == 2) return;
-                    if((up.localMinusT>0) + (up.localPlusT>0) == 2) return;
-                    if((down.localMinusS>0) + (down.localPlusS>0) == 2) return;
-                    if((down.localMinusT>0) + (down.localPlusT>0) == 2) return;
-
-
+                if (!down.s || !down.t || !up.s || !up.t) {
+                    return;
                 }
 
-                EdgePartType pole0DownType = EdgePartType::NONE, pole0UpType = EdgePartType::NONE, pole1DownType = EdgePartType::NONE, pole1UpType = EdgePartType::NONE;
+                ogdf::node pole0Blk = down.s;
+                ogdf::node pole1Blk = down.t;
 
-                if(down.s == pole0Blk) {
+                ogdf::node pole0Gcc = blk.toCc[pole0Blk];
+                ogdf::node pole1Gcc = blk.toCc[pole1Blk];
+                if (!pole0Gcc || !pole1Gcc) {
+                    return;
+                }
+
+                auto hasDanglingOutside = [&](ogdf::node vGcc) {
+                    if (!cc.isCutNode[vGcc]) return false;
+                    if (cc.badCutCount[vGcc] >= 2) return true;
+                    if (cc.badCutCount[vGcc] == 1 && cc.lastBad[vGcc] != blk.bNode) return true;
+                    return false;
+                };
+
+                if (hasDanglingOutside(pole0Gcc) || hasDanglingOutside(pole1Gcc)) {
+                    return;
+                }
+
+                if ((up.localMinusS   > 0 && up.localPlusS   > 0) ||
+                    (up.localMinusT   > 0 && up.localPlusT   > 0) ||
+                    (down.localMinusS > 0 && down.localPlusS > 0) ||
+                    (down.localMinusT > 0 && down.localPlusT > 0))
+                {
+                    return;
+                }
+
+                EdgePartType pole0DownType = EdgePartType::NONE;
+                EdgePartType pole0UpType   = EdgePartType::NONE;
+                EdgePartType pole1DownType = EdgePartType::NONE;
+                EdgePartType pole1UpType   = EdgePartType::NONE;
+
+                if (down.s == pole0Blk)
                     pole0DownType = (down.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole0DownType = (down.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(up.s == pole0Blk) {
+                if (up.s == pole0Blk)
                     pole0UpType = (up.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole0UpType = (up.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(down.s == pole1Blk) {
+                if (down.s == pole1Blk)
                     pole1DownType = (down.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole1DownType = (down.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-                if(up.s == pole1Blk) {
+                if (up.s == pole1Blk)
                     pole1UpType = (up.localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                } else {
+                else
                     pole1UpType = (up.localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                }
 
-
-                if(pole0DownType == pole0UpType) return;
-                if(pole1DownType == pole1UpType) return;
-
-
-
-                if(cc.isCutNode[pole0Gcc] || cc.isCutNode[pole1Gcc]) {
-                    assert(cc.badCutCount[pole0Gcc] >= 1);
-                    if(cc.badCutCount[pole0Gcc]>=2 || cc.badCutCount[pole1Gcc]>=2) return;
-                }
-
+                if (pole0DownType == pole0UpType) return;
+                if (pole1DownType == pole1UpType) return;
 
                 {
-                    string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0DownType == EdgePartType::PLUS ? "+" : "-");
-                    string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1DownType == EdgePartType::PLUS ? "+" : "-");
+                    std::string s =
+                        C.node2name[cc.nodeToOrig[pole0Gcc]] +
+                        (pole0DownType == EdgePartType::PLUS ? "+" : "-");
+                    std::string t =
+                        C.node2name[cc.nodeToOrig[pole1Gcc]] +
+                        (pole1DownType == EdgePartType::PLUS ? "+" : "-");
 
-                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
-                    // std::cout << "RR edge snarl: ";
-                    // for(auto &s:v) std::cout << s << " ";
-                    // std::cout << std::endl;
-                    addSnarl(v);
+                    std::vector<std::string> v = { s, t };
+                    addSnarlTagged("RR", std::move(v));
                 }
 
                 {
-                    string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (pole0UpType == EdgePartType::PLUS ? "+" : "-");
-                    string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (pole1UpType == EdgePartType::PLUS ? "+" : "-");
+                    std::string s =
+                        C.node2name[cc.nodeToOrig[pole0Gcc]] +
+                        (pole0UpType == EdgePartType::PLUS ? "+" : "-");
+                    std::string t =
+                        C.node2name[cc.nodeToOrig[pole1Gcc]] +
+                        (pole1UpType == EdgePartType::PLUS ? "+" : "-");
 
-                    std::vector<std::string> v={/*"RR"+*/s,/*"RR"+*/t};
-                    // std::cout << "RR edge snarl: ";
-                    // for(auto &s:v) std::cout << s << " ";
-                    // std::cout << std::endl;
-
-                    addSnarl(v);
+                    std::vector<std::string> v = { s, t };
+                    addSnarlTagged("RR", std::move(v));
                 }
-
-
-
-
-                // if(cc.isCutNode[pole0Blk]) {
-                //     node pole0CutT = cc.bc->bcproper(pole0Gcc);
-                //     if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;        
-                //     // if(cc.badCutCount[pole0CutT]>=2 || (cc.badCutCount[pole0CutT] == 1 && cc.lastBad[pole0CutT] != blk.bNode)) return;                     
-                // }
-
-                // if(cc.isCutNode[pole1Blk]) {
-                //     node pole1CutT = cc.bc->bcproper(pole1Gcc);
-                //     if(cc.badCutCount[pole1CutT]>=2 || (cc.badCutCount[pole1CutT] == 1 && cc.lastBad[pole1CutT] != blk.bNode)) return;                     
-                // }
-
-
-                // std::array<EdgeDPState*, 2> states = { &down, &up };
-                
-                // for(auto &left:{EdgePartType::PLUS, EdgePartType::MINUS}) {
-                //     for(auto &right:{EdgePartType::PLUS, EdgePartType::MINUS}) {
-                //         std::vector<EdgeDPState*> leftPart, rightPart;
-
-
-
-                //         for(auto state : states) {                            
-                //             EdgePartType l, r;
-                //             if(state->s == pole0Blk) {
-                //                 l = (state->localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             } else {
-                //                 l = (state->localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             }
-
-                //             if(state->s == pole1Blk) {
-                //                 r = (state->localPlusS > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             } else {
-                //                 r = (state->localPlusT > 0 ? EdgePartType::PLUS : EdgePartType::MINUS);
-                //             }
-
-                //             if(l == left) leftPart.push_back(state);
-                            
-                //             if(r == right) rightPart.push_back(state);
-                //         }
-
-
-                //         if(leftPart.size() > 0 && leftPart == rightPart) {
-                //             string s = ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-");
-                //             string t = ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-");
-                            
-                //             std::vector<std::string> v={s,t};
-                //             addSnarl(v);
-
-                //             // std::cout << "SNARL RR: " << ctx().node2name[cc.nodeToOrig[pole0Gcc]] + (left == EdgePartType::PLUS ? "+" : "-") << ":" << ctx().node2name[cc.nodeToOrig[pole1Gcc]] + (right == EdgePartType::PLUS ? "+" : "-") << std::endl;
-                //         }                        
-
-                //     }
-                // }
-
             }
 
             void solveNodes(NodeArray<SPQRsolve::NodeDPState> &node_dp, ogdf::EdgeArray<EdgeDP> &edge_dp, BlockData& blk, const CcData& cc) {
@@ -4006,17 +4170,145 @@ namespace solver {
                 }
             }
 
+            static void findEdgeSnarlsBlock(BlockData &blk, const CcData &cc) {
+                auto &C = ctx();
+                if (!blk.Gblk || !blk.spqr) return;
+
+                const ogdf::StaticSPQRTree &spqr = *blk.spqr;
+                const ogdf::Graph &T = spqr.tree();
+
+                ogdf::NodeArray<std::vector<ogdf::node>> sNodesPerBlk(*blk.Gblk);
+                for (ogdf::node vB : blk.Gblk->nodes) {
+                    sNodesPerBlk[vB].clear();
+                }
+
+                for (ogdf::node tNode : T.nodes) {
+                    if (spqr.typeOf(tNode) != ogdf::StaticSPQRTree::NodeType::SNode)
+                        continue;
+                    const ogdf::Skeleton &skel = spqr.skeleton(tNode);
+                    const ogdf::Graph &skelG  = skel.getGraph();
+                    for (ogdf::node vSkel : skelG.nodes) {
+                        ogdf::node vB = skel.original(vSkel);
+                        if (vB) {
+                            sNodesPerBlk[vB].push_back(tNode);
+                        }
+                    }
+                }
+
+                for (ogdf::node vB : blk.Gblk->nodes) {
+                    auto &vec = sNodesPerBlk[vB];
+                    std::sort(vec.begin(), vec.end(),
+                            [](ogdf::node a, ogdf::node b) {
+                                return a->index() < b->index();
+                            });
+                    vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
+                }
+
+                auto shareSNode = [&](ogdf::node uB, ogdf::node vB) -> bool {
+                    const auto &Su = sNodesPerBlk[uB];
+                    const auto &Sv = sNodesPerBlk[vB];
+                    size_t i = 0, j = 0;
+                    while (i < Su.size() && j < Sv.size()) {
+                        if (Su[i] == Sv[j]) return true;
+                        if (Su[i]->index() < Sv[j]->index()) ++i;
+                        else ++j;
+                    }
+                    return false;
+                };
+
+                auto hasDanglingOutside = [&](ogdf::node vB) {
+                    ogdf::node vGcc = blk.toCc[vB];
+                    if (!vGcc) return false;
+                    if (!cc.isCutNode[vGcc]) return false;
+                    if (cc.badCutCount[vGcc] >= 2) return true;
+                    if (cc.badCutCount[vGcc] == 1 && cc.lastBad[vGcc] != blk.bNode) return true;
+                    return false;
+                };
+
+                auto opp = [](EdgePartType t) {
+                    if (t == EdgePartType::PLUS)  return EdgePartType::MINUS;
+                    if (t == EdgePartType::MINUS) return EdgePartType::PLUS;
+                    return EdgePartType::NONE;
+                };
+
+                for (ogdf::edge eB : blk.Gblk->edges) {
+                    ogdf::node uB = eB->source();
+                    ogdf::node vB = eB->target();
+
+                    ogdf::node uGcc = blk.toCc[uB];
+                    ogdf::node vGcc = blk.toCc[vB];
+                    if (!uGcc || !vGcc) continue;
+
+                    ogdf::node uG = cc.nodeToOrig[uGcc];
+                    ogdf::node vG = cc.nodeToOrig[vGcc];
+                    if (!uG || !vG) continue;
+
+                    if (C.node2name[uG] == "_trash" || C.node2name[vG] == "_trash")
+                        continue;
+
+                    if (cc.isTip[uGcc] || cc.isTip[vGcc])
+                        continue;
+
+                    if (hasDanglingOutside(uB) || hasDanglingOutside(vB))
+                        continue;
+
+                    ogdf::edge eG = blk.edgeToOrig[eB];
+                    if (!eG) continue;
+
+                    EdgePartType su = getNodeEdgeType(uG, eG);
+                    EdgePartType sv = getNodeEdgeType(vG, eG);
+                    if (su == EdgePartType::NONE || sv == EdgePartType::NONE)
+                        continue;
+
+                    EdgePartType su_hat = opp(su);
+                    EdgePartType sv_hat = opp(sv);
+
+                    // Proposition 4.6 / Alg. FindEdgeSnarls 
+                    bool u_only_su =
+                        (su == EdgePartType::PLUS  && blk.degPlusBlk[uB]  == 1) ||
+                        (su == EdgePartType::MINUS && blk.degMinusBlk[uB] == 1);
+                    bool v_only_sv =
+                        (sv == EdgePartType::PLUS  && blk.degPlusBlk[vB]  == 1) ||
+                        (sv == EdgePartType::MINUS && blk.degMinusBlk[vB] == 1);
+
+                    bool u_hasOpp =
+                        (su_hat == EdgePartType::PLUS  ? blk.degPlusBlk[uB]  > 0
+                                                    : blk.degMinusBlk[uB] > 0);
+                    bool v_hasOpp =
+                        (sv_hat == EdgePartType::PLUS  ? blk.degPlusBlk[vB]  > 0
+                                                    : blk.degMinusBlk[vB] > 0);
+
+                    bool cond_edge_case = u_only_su && v_only_sv && u_hasOpp && v_hasOpp;
+                    if (!cond_edge_case) continue;
+
+                    {
+                        std::string s = C.node2name[uG] + (su == EdgePartType::PLUS ? "+" : "-");
+                        std::string t = C.node2name[vG] + (sv == EdgePartType::PLUS ? "+" : "-");
+                        std::vector<std::string> sn = { s, t };
+                        addSnarlTagged("E", std::move(sn));
+                    }
+
+                    if (!shareSNode(uB, vB)) {
+                        std::string s2 = C.node2name[uG] + (su_hat == EdgePartType::PLUS ? "+" : "-");
+                        std::string t2 = C.node2name[vG] + (sv_hat == EdgePartType::PLUS ? "+" : "-");
+                        std::vector<std::string> sn2 = { s2, t2 };
+                        addSnarlTagged("E", std::move(sn2));
+                    }
+                }
+            }
+
             void solveSPQR(BlockData& blk, const CcData& cc) {
                 MARK_SCOPE_MEM("sn/solveSPQR");
-
                 PROFILE_FUNCTION();
-                if(!blk.spqr) return;
-                if(!blk.spqr || blk.Gblk->numberOfNodes() < 3) return;
 
-                const Graph &T = blk.spqr->tree();
+                if (!blk.spqr) return;
+                if (!blk.Gblk || blk.Gblk->numberOfNodes() < 3) return;
 
-                EdgeArray<SPQRsolve::EdgeDP> edge_dp(T);
-                NodeArray<SPQRsolve::NodeDPState> node_dp(T);
+                auto &C = ctx();
+                const ogdf::Graph &T = blk.spqr->tree();
+
+                ogdf::EdgeArray<SPQRsolve::EdgeDP>      edge_dp(T);
+                ogdf::NodeArray<SPQRsolve::NodeDPState> node_dp(T);
 
                 std::vector<ogdf::node> nodeOrder;
                 std::vector<ogdf::edge> edgeOrder;
@@ -4026,99 +4318,53 @@ namespace solver {
                 ogdf::NodeArray<ogdf::node> blkToSkel(*blk.Gblk, nullptr);
                 blk.blkToSkel = blkToSkel;
 
-                for(auto e:edgeOrder) {
+                for (ogdf::edge e : edgeOrder) {
                     SPQRsolve::processEdge(e, edge_dp, cc, blk);
                 }
 
-                for(auto v:nodeOrder) {
+                for (ogdf::node v : nodeOrder) {
                     SPQRsolve::processNode(v, edge_dp, cc, blk);
                 }
 
-                solveNodes(node_dp, edge_dp, blk, cc);
+                SPQRsolve::solveNodes(node_dp, edge_dp, blk, cc);
 
-
-                {
-                    // PROFILE_BLOCK("sn/eachEdge");
-                    for(edge eGblk: blk.Gblk->edges) {
-                        edge eG = blk.edgeToOrig[eGblk];
-
-                        node uGcc = blk.nodeToOrig[eGblk->source()];
-                        node vGcc = blk.nodeToOrig[eGblk->target()];
-
-                        node uG = cc.nodeToOrig[uGcc];
-                        node vG = cc.nodeToOrig[vGcc];
-
-                        if(ctx().node2name[uG] == "_trash" || ctx().node2name[vG] == "_trash") {
-                            continue;
-                        }
-
-                        if(cc.isTip[uGcc] || cc.isTip[vGcc]) {
-                            continue;
-                        }
-
-                        if((cc.isCutNode[uGcc] && cc.badCutCount[uGcc]>0) || (cc.isCutNode[vGcc] && cc.badCutCount[vGcc]>0)) {
-                            continue;
-                        }
-
-                        int uPlusCnt = cc.degPlus[uGcc] - (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? 1 : 0), uMinusCnt = cc.degMinus[uGcc] - (getNodeEdgeType(uG, eG) == EdgePartType::MINUS ? 1 : 0);
-                        int vPlusCnt = cc.degPlus[vGcc] - (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? 1 : 0), vMinusCnt = cc.degMinus[vGcc] - (getNodeEdgeType(vG, eG) == EdgePartType::MINUS ? 1 : 0);
-                    
-
-                        bool ok = false;
-
-                        string s = ctx().node2name[cc.nodeToOrig[uGcc]];
-                        string t = ctx().node2name[cc.nodeToOrig[vGcc]];
-
-
-                        if((uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt == 0 && vMinusCnt > 0) || (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt > 0 && vMinusCnt == 0) || (uPlusCnt > 0 && uMinusCnt == 0 && vPlusCnt == 0 && vMinusCnt > 0) || (uPlusCnt == 0 && uMinusCnt > 0 && vPlusCnt > 0 && vMinusCnt == 0)) {
-                            ok = true;
-                        }
-
-                        if(ok) {
-                            std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "+" : "-"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "+" : "-")};
-                            addSnarl(v);
-
-                            node tNode = blk.spqr->skeletonOfReal(eGblk).treeNode();
-                            if(blk.spqr->typeOf(tNode) != SPQRTree::NodeType::SNode) {
-                                std::vector<std::string> v={/*"E"+*/s + (getNodeEdgeType(uG, eG) == EdgePartType::PLUS ? "-" : "+"),/*"E"+*/t + (getNodeEdgeType(vG, eG) == EdgePartType::PLUS ? "-" : "+")};
-                                addSnarl(v);
-                            }
-                        } 
-                    }
-                }
-                    
-
+                SPQRsolve::findEdgeSnarlsBlock(blk, cc);
             }
+
 
 
         }
 
 
-
         void findTips(CcData& cc) {
             MARK_SCOPE_MEM("sn/findTips");
             PROFILE_FUNCTION();
+
             size_t localIsolated = 0;
-            for(node v : cc.Gcc->nodes) {
-                int plusCnt = 0, minusCnt = 0;
-                node vG = cc.nodeToOrig[v];
 
-                for(auto adjE: v->adjEntries) {
-                    ogdf::edge e = cc.edgeToOrig[adjE->theEdge()];
-                    EdgePartType eType = getNodeEdgeType(vG, e);
-                    if(eType == EdgePartType::PLUS) plusCnt++;
-                    else minusCnt++;
+            for (ogdf::node v : cc.Gcc->nodes) {
+                int plusCnt  = 0;
+                int minusCnt = 0;
+                ogdf::node vG = cc.nodeToOrig[v];
+
+                for (auto adjE : v->adjEntries) {
+                    ogdf::edge eC = adjE->theEdge();
+                    ogdf::edge eG = cc.edgeToOrig[eC];
+
+                    EdgePartType t = getNodeEdgeType(vG, eG);
+                    if (t == EdgePartType::PLUS) {
+                        ++plusCnt;
+                    } else if (t == EdgePartType::MINUS) {
+                        ++minusCnt;
+                    }
                 }
 
-                if(plusCnt + minusCnt == 0) {
-                    isolatedNodesCnt++;
+                if (plusCnt + minusCnt == 0) {
+                    ++localIsolated;
                 }
 
-                if(plusCnt == 0 || minusCnt == 0) {
-                    cc.isTip[v] = true;
-                } else {
-                    cc.isTip[v] = false;
-                }
+
+                cc.isTip[v] = (plusCnt == 0 || minusCnt == 0);
             }
 
             {
@@ -4132,166 +4378,307 @@ namespace solver {
             MARK_SCOPE_MEM("sn/processCutNodes");
             PROFILE_FUNCTION();
 
-            for(node v : cc.Gcc->nodes) {
-                if(cc.bc->typeOfGNode(v) == BCTree::GNodeType::CutVertex) {
-                    cc.isCutNode[v] = true;
 
-                    bool isGood = true;
-                    ogdf::node vT = cc.bc->bcproper(v);
+            for (ogdf::node v : cc.Gcc->nodes) {
+                cc.isCutNode[v]     = false;
+                cc.isGoodCutNode[v] = false;   
+                cc.lastBad[v]       = nullptr;
+                cc.badCutCount[v]   = 0;
+            }
 
-                    for(auto adjV : vT->adjEntries) {
-                        node uT = adjV->twinNode();
-                        std::vector<ogdf::edge> outPlus, outMinus;
-                        getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::PLUS, outPlus);
-                        getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::MINUS, outMinus);
 
-                        if(outPlus.size() > 0 && outMinus.size() > 0) {
-                            isGood = false;
-                            cc.lastBad[v] = uT;
-                            cc.badCutCount[v]++;
-                        }
+            for (ogdf::node v : cc.Gcc->nodes) {
+                if (cc.bc->typeOfGNode(v) != ogdf::BCTree::GNodeType::CutVertex)
+                    continue;
+
+                cc.isCutNode[v] = true;
+
+                int mixedBlocks = 0;
+                ogdf::node bestMixed = nullptr;
+
+                ogdf::node vT = cc.bc->bcproper(v); 
+
+
+                for (ogdf::adjEntry adjV = vT->firstAdj(); adjV; adjV = adjV->succ()) {
+                    ogdf::node bT = adjV->twinNode();
+
+                    std::vector<ogdf::edge> outPlus, outMinus;
+                    getOutgoingEdgesInBlock(cc, v, bT, EdgePartType::PLUS,  outPlus);
+                    getOutgoingEdgesInBlock(cc, v, bT, EdgePartType::MINUS, outMinus);
+
+                    if (!outPlus.empty() && !outMinus.empty()) {
+                        ++mixedBlocks;
+                        if (!bestMixed || bT->index() < bestMixed->index())
+                            bestMixed = bT;
                     }
-                    cc.isGoodCutNode[v] = isGood;
                 }
+
+                cc.badCutCount[v] = mixedBlocks;
+                cc.lastBad[v]     = bestMixed;
+
+
+                cc.isGoodCutNode[v] = (mixedBlocks == 0);
             }
         }
-
 
         void findCutSnarl(CcData &cc) {
             MARK_SCOPE_MEM("sn/findCutSnarl");
             PROFILE_FUNCTION();
-            ogdf::NodeArray<std::pair<bool, bool>> visited(*cc.Gcc, {false, false}); // first: minus visited, second: plus visited
 
-            std::function<void(ogdf::node, ogdf::node, EdgePartType, std::vector<std::string> &)>  dfs=[&](ogdf::node node, ogdf::node prev, EdgePartType edgeType, std::vector<std::string> &goodNodes) -> void {
-                if((cc.isGoodCutNode[node] || cc.isTip[node]) && ctx().node2name[cc.nodeToOrig[node]] != "_trash") {
-                    goodNodes.push_back(ctx().node2name[cc.nodeToOrig[node]]+(edgeType == EdgePartType::PLUS ? "+" : "-"));
+
+            // visited[v].first = already visited upon arrival with a MINUS sign
+            // visited[v].second = already visited upon arrival with a PLUS sign
+            ogdf::NodeArray<std::pair<bool, bool>> visited(
+                *cc.Gcc, std::make_pair(false, false)
+            );
+
+            // DFS on the incidences (v, edgeType) that simulates sign-cut graphs:
+            //
+            // - if v is a tip -> potential endpoint in the sign-cut graph,
+            // - if v is sign-consistent -> potential endpoint (will be split into two tips),
+            // and we DO NOT allow a sign change in v (as after split),
+            // - otherwise -> v is an internal vertex where we are allowed
+            // to change the sign (unsplit component).
+
+            std::function<void(ogdf::node, ogdf::node,
+                            EdgePartType, std::vector<std::string>&)>
+                dfs = [&](ogdf::node node,
+                        ogdf::node prev,
+                        EdgePartType edgeType,
+                        std::vector<std::string> &goodNodes) -> void
+            {
+                // Potential endpoint = sign-consistent tip or vertex (goodCutNode)
+                if ((cc.isGoodCutNode[node] || cc.isTip[node]) &&
+                    ctx().node2name[cc.nodeToOrig[node]] != "_trash")
+                {
+                    std::string name = ctx().node2name[cc.nodeToOrig[node]];
+                    name.push_back(edgeType == EdgePartType::PLUS ? '+' : '-');
+                    goodNodes.push_back(std::move(name));
                 }
 
-                if(!cc.isGoodCutNode[node] && !cc.isTip[node]) {
-                    visited[node].first = visited[node].second = true;
+                // Visit marking:
+                // - internal vertex (neither tip nor sign-consistent) -> both signs are blocked,
+                // we will not revisit this vertex,
+                // - otherwise we only block the current sign.
+                if (!cc.isGoodCutNode[node] && !cc.isTip[node]) {
+                    // Sommet interne, non splitté dans les sign‑cut graphs
+                    visited[node].first  = true;
+                    visited[node].second = true;
                 } else {
-                    if(edgeType == EdgePartType::MINUS) visited[node].first = true;
-                    else visited[node].second = true;
+                    if (edgeType == EdgePartType::MINUS)
+                        visited[node].first = true;
+                    else
+                        visited[node].second = true;
                 }
 
+                // Adjacencies of the same sign (edgeType) and of opposite sign
                 std::vector<ogdf::AdjElement*> sameOutEdges, otherOutEdges;
-                getAllOutgoingEdgesOfType(cc, node, (edgeType == EdgePartType::PLUS ? EdgePartType::PLUS : EdgePartType::MINUS), sameOutEdges);
-                getAllOutgoingEdgesOfType(cc, node, (edgeType == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS), otherOutEdges);
+                getAllOutgoingEdgesOfType(
+                    cc, node, edgeType, sameOutEdges
+                );
+                getAllOutgoingEdgesOfType(
+                    cc, node,
+                    (edgeType == EdgePartType::PLUS ? EdgePartType::MINUS
+                                                    : EdgePartType::PLUS),
+                    otherOutEdges
+                );
 
-                bool canGoOther = !cc.isGoodCutNode[node] && !cc.isTip[node];
+                // Sign can only change at a non-tip and non-sign-consistent vertex
+                bool canGoOther = (!cc.isGoodCutNode[node] && !cc.isTip[node]);
 
-                for(auto &adjE:sameOutEdges) {
+                // 1) Propagation while maintaining the same sign
+                for (auto &adjE : sameOutEdges) {
                     ogdf::node otherNode = adjE->twinNode();
-                    ogdf::edge e = adjE->theEdge();
-                    EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode], cc.edgeToOrig[e]);
+                    ogdf::edge eC        = adjE->theEdge();
+                    ogdf::edge eG        = cc.edgeToOrig[eC];
 
-                    if((inType == EdgePartType::PLUS && !visited[otherNode].second) || (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
+                    EdgePartType inType =
+                        getNodeEdgeType(cc.nodeToOrig[otherNode], eG);
+
+                    bool already =
+                        (inType == EdgePartType::PLUS  && visited[otherNode].second) ||
+                        (inType == EdgePartType::MINUS && visited[otherNode].first);
+
+                    if (!already) {
                         dfs(otherNode, node, inType, goodNodes);
                     }
                 }
 
-                if(canGoOther) {
-                    for(auto &adjE:otherOutEdges) {
+
+                if (canGoOther) {
+                    for (auto &adjE : otherOutEdges) {
                         ogdf::node otherNode = adjE->twinNode();
-                        ogdf::edge e = adjE->theEdge();
+                        ogdf::edge eC        = adjE->theEdge();
+                        ogdf::edge eG        = cc.edgeToOrig[eC];
 
-                        EdgePartType inType = getNodeEdgeType(cc.nodeToOrig[otherNode], cc.edgeToOrig[e]);
+                        EdgePartType inType =
+                            getNodeEdgeType(cc.nodeToOrig[otherNode], eG);
 
-                        if((inType == EdgePartType::PLUS && !visited[otherNode].second) || (inType == EdgePartType::MINUS && !visited[otherNode].first)) {
+                        bool already =
+                            (inType == EdgePartType::PLUS  && visited[otherNode].second) ||
+                            (inType == EdgePartType::MINUS && visited[otherNode].first);
+
+                        if (!already) {
                             dfs(otherNode, node, inType, goodNodes);
                         }
                     }
                 }
             };
 
-            for(node v : cc.Gcc->nodes) {
-                for(auto &t : {EdgePartType::PLUS, EdgePartType::MINUS}) {
-                    if(t == EdgePartType::PLUS && visited[v].second) continue;
-                    if(t == EdgePartType::MINUS && visited[v].first) continue;
+
+            for (ogdf::node v : cc.Gcc->nodes) {
+                for (auto t : {EdgePartType::PLUS, EdgePartType::MINUS}) {
+
+                    if (t == EdgePartType::PLUS  && visited[v].second) continue;
+                    if (t == EdgePartType::MINUS && visited[v].first)  continue;
+
                     std::vector<std::string> goodNodes;
                     dfs(v, nullptr, t, goodNodes);
-
-                    if(goodNodes.size()>=2) {
-                        addSnarl(goodNodes);
+                    if (goodNodes.size() >= 2) {
+                        addSnarlTagged("CUT", std::move(goodNodes));
                     }
                 }
-            }   
+            }
         }
 
 
         void buildBlockData(BlockData& blk, CcData& cc) {
             MARK_SCOPE_MEM("sn/blockData/build");
             PROFILE_FUNCTION();
-            {
-                blk.Gblk = std::make_unique<Graph>();
-            }
+
+            blk.Gblk = std::make_unique<ogdf::Graph>();
 
             blk.nodeToOrig.init(*blk.Gblk, nullptr);
             blk.edgeToOrig.init(*blk.Gblk, nullptr);
             blk.toCc.init(*blk.Gblk, nullptr);
 
-            std::unordered_set<node> verts;
-            {
-                for (edge hE : cc.bc->hEdges(blk.bNode)) {
-                    edge eC = cc.bc->original(hE);
-                    verts.insert(eC->source());
-                    verts.insert(eC->target());
+            blk.degPlusBlk.init(*blk.Gblk, 0);
+            blk.degMinusBlk.init(*blk.Gblk, 0);
+
+            std::vector<ogdf::edge> edgesCc;
+            edgesCc.reserve(cc.bc->hEdges(blk.bNode).size());
+            for (ogdf::edge hE : cc.bc->hEdges(blk.bNode)) {
+                ogdf::edge eCc = cc.bc->original(hE);
+                if (eCc) edgesCc.push_back(eCc);
+            }
+            std::sort(edgesCc.begin(), edgesCc.end(),
+                    [](ogdf::edge a, ogdf::edge b) { return a->index() < b->index(); });
+            edgesCc.erase(std::unique(edgesCc.begin(), edgesCc.end(),
+                                    [](ogdf::edge a, ogdf::edge b) { return a->index() == b->index(); }),
+                        edgesCc.end());
+
+            std::vector<ogdf::node> vertsCc;
+            vertsCc.reserve(edgesCc.size() * 2);
+            for (ogdf::edge eCc : edgesCc) {
+                vertsCc.push_back(eCc->source());
+                vertsCc.push_back(eCc->target());
+            }
+            std::sort(vertsCc.begin(), vertsCc.end(),
+                    [](ogdf::node a, ogdf::node b) { return a->index() < b->index(); });
+            vertsCc.erase(std::unique(vertsCc.begin(), vertsCc.end()), vertsCc.end());
+
+            std::unordered_map<ogdf::node, ogdf::node> cc_to_blk;
+            cc_to_blk.reserve(vertsCc.size());
+
+            for (ogdf::node vCc : vertsCc) {
+                ogdf::node vB = blk.Gblk->newNode();
+                cc_to_blk[vCc] = vB;
+
+                blk.toCc[vB] = vCc;                     // vB -> vCc
+                ogdf::node vG = cc.nodeToOrig[vCc];     // vCc -> vG
+                blk.nodeToOrig[vB] = vG;                // vB -> vG
+            }
+
+            // --- Block edges + update of signed degrees in the block ---
+            for (ogdf::edge eCc : edgesCc) {
+                auto itS = cc_to_blk.find(eCc->source());
+                auto itT = cc_to_blk.find(eCc->target());
+                if (itS != cc_to_blk.end() && itT != cc_to_blk.end()) {
+                    ogdf::node uB = itS->second;
+                    ogdf::node vB = itT->second;
+
+                    ogdf::edge eB = blk.Gblk->newEdge(uB, vB);
+                    ogdf::edge eG = cc.edgeToOrig[eCc];
+                    blk.edgeToOrig[eB] = eG; // eB -> eG
+
+                    ogdf::node uG = blk.nodeToOrig[uB];
+                    ogdf::node vG = blk.nodeToOrig[vB];
+
+                    EdgePartType su = getNodeEdgeType(uG, eG);
+                    EdgePartType sv = getNodeEdgeType(vG, eG);
+
+                    if (su == EdgePartType::PLUS)
+                        blk.degPlusBlk[uB]++;
+                    else if (su == EdgePartType::MINUS)
+                        blk.degMinusBlk[uB]++;
+
+                    if (sv == EdgePartType::PLUS)
+                        blk.degPlusBlk[vB]++;
+                    else if (sv == EdgePartType::MINUS)
+                        blk.degMinusBlk[vB]++;
                 }
             }
 
-            std::unordered_map<node, node> cc_to_blk;
-            cc_to_blk.reserve(verts.size());
-
-            {
-                for (node vCc : verts) {
-                    node vB = blk.Gblk->newNode();
-                    cc_to_blk[vCc] = vB;
-                    blk.toCc[vB] = vCc;
-                    node vG = cc.nodeToOrig[vCc];
-                    blk.nodeToOrig[vB] = vG;
-                }
-            }
-
-            {
-                for (edge hE : cc.bc->hEdges(blk.bNode)) {
-                    edge eCc = cc.bc->original(hE);
-                    auto srcIt = cc_to_blk.find(eCc->source());
-                    auto tgtIt = cc_to_blk.find(eCc->target());
-                    if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end()) {
-                        edge e = blk.Gblk->newEdge(srcIt->second, tgtIt->second);
-                        blk.edgeToOrig[e] = cc.edgeToOrig[eCc];
-                    }
-                }
-            }
-
+            // --- Construction of the SPQR tree if the block is non-trivial ---
             if (blk.Gblk->numberOfNodes() >= 3) {
                 {
                     MARK_SCOPE_MEM("sn/blockData/spqr_build");
-                    blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
+                    blk.spqr = std::make_unique<ogdf::StaticSPQRTree>(*blk.Gblk);
                 }
-                const Graph& T = blk.spqr->tree();
+                const ogdf::Graph &T = blk.spqr->tree();
 
-                blk.skel2tree.reserve(2*T.edges.size());
+                // Skeleton mapping -> SPQR tree edge
+                blk.skel2tree.clear();
+                blk.skel2tree.reserve(2 * T.numberOfEdges());
+
+                std::vector<ogdf::edge> treeEdges;
+                treeEdges.reserve(T.numberOfEdges());
+                for (ogdf::edge te : T.edges) treeEdges.push_back(te);
+                std::sort(treeEdges.begin(), treeEdges.end(),
+                        [](ogdf::edge a, ogdf::edge b) { return a->index() < b->index(); });
+
+                for (ogdf::edge te : treeEdges) {
+                    if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
+                        blk.skel2tree[eSrc] = te;
+                    if (auto eTgt = blk.spqr->skeletonEdgeTgt(te))
+                        blk.skel2tree[eTgt] = te;
+                }
+
+                // Parenting in the SPQR tree (for deterministic navigation)
                 blk.parent.init(T, nullptr);
-
-                node root = blk.spqr->rootNode();
+                ogdf::node root = blk.spqr->rootNode();
+                if (!root) return;
                 blk.parent[root] = root;
 
-                for (edge te : T.edges) {
-                    node u = te->source();
-                    node v = te->target();
-                    blk.parent[v] = u;
-                
-                    if (auto eSrc = blk.spqr->skeletonEdgeSrc(te)) {
-                        blk.skel2tree[eSrc] = te;
+                std::deque<ogdf::node> q;
+                ogdf::NodeArray<bool> seen(T, false);
+                q.push_back(root);
+                seen[root] = true;
+
+                while (!q.empty()) {
+                    ogdf::node cur = q.front();
+                    q.pop_front();
+
+                    std::vector<ogdf::node> nbrs;
+                    nbrs.reserve(cur->degree());
+                    for (ogdf::adjEntry adj = cur->firstAdj(); adj; adj = adj->succ()) {
+                        ogdf::node nxt = adj->twinNode();
+                        if (nxt) nbrs.push_back(nxt);
                     }
-                    if (auto eTgt = blk.spqr->skeletonEdgeTgt(te)) {
-                        blk.skel2tree[eTgt] = te;
+                    std::sort(nbrs.begin(), nbrs.end(),
+                            [](ogdf::node a, ogdf::node b) { return a->index() < b->index(); });
+                    nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
+
+                    for (ogdf::node nxt : nbrs) {
+                        if (!seen[nxt]) {
+                            seen[nxt]  = true;
+                            blk.parent[nxt] = cur;
+                            q.push_back(nxt);
+                        }
                     }
                 }
             }
         }
-
 
 
 
@@ -4473,7 +4860,7 @@ namespace solver {
                         MARK_SCOPE_MEM("sn/worker_bcTree/collect_B_nodes");
                         for (ogdf::node v : cc->bc->bcTree().nodes) {
                             if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp) {
-                                // Emplacement direct avec notre constructeur
+
                                 localPreps.emplace_back(cc, v);
                             }
                         }
@@ -4482,7 +4869,6 @@ namespace solver {
                     {
                         static std::mutex prepMutex;
                         std::lock_guard<std::mutex> lock(prepMutex);
-                        // Insérer en déplaçant (pas de copie)
                         blockPreps->reserve(blockPreps->size() + localPreps.size());
                         for (auto &bp : localPreps) {
                             blockPreps->emplace_back(std::move(bp));
@@ -4672,16 +5058,21 @@ namespace solver {
             return nullptr;
         }
 
-        
         void solve() {
-            std::cout << "Finding snarls...\n";
+            std::cout << "Finding snarls (multiprocess...)\n";
             PROFILE_FUNCTION();
             auto& C = ctx();
             Graph& G = C.G;
 
-            // -------------------------------
-            // Phase I/O: CC + Bucketing
-            // -------------------------------
+
+            struct SnarlTypeCounts {
+                uint64_t cut;
+                uint64_t S;
+                uint64_t P;
+                uint64_t RR;
+                uint64_t E;
+            };
+
             NodeArray<int> compIdx(G);
             int nCC = 0;
             std::vector<std::vector<node>> bucket;
@@ -4710,307 +5101,259 @@ namespace solver {
                 }
             }
 
-            std::vector<std::unique_ptr<CcData>> components(nCC);
-            std::vector<BlockPrep> blockPreps;
+            size_t maxProcs = std::thread::hardware_concurrency();
+            if (maxProcs == 0) maxProcs = 1;
+            size_t procs = std::min({ (size_t)C.threads, (size_t)std::max(1, nCC), maxProcs });
+
+            struct ChildInfo {
+                pid_t pid;
+                std::string outPath; 
+                std::string cntPath; 
+            };
+
+            std::vector<ChildInfo> children;
+            children.reserve(procs);
+
+            uint64_t build_start_us = nowMicros();
+            g_stats_build.start_rss.store(currentRSSBytes(), std::memory_order_relaxed);
+
+            for (size_t p = 0; p < procs; ++p) {
+                size_t start = (size_t)((uint64_t)p * (uint64_t)nCC / (uint64_t)procs);
+                size_t end   = (size_t)((uint64_t)(p+1) * (uint64_t)nCC / (uint64_t)procs);
+                if (start >= (size_t)nCC) start = (size_t)nCC;
+                if (end   >  (size_t)nCC) end   = (size_t)nCC;
+                if (start >= end) continue;
+
+                pid_t pid = ::fork();
+                if (pid < 0) {
+                    std::cerr << "fork failed: " << strerror(errno) << "\n";
+                    continue;
+                }
+
+                if (pid == 0) {
+                    // ============================
+                    // ========  child  ==========
+                    // ============================
+                    g_is_child_process = true;
+
+                    std::vector<std::vector<std::string>> localSnarls;
+                    tls_snarl_buffer = &localSnarls;
+
+                    {
+                        std::string base = "/dev/shm";
+                        int test = ::access(base.c_str(), W_OK);
+                        if (test != 0) base = "/tmp";
+                        g_snarl_out_path = base + "/snarls_" + std::to_string(::getpid()) + ".bin";
+                        g_snarl_out_fd = ::open(g_snarl_out_path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+                        if (g_snarl_out_fd < 0) {
+                            std::fprintf(stderr, "[child %d] open(%s) failed: %s\n",
+                                        (int)::getpid(), g_snarl_out_path.c_str(), std::strerror(errno));
+                            _exit(111);
+                        }
+                    }
 
 
-            {
-                PhaseSampler build_sampler(g_stats_build);
+                    for (size_t cid = start; cid < end; ++cid) {
+                        std::unique_ptr<CcData> cc(new CcData());
+                        {
+                            MARK_SCOPE_MEM("sn/worker_component/gcc_rebuild");
+                            cc->Gcc = std::make_unique<Graph>();
+                            cc->nodeToOrig.init(*cc->Gcc, nullptr);
+                            cc->edgeToOrig.init(*cc->Gcc, nullptr);
+                            cc->isTip.init(*cc->Gcc, false);
+                            cc->isCutNode.init(*cc->Gcc, false);
+                            cc->isGoodCutNode.init(*cc->Gcc, false);
+                            cc->lastBad.init(*cc->Gcc, nullptr);
+                            cc->badCutCount.init(*cc->Gcc, 0);
+                            cc->degPlus.init(*cc->Gcc, 0);
+                            cc->degMinus.init(*cc->Gcc, 0);
 
-                // 1) rebuild cc graphs (worker_component)
-                {
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+                            std::unordered_map<node, node> orig_to_cc;
+                            orig_to_cc.reserve(bucket[cid].size());
 
-                    if (numThreads <= 1) {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-                        ThreadComponentArgs* args = new ThreadComponentArgs{
-                            0,
-                            numThreads,
-                            nCC,
-                            &nextIndex,
-                            &workMutex,
-                            &bucket,
-                            &edgeBuckets,
-                            &components,
-                        };
-                        worker_component(static_cast<void*>(args));
-                    } else {
-                        std::vector<pthread_t> threads(numThreads);
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            pthread_attr_setstacksize(&attr, stackSize);
-
-                            ThreadComponentArgs* args = new ThreadComponentArgs{
-                                tid,
-                                numThreads,
-                                nCC,
-                                &nextIndex,
-                                &workMutex,
-                                &bucket,
-                                &edgeBuckets,
-                                &components,
-                            };
-
-                            int ret = pthread_create(&threads[tid], &attr, worker_component, args);
-                            if (ret != 0) {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
+                            for (node vG : bucket[cid]) {
+                                node vC = cc->Gcc->newNode();
+                                cc->nodeToOrig[vC] = vG;
+                                orig_to_cc[vG] = vC;
                             }
 
-                            pthread_attr_destroy(&attr);
+                            for (edge e : edgeBuckets[cid]) {
+                                auto eC = cc->Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
+                                cc->edgeToOrig[eC] = e;
+
+                                cc->degPlus[orig_to_cc[e->source()]] += (getNodeEdgeType(e->source(), e) == EdgePartType::PLUS ? 1 : 0);
+                                cc->degMinus[orig_to_cc[e->source()]] += (getNodeEdgeType(e->source(), e) == EdgePartType::MINUS ? 1 : 0);
+                                cc->degPlus[orig_to_cc[e->target()]] += (getNodeEdgeType(e->target(), e) == EdgePartType::PLUS ? 1 : 0);
+                                cc->degMinus[orig_to_cc[e->target()]] += (getNodeEdgeType(e->target(), e) == EdgePartType::MINUS ? 1 : 0);
+                            }
                         }
 
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_join(threads[tid], nullptr);
+                        std::vector<BlockPrep> blockPreps;
+                        {
+                            MARK_SCOPE_MEM("sn/worker_bcTree/build");
+                            cc->bc = std::make_unique<BCTree>(*cc->Gcc);
+
+                            MARK_SCOPE_MEM("sn/worker_bcTree/collect_B_nodes");
+                            for (ogdf::node v : cc->bc->bcTree().nodes) {
+                                if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp) {
+                                    blockPreps.emplace_back(cc.get(), v);
+                                }
+                            }
                         }
+
+                        {
+                            MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
+                            for (auto &bp : blockPreps) {
+                                bp.blk = std::make_unique<BlockData>();
+                                BlockData& blk = *bp.blk;
+                                blk.bNode = bp.bNode;
+                                buildBlockData(blk, *bp.cc);
+                            }
+                        }
+
+                        {
+                            findTips(*cc);
+                            if (cc->bc->numberOfCComps() > 0) {
+                                processCutNodes(*cc);
+                            }
+                            findCutSnarl(*cc);
+                            flushThreadLocalSnarls(localSnarls);
+                        }
+
+                        {
+                            MARK_SCOPE_MEM("sn/phase/block_SPQR_solve");
+                            for (auto &bp : blockPreps) {
+                                if (!bp.blk) continue;
+                                BlockData& blk = *bp.blk;
+                                if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3) {
+                                    SPQRsolve::solveSPQR(blk, *bp.cc);
+                                    flushThreadLocalSnarls(localSnarls);
+                                }
+                            }
+                        }
+                    }
+
+                    if (tls_snarl_buffer) {
+                        flushThreadLocalSnarls(*tls_snarl_buffer);
+                        tls_snarl_buffer = nullptr;
+                    }
+                    if (g_snarl_out_fd >= 0) {
+                        ::fsync(g_snarl_out_fd);
+                        ::close(g_snarl_out_fd);
+                        g_snarl_out_fd = -1;
+                    }
+
+                    {
+                        SnarlTypeCounts cnts{
+                            g_cnt_cut.load(std::memory_order_relaxed),
+                            g_cnt_S.load(std::memory_order_relaxed),
+                            g_cnt_P.load(std::memory_order_relaxed),
+                            g_cnt_RR.load(std::memory_order_relaxed),
+                            g_cnt_E.load(std::memory_order_relaxed)
+                        };
+
+                        std::string base = "/dev/shm";
+                        int test = ::access(base.c_str(), W_OK);
+                        if (test != 0) base = "/tmp";
+                        std::string cntPath = base + "/snarls_" + std::to_string(::getpid()) + ".cnt";
+
+                        int fdCnt = ::open(cntPath.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+                        if (fdCnt >= 0) {
+                            write_all_fd(fdCnt, &cnts, sizeof(cnts));
+                            ::fsync(fdCnt);
+                            ::close(fdCnt);
+                        }
+                    }
+
+                    _exit(0);
+                } else {
+                    // ============================
+                    // ========  PARENT  ==========
+                    // ============================
+                    std::string base = "/dev/shm";
+                    int test = ::access(base.c_str(), W_OK);
+                    if (test != 0) base = "/tmp";
+                    std::string outPath = base + "/snarls_" + std::to_string(pid) + ".bin";
+                    std::string cntPath = base + "/snarls_" + std::to_string(pid) + ".cnt";
+                    children.push_back({pid, outPath, cntPath});
+                }
+            }
+
+            uint64_t build_end_us = nowMicros();
+            g_stats_build.elapsed_us.store(build_end_us - build_start_us, std::memory_order_relaxed);
+            g_stats_build.peak_rss.store(currentRSSBytes(), std::memory_order_relaxed);
+
+            uint64_t logic_start_us = nowMicros();
+            g_stats_logic.start_rss.store(currentRSSBytes(), std::memory_order_relaxed);
+
+            for (auto &chi : children) {
+                int status = 0;
+                pid_t wp = ::waitpid(chi.pid, &status, 0);
+                if (wp < 0) {
+                    std::cerr << "waitpid failed for " << chi.pid << ": " << strerror(errno) << "\n";
+                    continue;
+                }
+
+                if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                    std::cerr << "child " << chi.pid << " exited abnormally (status=" << status
+                            << "), skipping files " << chi.outPath << " / " << chi.cntPath << "\n";
+                    ::unlink(chi.outPath.c_str());
+                    ::unlink(chi.cntPath.c_str());
+                    continue;
+                }
+
+                {
+                    int fd = ::open(chi.outPath.c_str(), O_RDONLY);
+                    if (fd >= 0) {
+                        while (true) {
+                            uint32_t k;
+                            if (!read_all_fd(fd, &k, sizeof(k))) break;
+
+                            std::vector<std::string> sn;
+                            sn.reserve(k);
+                            bool ok = true;
+                            for (uint32_t i = 0; i < k; ++i) {
+                                uint32_t len = 0;
+                                if (!read_all_fd(fd, &len, sizeof(len))) { ok = false; break; }
+                                std::string s;
+                                s.resize(len);
+                                if (len > 0) {
+                                    if (!read_all_fd(fd, s.data(), len)) { ok = false; break; }
+                                }
+                                sn.push_back(std::move(s));
+                            }
+                            if (!ok) break;
+
+
+                            tryCommitSnarl(std::move(sn));
+                        }
+
+                        ::close(fd);
+                        ::unlink(chi.outPath.c_str());
                     }
                 }
 
-                // 2) build BC-trees and collect blocks (worker_bcTree)
+
                 {
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-
-                    if (numThreads <= 1) {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-                        ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
-                            0,
-                            numThreads,
-                            nCC,
-                            &nextIndex,
-                            &workMutex,
-                            &components,
-                            &blockPreps
-                        };
-                        worker_bcTree(static_cast<void*>(args));
-                    } else {
-                        std::vector<pthread_t> threads(numThreads);
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                            }
-
-                            ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
-                                tid,
-                                numThreads,
-                                nCC,
-                                &nextIndex,
-                                &workMutex,
-                                &components,
-                                &blockPreps
-                            };
-
-                            int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
-                            if (ret != 0) {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
-                            }
-
-                            pthread_attr_destroy(&attr);
+                    int fdCnt = ::open(chi.cntPath.c_str(), O_RDONLY);
+                    if (fdCnt >= 0) {
+                        SnarlTypeCounts cnts{};
+                        if (read_all_fd(fdCnt, &cnts, sizeof(cnts))) {
+                            g_cnt_cut.fetch_add(cnts.cut, std::memory_order_relaxed);
+                            g_cnt_S.fetch_add(cnts.S, std::memory_order_relaxed);
+                            g_cnt_P.fetch_add(cnts.P, std::memory_order_relaxed);
+                            g_cnt_RR.fetch_add(cnts.RR, std::memory_order_relaxed);
+                            g_cnt_E.fetch_add(cnts.E, std::memory_order_relaxed);
                         }
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_join(threads[tid], nullptr);
-                        }
-                    }
-                }
-
-                // 3) build SPQR for blocks (worker_block_build)
-                {
-                    MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
-
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads});
-
-                    if (numThreads <= 1) {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-                        ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                            0,
-                            numThreads,
-                            blockPreps.size(),
-                            &nextIndex,
-                            &workMutex,
-                            &blockPreps
-                        };
-                        worker_block_build(static_cast<void*>(args));
-                    } else {
-                        std::vector<pthread_t> threads(numThreads);
-
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-
-                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                            }
-
-                            ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                                tid,
-                                numThreads,
-                                blockPreps.size(),
-                                &nextIndex,
-                                &workMutex,
-                                &blockPreps
-                            };
-
-                            int ret = pthread_create(&threads[tid], &attr, worker_block_build, args);
-                            if (ret != 0) {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
-                            }
-
-                            pthread_attr_destroy(&attr);
-                        }
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_join(threads[tid], nullptr);
-                        }
+                        ::close(fdCnt);
+                        ::unlink(chi.cntPath.c_str());
                     }
                 }
             }
 
-
-            {
-                PhaseSampler logic_sampler(g_stats_logic);
-
-                // 4) tips & cuts (worker_tips)
-                {
-                    MARK_SCOPE_MEM("sn/phase/tips_cuts");
-
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-
-                    if (numThreads <= 1) {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-                        ThreadTipsArgs* args = new ThreadTipsArgs{
-                            0,
-                            numThreads,
-                            nCC,
-                            &nextIndex,
-                            &workMutex,
-                            &components
-                        };
-                        worker_tips(static_cast<void*>(args));
-                    } else {
-                        std::vector<pthread_t> threads(numThreads);
-
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                            }
-
-                            ThreadTipsArgs* args = new ThreadTipsArgs{
-                                tid,
-                                numThreads,
-                                nCC,
-                                &nextIndex,
-                                &workMutex,
-                                &components
-                            };
-
-                            int ret = pthread_create(&threads[tid], &attr, worker_tips, args);
-                            if (ret != 0) {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
-                            }
-
-                            pthread_attr_destroy(&attr);
-                        }
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_join(threads[tid], nullptr);
-                        }
-                    }
-                }
-
-                // 5) SPQR solve for blocks (worker_block_solve)
-                {
-                    MARK_SCOPE_MEM("sn/phase/block_SPQR_solve");
-
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads});
-
-                    if (numThreads <= 1) {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-                        ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                            0,
-                            numThreads,
-                            blockPreps.size(),
-                            &nextIndex,
-                            &workMutex,
-                            &blockPreps
-                        };
-                        worker_block_solve(static_cast<void*>(args));
-                    } else {
-                        std::vector<pthread_t> threads(numThreads);
-
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                            }
-
-                            ThreadBlocksArgs* args = new ThreadBlocksArgs{
-                                tid,
-                                numThreads,
-                                blockPreps.size(),
-                                &nextIndex,
-                                &workMutex,
-                                &blockPreps
-                            };
-
-                            int ret = pthread_create(&threads[tid], &attr, worker_block_solve, args);
-                            if (ret != 0) {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
-                            }
-
-                            pthread_attr_destroy(&attr);
-                        }
-
-                        for (size_t tid = 0; tid < numThreads; ++tid) {
-                            pthread_join(threads[tid], nullptr);
-                        }
-                    }
-                }
-            }
+            uint64_t logic_end_us = nowMicros();
+            g_stats_logic.elapsed_us.store(logic_end_us - logic_start_us, std::memory_order_relaxed);
+            g_stats_logic.peak_rss.store(currentRSSBytes(), std::memory_order_relaxed);
 
             auto to_ms  = [](uint64_t us){ return us / 1000.0; };
             auto to_mib = [](size_t bytes){ return bytes / (1024.0 * 1024.0); };
@@ -5019,11 +5362,12 @@ namespace solver {
                 double t_ms = to_ms(st.elapsed_us.load());
                 double peak_mib = to_mib(st.peak_rss.load());
                 double delta_mib = to_mib(st.peak_rss.load() > st.start_rss.load()
-                                            ? st.peak_rss.load() - st.start_rss.load() : 0);
+                                        ? st.peak_rss.load() - st.start_rss.load() : 0);
                 std::cout << "[SNARLS] " << name << " : time=" << t_ms
                         << " ms, peakRSS=" << peak_mib << " MiB, peakDelta=" << delta_mib << " MiB\n";
             };
 
+            print_snarl_type_counters();
             print_phase("I/O",   g_stats_io);
             print_phase("BUILD", g_stats_build);
             print_phase("LOGIC", g_stats_logic);
@@ -5035,7 +5379,52 @@ namespace solver {
 
 
 
+void readArgs(int argc, char** argv) {
+    auto& C = ctx();
 
+    std::vector<std::string> args(argv, argv+argc);
+
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::string& s = args[i];
+
+        if (s == "-g") {
+            C.graphPath = nextArgOrDie(args, i, "-g");
+
+        } else if (s == "-o") {
+            C.outputPath = nextArgOrDie(args, i, "-o");
+
+        } else if (s == "--gfa") {
+            C.gfaInput = true;
+
+        } else if (s == "--report-json") {
+            g_report_json_path = nextArgOrDie(args, i, "--report-json");
+
+        } else if (s == "-h" || s == "--help") {
+            usage(args[0].c_str());
+
+        } else if (s == "-j") {
+            C.threads = std::stoi(nextArgOrDie(args, i, "-j"));
+
+        } else if (s == "--superbubbles") {
+            C.bubbleType = Context::BubbleType::SUPERBUBBLE;
+
+        } else if (s == "--snarls") {
+            C.bubbleType = Context::BubbleType::SNARL;
+
+        } else if (s == "--block-stats") {
+            solver::blockstats::g_run_block_stats = true;
+            solver::blockstats::g_output_path =
+                nextArgOrDie(args, i, "--block-stats");
+
+        } else if (s == "-m") {
+            C.stackSize = std::stoull(nextArgOrDie(args, i, "-m"));
+
+        } else {
+            std::cerr << "Unknown argument: " << s << "\n";
+            usage(args[0].c_str());
+        }
+    }
+}
 
 
 int main(int argc, char** argv) {
@@ -5056,6 +5445,22 @@ int main(int argc, char** argv) {
         MARK_SCOPE_MEM("io/read_graph");
         PROFILE_BLOCK("Graph reading");
         GraphIO::readGraph();
+    }
+
+    if (solver::blockstats::g_run_block_stats) {
+        solver::blockstats::compute_block_sizes_and_write();
+
+        PROFILING_REPORT();
+
+        logger::info("Process PeakRSS: {:.2f} GiB",
+                     memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
+
+        mark::report();
+        if (!g_report_json_path.empty()) {
+            mark::report_to_json(g_report_json_path);
+        }
+
+        return 0;
     }
 
     if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE) {
@@ -5080,7 +5485,8 @@ int main(int argc, char** argv) {
 
     PROFILING_REPORT();
 
-    logger::info("Process PeakRSS: {:.2f} GiB", memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
+    logger::info("Process PeakRSS: {:.2f} GiB",
+                 memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
 
     mark::report();
     if (!g_report_json_path.empty()) {
