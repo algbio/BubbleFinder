@@ -22,3 +22,4 @@
 #include <ogdf/tree/TreeLayout.h>
 #include <ogdf/basic/List.h>
 #include <ogdf/tree/LCA.h>
+#include <ogdf/basic/Thread.h>
