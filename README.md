@@ -34,7 +34,28 @@ To run BubbleFinder:
 ./BubbleFinder -g {graphPath} [--gfa] -o {-, outputPath} [--superbubbles | --snarls] -j {threadsNumber} [-m {stack size per thread in bytes}]
 ```
 
+# Examples
+
+To run `BubbleFinder` on the tiny example from `example/tiny1.gfa`, run:
+```
+./BubbleFinder -g example/tiny1.gfa -o example/tiny1.snarls --gfa --snarls
+```
+After this, you should obtain the file `example/tiny1.snarls` with the following contents:
+```
+2
+g+ k-
+a+ d- f+ g-
+```
+The number of the first line is the number of lines in the file, and the following lines contains incidences such that *any* pair of incidences on each line is a snarl. So the snarls are {g+, k-}, {a+, d-}, {a+, f+}, {a+, g-}, {d-, f+}, {d-, g-}, {f+, g-}.
+
+This is correct, as the graph looks like this:
+![Tiny example 1](example/tiny1.png)
+
 # Development
+
+## GFA format and bidirected graphs
+
+
 
 ## Snarl algorithm correctness 
 
