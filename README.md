@@ -39,7 +39,7 @@ Now `BubbleFinder` is in the root directory.
 To run BubbleFinder:
 ```
 Usage:
-  BubbleFinder -g <graphPath> -o <outputPath|-> [options]
+  BubbleFinder -g <graphPath> -o <outputPath> [options]
 
 Options:
   --gfa                       Interpret the input graph as GFA (default: OFF)
