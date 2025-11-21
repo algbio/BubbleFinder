@@ -69,10 +69,16 @@ If you look at `example/tiny1.png` you'll notice that the bidirected edge `{a+, 
 
 ## Snarl algorithm correctness 
 
-This repository also includes a brute-force implementation that computes all snarls in a naive way, which has been used to check the correctness of the main SPQR-tree-based implementation. This program gets built when building BubbleFinder from source (described above).
+This repository also includes a brute-force implementation that computes all snarls in a naive way, which has been used to check the correctness of the main SPQR-tree-based implementation. This program gets built when building BubbleFinder from source (described above), and resides in the `build` directory after building from source.
 
-To run brute-force tester for snarls is in the `build` directory after building from source:
+To run this brute-force program computing snarls (on a given GFA file):
 ```
 cd build 
 ./snarls_bf gfaGraphPath
+```
+
+We also include a generator of random graphs that automatically runs both implementations and compares their output. You can run this (for e.g. 100 random graphs) as:
+
+```
+python3 src/bruteforce.py --bruteforce-bin ./build/snarls_bf --bubblefinder-bin ./BubbleFinder --n-graphs 100
 ```
