@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-This script generates random GFA graphs, runs two different snarl finding
-methods (snarls_bf and BubbleFinder), and compares their outputs.
+This script generates random GFA graphs, runs two different snarl or superbubble
+finding methods (brute-force and BubbleFinder), and compares their outputs.
 Its purpose is to track potential mismatch, errors, or non deterministic
-behaviour under several threads counts
+behaviour under several threads counts.
 """
 
 import argparse
@@ -49,8 +49,13 @@ def parse_snarls_bruteforce_output(stdout):
         if len(parts) != 2:
             continue
         ep1, ep2 = parts
-        n1, s1 = int(ep1[:-1]), ep1[-1]
-        n2, s2 = int(ep2[:-1]), ep2[-1]
+        if len(ep1) < 2 or len(ep2) < 2:
+            continue
+        try:
+            n1, s1 = int(ep1[:-1]), ep1[-1]
+            n2, s2 = int(ep2[:-1]), ep2[-1]
+        except ValueError:
+            continue
         e1 = (n1, s1)
         e2 = (n2, s2)
         snarl = tuple(sorted([e1, e2]))
@@ -103,6 +108,97 @@ def parse_snarls_bubblefinder_file(path: Path):
     return snarls
 
 
+def parse_superbubbles_bruteforce_output(stdout):
+    """
+    Parse superbubbles brute-force output.
+
+    Nouveau format (comme le C++ adapté) :
+        <N>          (optionnel : nombre total de paires)
+        u v
+        x y
+        ...
+
+    où u, v, x, y sont des identifiants de segments (entiers, sans + / -).
+
+    On renvoie un set de paires non orientées (min(u,v), max(u,v)).
+    """
+    bubbles = set()
+    lines = [l.strip() for l in stdout.splitlines() if l.strip()]
+    if not lines:
+        return bubbles
+
+    start_idx = 0
+    first_tokens = lines[0].split()
+    if len(first_tokens) == 1 and first_tokens[0].isdigit():
+        # Première ligne = nombre de paires, on la saute.
+        start_idx = 1
+
+    for line in lines[start_idx:]:
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        a, b = parts
+        try:
+            u = int(a)
+            v = int(b)
+        except ValueError:
+            # Ligne pas au bon format, on ignore
+            continue
+        if u == v:
+            continue
+        if u > v:
+            u, v = v, u
+        bubbles.add((u, v))
+
+    return bubbles
+
+
+def parse_superbubbles_bubblefinder_file(path: Path):
+    """
+    Parse superbubbles BubbleFinder output (GFA + SUPERBUBBLE).
+
+    Format (cf. GraphIO::writeSuperbubbles) :
+        <N>
+        seg1 seg2
+        seg3 seg4
+        ...
+
+    segX = identifiants (ici ints dans nos GFA générés).
+    On renvoie un set de paires non orientées (min(seg1, seg2), max(seg1, seg2)).
+    """
+    bubbles = set()
+
+    with open(path) as f:
+        lines = [l.strip() for l in f if l.strip()]
+
+    if not lines:
+        return bubbles
+
+    start_idx = 0
+    first_tokens = lines[0].split()
+    if len(first_tokens) == 1 and first_tokens[0].isdigit():
+        # Première ligne = nombre de paires
+        start_idx = 1
+
+    for line in lines[start_idx:]:
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        a, b = parts
+        try:
+            u = int(a)
+            v = int(b)
+        except ValueError:
+            continue
+        if u == v:
+            continue
+        if u > v:
+            u, v = v, u
+        bubbles.add((u, v))
+
+    return bubbles
+
+
 def _decode_bytes(data: bytes) -> str:
     if not data:
         return ""
@@ -117,6 +213,16 @@ def run_snarls_bf(bruteforce_bin, gfa_path):
     )
     stdout = _decode_bytes(res.stdout)
     return parse_snarls_bruteforce_output(stdout)
+
+
+def run_superbubbles_bf(bruteforce_bin, gfa_path):
+    res = subprocess.run(
+        [bruteforce_bin, str(gfa_path)],
+        capture_output=True,
+        check=True,
+    )
+    stdout = _decode_bytes(res.stdout)
+    return parse_superbubbles_bruteforce_output(stdout)
 
 
 def run_bubblefinder(bf_bin, gfa_path, out_path, threads):
@@ -147,6 +253,34 @@ def run_bubblefinder(bf_bin, gfa_path, out_path, threads):
     return parse_snarls_bubblefinder_file(out_path)
 
 
+def run_bubblefinder_superbubbles(bf_bin, gfa_path, out_path, threads):
+    # BubbleFinder in superbubble mode: default behaviour without --snarls
+    cmd = [
+        bf_bin,
+        "-g",
+        str(gfa_path),
+        "--gfa",
+        "-o",
+        str(out_path),
+        "-j",
+        str(threads),
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+
+    stdout = _decode_bytes(res.stdout)
+    stderr = _decode_bytes(res.stderr)
+
+    if res.returncode != 0:
+        raise subprocess.CalledProcessError(
+            res.returncode,
+            res.args,
+            output=stdout,
+            stderr=stderr,
+        )
+
+    return parse_superbubbles_bubblefinder_file(out_path)
+
+
 def compare_snarls(s1, s2):
     missing = s1 - s2
     extra = s2 - s1
@@ -155,8 +289,11 @@ def compare_snarls(s1, s2):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bruteforce-bin", default="./snarls_bf",
-                        help="Path to brute-force binary")
+    parser.add_argument(
+        "--bruteforce-bin",
+        default="./snarls_bf",
+        help="Path to brute-force binary (used for snarls and superbubbles)",
+    )
     parser.add_argument("--bubblefinder-bin", default="./BubbleFinder",
                         help="Path to BubbleFinder binary")
     parser.add_argument("--n-graphs", type=int, default=10000,
@@ -181,7 +318,22 @@ def main():
         default=5,
         help="Max number of failing graphs whose full GFA is printed at the end"
     )
+    parser.add_argument(
+        "--superbubbles",
+        action="store_true",
+        help="Test superbubbles instead of snarls",
+    )
+
     args = parser.parse_args()
+
+    # Are we testing snarls or superbubbles?
+    feature_name = "superbubbles" if args.superbubbles else "snarls"
+    Feature_name = feature_name.capitalize()
+
+    print(f"Tests on {Feature_name}.")
+
+    # Single brute-force binary for both modes
+    bruteforce_bin = args.bruteforce_bin
 
     rng = random.Random(args.seed)
     threads_list = sorted(set(args.threads))
@@ -201,8 +353,12 @@ def main():
             graph_failed = False
             reasons = set()
 
+            # Run brute-force (snarls or superbubbles)
             try:
-                snarls_bf = run_snarls_bf(args.bruteforce_bin, gfa_path)
+                if args.superbubbles:
+                    snarls_bf = run_superbubbles_bf(bruteforce_bin, gfa_path)
+                else:
+                    snarls_bf = run_snarls_bf(bruteforce_bin, gfa_path)
             except subprocess.CalledProcessError as e:
                 graph_failed = True
                 reasons.add("bruteforce_error")
@@ -249,9 +405,14 @@ def main():
             for t in threads_list:
                 out_path = tmpdir / f"out_t{t}.sbfind"
                 try:
-                    snarls_by_threads[t] = run_bubblefinder(
-                        args.bubblefinder_bin, gfa_path, out_path, threads=t
-                    )
+                    if args.superbubbles:
+                        snarls_by_threads[t] = run_bubblefinder_superbubbles(
+                            args.bubblefinder_bin, gfa_path, out_path, threads=t
+                        )
+                    else:
+                        snarls_by_threads[t] = run_bubblefinder(
+                            args.bubblefinder_bin, gfa_path, out_path, threads=t
+                        )
                 except subprocess.CalledProcessError as e:
                     graph_failed = True
                     bf_error = True
@@ -312,11 +473,11 @@ def main():
                     print(f"[Graph {i}] DIVERGENCE brute-force vs BubbleFinder (threads={t})")
                     print(f"  nodes={n_nodes}, edges={n_edges}")
                     if missing:
-                        print("  Snarls missing in BubbleFinder:")
+                        print(f"  {Feature_name} missing in BubbleFinder:")
                         for sn in sorted(missing):
                             print("    ", sn)
                     if extra:
-                        print("  Extra snarls in BubbleFinder:")
+                        print(f"  Extra {feature_name} in BubbleFinder:")
                         for sn in sorted(extra):
                             print("    ", sn)
 
@@ -331,11 +492,11 @@ def main():
                         print(f"[Graph {i}] DIVERGENCE between threads={ref_t} and threads={t}")
                         print(f"  nodes={n_nodes}, edges={n_edges}")
                         if missing:
-                            print(f"  Snarls missing in threads={t} vs {ref_t}:")
+                            print(f"  {Feature_name} missing in threads={t} vs {ref_t}:")
                             for sn in sorted(missing):
                                 print("    ", sn)
                         if extra:
-                            print(f"  Extra snarls in threads={t} vs {ref_t}:")
+                            print(f"  Extra {feature_name} in threads={t} vs {ref_t}:")
                             for sn in sorted(extra):
                                 print("    ", sn)
 

@@ -1,6 +1,5 @@
 #include "util/ogdf_all.hpp"
 
-
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -19,12 +18,12 @@
 #include <cstdlib>
 #include <numeric>
 #include <queue>
-
-#include <sys/resource.h>
-#include <sys/time.h>
-
-
+#include <atomic>
+#include <array>
+#include <cstdint>
 #include <queue>
+#include <algorithm>
+#include <cctype>
 
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -32,6 +31,13 @@
 #ifdef __APPLE__
 #  include <mach/mach.h>
 #endif
+
+#ifdef __linux__
+#include <cstdio>
+#endif
+
+#include <unistd.h>
+#include <sys/resource.h>
 
 #include "io/graph_io.hpp"
 #include "util/timer.hpp"
@@ -43,28 +49,19 @@
 #include "util/mem_time.hpp"
 #include "util/phase_accum.hpp"
 
-
-#include <atomic>
-#include <array>
-#include <chrono>
-#include <cstdint>
-#include <mutex>
-#include <thread>
-#include <unistd.h>
-#ifdef __linux__
-#include <cstdio>
-#endif
-#include <sys/resource.h>
-
-bool VERBOSE = false;
+bool VERBOSE = true;
 #define VLOG if (VERBOSE) std::cerr
 
+
+// -----------------------------------------------------------------------------
+// Metrics instrumentation (RSS and timing per phase)
+// -----------------------------------------------------------------------------
 namespace metrics {
 
     enum class Phase : uint8_t { IO = 0, BUILD = 1, LOGIC = 2, COUNT = 3 };
 
     struct PhaseState {
-        std::atomic<bool> running{false};
+        std::atomic<bool>   running{false};
         std::atomic<size_t> baseline_rss{0};   // bytes
         std::atomic<size_t> peak_rss_delta{0}; // bytes
         std::atomic<uint64_t> start_ns{0};
@@ -83,14 +80,11 @@ namespace metrics {
         // We read resident pages (2nd field) * page size
         FILE* f = std::fopen("/proc/self/statm", "r");
         if (!f) {
-            // Fallback to ru_maxrss (note: ru_maxrss = max so far; not current)
             struct rusage ru{};
             getrusage(RUSAGE_SELF, &ru);
-            // ru_maxrss in kilobytes on Linux; convert to bytes
             return (size_t)ru.ru_maxrss * 1024ull;
         }
         long rss_pages = 0;
-        // Ignore first field
         long dummy = 0;
         if (std::fscanf(f, "%ld %ld", &dummy, &rss_pages) != 2) {
             std::fclose(f);
@@ -103,7 +97,6 @@ namespace metrics {
         if (page_size <= 0) page_size = 4096;
         return (size_t)rss_pages * (size_t)page_size;
     #else
-        // Portable fallback: ru_maxrss is a max, not current; acceptable fallback
         struct rusage ru{};
         getrusage(RUSAGE_SELF, &ru);
         return (size_t)ru.ru_maxrss * 1024ull;
@@ -129,10 +122,12 @@ namespace metrics {
         auto &st = states()[(size_t)p];
         if (!st.running.load(std::memory_order_acquire)) return;
         const size_t base = st.baseline_rss.load(std::memory_order_relaxed);
-        const size_t cur = currentRSS();
+        const size_t cur  = currentRSS();
         size_t delta = (cur >= base ? (cur - base) : 0);
-        size_t prev = st.peak_rss_delta.load(std::memory_order_relaxed);
-        while (delta > prev && !st.peak_rss_delta.compare_exchange_weak(prev, delta, std::memory_order_relaxed)) {
+        size_t prev  = st.peak_rss_delta.load(std::memory_order_relaxed);
+        while (delta > prev &&
+               !st.peak_rss_delta.compare_exchange_weak(prev, delta,
+                                                        std::memory_order_relaxed)) {
         }
     }
 
@@ -142,7 +137,7 @@ namespace metrics {
         updateRSS(p);
         const uint64_t t1 = now_ns();
         const uint64_t t0 = st.start_ns.load(std::memory_order_relaxed);
-        const uint64_t d = (t1 >= t0 ? (t1 - t0) : 0);
+        const uint64_t d  = (t1 >= t0 ? (t1 - t0) : 0);
         uint64_t prev = st.elapsed_ns.load(std::memory_order_relaxed);
         st.elapsed_ns.store(prev + d, std::memory_order_relaxed);
         st.running.store(false, std::memory_order_release);
@@ -150,8 +145,9 @@ namespace metrics {
 
     struct Snapshot {
         uint64_t elapsed_ns;
-        size_t peak_rss_delta;
+        size_t   peak_rss_delta;
     };
+
     inline Snapshot snapshot(Phase p) {
         auto &st = states()[(size_t)p];
         return Snapshot{
@@ -159,7 +155,7 @@ namespace metrics {
             st.peak_rss_delta.load(std::memory_order_relaxed)
         };
     }
-} 
+}
 
 inline void METRICS_PHASE_BEGIN(metrics::Phase p) { metrics::beginPhase(p); }
 inline void METRICS_PHASE_END(metrics::Phase p)   { metrics::endPhase(p);   }
@@ -167,70 +163,193 @@ inline void PHASE_RSS_UPDATE_IO()    { metrics::updateRSS(metrics::Phase::IO); }
 inline void PHASE_RSS_UPDATE_BUILD() { metrics::updateRSS(metrics::Phase::BUILD); }
 inline void PHASE_RSS_UPDATE_LOGIC() { metrics::updateRSS(metrics::Phase::LOGIC); }
 
+
+// -----------------------------------------------------------------------------
+// Globals
+// -----------------------------------------------------------------------------
 using namespace ogdf;
 
 static std::string g_report_json_path;
 
 
+// -----------------------------------------------------------------------------
+// CLI helpers
+// -----------------------------------------------------------------------------
+static void usage(const char* prog, int exitCode) {
+    struct CommandHelp {
+        const char* name;
+        const char* desc;
+    };
 
-static void usage(const char* prog, int exitCode = 0) {
-    std::cerr
-        << "BubbleFinder computes snarls and superbubbles in genomic and\n"
-        << "pangenomic GFA graphs (bidirected graphs).\n"
-        << "It uses SPQR trees of biconnected components of the undirected\n"
-        << "counterpart of the input graph to identify all snarls and\n"
-        << "superbubbles in linear time.\n\n"
-        << "Modes:\n"
-        << "  snarl (default):\n"
-        << "    Compute all snarls, generalising 'vg snarls -a -T'.\n"
-        << "    Unlike vg, BubbleFinder does not prune snarls and may\n"
-        << "    report more structures.\n"
-        << "  superbubbles (disabled in this version):\n"
-        << "    Superbubbles in a doubled representation of the bidirected\n"
-        << "    graph, corresponding to those reported by BubbleGun.\n"
-        << "    This mode is temporarily disabled due to issues in the\n"
-        << "    directed implementation.\n\n"
-        << "Usage:\n"
-        << "  " << prog << " -g <graph.gfa> -o <outputFile> [options]\n\n"
-        << "Required arguments:\n"
-        << "  -g <graph.gfa>           Input GFA graph file path.\n"
-        << "  -o <outputFile>          Output file path.\n\n"
-        << "Mode selection:\n"
-        << "  --snarls                 Compute snarls (default).\n"
-        << "  --superbubbles           DISABLED (see above).\n\n"
-        << "Options:\n"
-        << "  -j <threads>             Number of worker threads.\n"
-        << "  --report-json <file>     Write a JSON report to <file>.\n"
-        << "  -m <bytes>               Stack size in bytes.\n"
-        << "  -h, --help               Show this help message and exit.\n";
+    struct OptionHelp {
+        const char* flag;
+        const char* arg;
+        const char* desc;
+    };
+
+    static const CommandHelp commands[] = {
+        { "superbubbles",
+          "Bidirected superbubbles (GFA -> bidirected by default)" },
+        { "directed-superbubbles",
+          "Directed superbubbles (directed graph)" },
+        { "snarls",
+          "Snarls (typically on bidirected graphs from GFA)" }
+    };
+
+    static const OptionHelp options[] = {
+        { "-g", "<file>", "Input graph file (possibly compressed)" },
+        { "-o", "<file>", "Output file" },
+        { "-j", "<threads>", "Number of threads" },
+        { "--gfa", nullptr, "Force GFA input (bidirected)" },
+        { "--gfa-directed", nullptr,
+          "Force GFA input interpreted as directed graph" },
+        { "--graph", nullptr, "Force .graph input (directed)" },
+        { "--report-json", "<file>", "Write JSON metrics report" },
+        { "-m", "<bytes>", "Stack size in bytes" },
+        { "-h, --help", nullptr, "Show this help message and exit" }
+    };
+
+    std::cerr << "Usage:\n"
+              << "  " << prog
+              << " <command> -g <graphFile> -o <outputFile> [options]\n\n";
+
+    std::cerr << "Commands:\n";
+    for (const auto &c : commands) {
+        std::cerr << "  " << c.name << "\n"
+                  << "      " << c.desc << "\n";
+    }
+    std::cerr << "\n";
+
+    std::cerr << "Format options (input format):\n"
+              << "  --gfa            GFA input (bidirected)\n"
+              << "  --gfa-directed   GFA input interpreted as directed graph\n"
+              << "  --graph          Internal .graph format (directed)\n"
+              << "  If none of these is given, the format is auto-detected\n"
+              << "  from the file extension (e.g. .gfa, .graph).\n\n";
+
+    std::cerr << "Compression:\n"
+              << "  Compression is auto-detected from the file name suffix:\n"
+              << "    .gz / .bgz  -> gzip\n"
+              << "    .bz2        -> bzip2\n"
+              << "    .xz         -> xz\n\n";
+
+    std::cerr << "General options:\n";
+    for (const auto &o : options) {
+        std::cerr << "  " << o.flag;
+        if (o.arg) {
+            std::cerr << " " << o.arg;
+        }
+        std::cerr << "\n      " << o.desc << "\n";
+    }
 
     std::exit(exitCode);
 }
 
-static std::string nextArgOrDie(const std::vector<std::string>& a, std::size_t& i, const char* flag) {
+
+static std::string nextArgOrDie(const std::vector<std::string>& a,
+                                std::size_t& i,
+                                const char* flag) {
     if (++i >= a.size() || (a[i][0] == '-' && a[i] != "-")) {
-        std::cerr << "Error: missing path after " << flag << "\n";
-        usage(a[0].c_str());
+        std::cerr << "Error: missing argument after " << flag << "\n";
+        usage(a[0].c_str(), 1);
     }
     return a[i];
 }
 
+static std::string toLowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return s;
+}
 
+// Detect compression from file name and return the "core" extension
+// Example:
+//  foo.gfa.gz  -> compression = Gzip, coreExtOut = "gfa"
+//   foo.graph   -> compression = None,  coreExtOut = "graph"
+static Context::Compression
+detectCompressionAndCoreExt(const std::string &path,
+                            std::string &coreExtOut)
+{
+    std::string filename = path;
+    auto slashPos = filename.find_last_of("/\\");
+    if (slashPos != std::string::npos) {
+        filename = filename.substr(slashPos + 1);
+    }
+
+    coreExtOut.clear();
+
+    auto dotPos = filename.find_last_of('.');
+    if (dotPos == std::string::npos) {
+        return Context::Compression::None;
+    }
+
+    std::string lastExt = toLowerCopy(filename.substr(dotPos + 1));
+    std::string base    = filename.substr(0, dotPos);
+
+    Context::Compression comp = Context::Compression::None;
+
+    if (lastExt == "gz" || lastExt == "bgz") {
+        comp = Context::Compression::Gzip;
+    } else if (lastExt == "bz2") {
+        comp = Context::Compression::Bzip2;
+    } else if (lastExt == "xz") {
+        comp = Context::Compression::Xz;
+    } else {
+        coreExtOut = lastExt;
+        return Context::Compression::None;
+    }
+
+    auto dotPos2 = base.find_last_of('.');
+    if (dotPos2 != std::string::npos) {
+        coreExtOut = toLowerCopy(base.substr(dotPos2 + 1));
+    } else {
+        coreExtOut.clear();
+    }
+
+    return comp;
+}
+
+
+// -----------------------------------------------------------------------------
+// Argument parsing
+// -----------------------------------------------------------------------------
 void readArgs(int argc, char** argv) {
-    auto& C = ctx();
-
-    C.gfaInput   = true;                          
-    C.bubbleType = Context::BubbleType::SNARL; 
+    auto &C = ctx();
 
     std::vector<std::string> args(argv, argv + argc);
-
-    if (args.size() == 1) {
-        std::cerr << "Error: no arguments provided.\n\n";
+    if (args.size() < 2) {
         usage(args[0].c_str(), 1);
     }
 
-    for (std::size_t i = 1; i < args.size(); ++i) {
-        const std::string& s = args[i];
+    std::size_t i = 1;
+
+    // 1) Subcommand
+    const std::string cmd = args[i];
+
+    if (cmd == "-h" || cmd == "--help") {
+        usage(args[0].c_str(), 0);
+    } else if (cmd == "superbubbles") {
+        C.bubbleType           = Context::BubbleType::SUPERBUBBLE;
+        C.directedSuperbubbles = false;
+    } else if (cmd == "directed-superbubbles") {
+        C.bubbleType           = Context::BubbleType::SUPERBUBBLE;
+        C.directedSuperbubbles = true;
+    } else if (cmd == "snarls") {
+        C.bubbleType           = Context::BubbleType::SNARL;
+        C.directedSuperbubbles = false;
+    } else {
+        std::cerr << "Error: unknown command '" << cmd
+                  << "'. Expected one of: superbubbles, directed-superbubbles, snarls.\n\n";
+        usage(args[0].c_str(), 1);
+    }
+
+    ++i;
+
+    // 2) Options
+    for (; i < args.size(); ++i) {
+        const std::string &s = args[i];
 
         if (s == "-g") {
             C.graphPath = nextArgOrDie(args, i, "-g");
@@ -239,91 +358,96 @@ void readArgs(int argc, char** argv) {
             C.outputPath = nextArgOrDie(args, i, "-o");
 
         } else if (s == "--gfa") {
-            C.gfaInput = true;
+            if (C.inputFormat != Context::InputFormat::Auto &&
+                C.inputFormat != Context::InputFormat::Gfa) {
+                std::cerr << "Error: multiple conflicting input format options "
+                             "(--gfa / --gfa-directed / --graph).\n";
+                std::exit(1);
+            }
+            C.inputFormat = Context::InputFormat::Gfa;
+
+        } else if (s == "--gfa-directed") {
+            if (C.inputFormat != Context::InputFormat::Auto &&
+                C.inputFormat != Context::InputFormat::GfaDirected) {
+                std::cerr << "Error: multiple conflicting input format options "
+                             "(--gfa / --gfa-directed / --graph).\n";
+                std::exit(1);
+            }
+            C.inputFormat = Context::InputFormat::GfaDirected;
+
+        } else if (s == "--graph") {
+            if (C.inputFormat != Context::InputFormat::Auto &&
+                C.inputFormat != Context::InputFormat::Graph) {
+                std::cerr << "Error: multiple conflicting input format options "
+                             "(--gfa / --gfa-directed / --graph).\n";
+                std::exit(1);
+            }
+            C.inputFormat = Context::InputFormat::Graph;
 
         } else if (s == "--report-json") {
             g_report_json_path = nextArgOrDie(args, i, "--report-json");
 
-        } else if (s == "-h" || s == "--help") {
-            usage(args[0].c_str(), 0);
-
         } else if (s == "-j") {
-            std::string v = nextArgOrDie(args, i, "-j");
-            try {
-                C.threads = std::stoi(v);
-            } catch (const std::exception&) {
-                std::cerr << "Error: invalid value for -j/--threads: " << v << "\n\n";
-                usage(args[0].c_str(), 1);
-            }
-
-        } else if (s == "--superbubbles") {
-            std::cerr
-                << "Error: --superbubbles is currently disabled because the\n"
-                << "       directed superbubble algorithm is known to be buggy.\n"
-                << "       This mode is temporarily unavailable.\n\n";
-            usage(args[0].c_str(), 1);
-        } else if (s == "--snarls") {
-            C.bubbleType = Context::BubbleType::SNARL;
+            C.threads = std::stoi(nextArgOrDie(args, i, "-j"));
 
         } else if (s == "-m") {
-            std::string v = nextArgOrDie(args, i, "-m");
-            try {
-                C.stackSize = std::stoull(v);
-            } catch (const std::exception&) {
-                std::cerr << "Error: invalid value for -m (stack size): " << v << "\n\n";
-                usage(args[0].c_str(), 1);
-            }
+            C.stackSize = std::stoull(nextArgOrDie(args, i, "-m"));
 
         } else if (s == "-sanity") {
             std::exit(0);
 
+        } else if (s == "-h" || s == "--help") {
+            usage(args[0].c_str(), 0);
+
         } else {
-            std::cerr << "Unknown argument: " << s << "\n\n";
+            std::cerr << "Unknown argument: " << s << "\n";
             usage(args[0].c_str(), 1);
         }
     }
 
-    bool ok = true;
-
+    // 3) Basic checks
     if (C.graphPath.empty()) {
-        std::cerr << "Error: missing required argument -g <graphFile>.\n";
-        ok = false;
+        std::cerr << "Error: missing -g <graphFile>.\n\n";
+        usage(args[0].c_str(), 1);
     }
     if (C.outputPath.empty()) {
-        std::cerr << "Error: missing required argument -o <outputFile>.\n";
-        ok = false;
+        std::cerr << "Error: missing -o <outputFile>.\n\n";
+        usage(args[0].c_str(), 1);
     }
 
-    if (C.threads <= 0) {
-        if (C.threads == 0) {
-            C.threads = 1; 
+    // 4) Auto-detect compression and input format (if still Auto)
+    std::string coreExt;
+    C.compression = detectCompressionAndCoreExt(C.graphPath, coreExt);
+
+    if (C.inputFormat == Context::InputFormat::Auto) {
+        if (coreExt == "gfa" || coreExt == "gfa1" || coreExt == "gfa2") {
+            if (C.directedSuperbubbles) {
+                C.inputFormat = Context::InputFormat::GfaDirected;
+            } else {
+                C.inputFormat = Context::InputFormat::Gfa;
+            }
+        } else if (coreExt == "graph") {
+            C.inputFormat = Context::InputFormat::Graph;
         } else {
-            std::cerr << "Error: -j/--threads must be positive.\n";
-            ok = false;
+            std::cerr << "Error: could not autodetect input format from file '"
+                      << C.graphPath << "'.\n"
+                      << "       Please specify one of --gfa, --gfa-directed or --graph.\n";
+            std::exit(1);
         }
     }
 
-    if (!ok) {
-        std::cerr << "\n";
-        usage(args[0].c_str(), 1);
-    }
+    C.gfaInput = (C.inputFormat == Context::InputFormat::Gfa ||
+                  C.inputFormat == Context::InputFormat::GfaDirected);
 }
 
 
-
-
-
-
-
-
-
-
-
+// -----------------------------------------------------------------------------
+// Global counters / OGDF accounting
+// -----------------------------------------------------------------------------
 size_t snarlsFound = 0;
 size_t isolatedNodesCnt = 0;
 
 static std::atomic<long long> g_ogdf_total_us{0};
-
 static std::atomic<size_t> g_phase_io_max_rss{0};
 static std::atomic<size_t> g_phase_build_max_rss{0};
 static std::atomic<size_t> g_phase_logic_max_rss{0};
@@ -331,12 +455,18 @@ static std::atomic<size_t> g_phase_logic_max_rss{0};
 static inline void __phase_rss_update(std::atomic<size_t> &dst) {
     size_t cur = memtime::peakRSSBytes();
     size_t old = dst.load(std::memory_order_relaxed);
-    while (cur > old && !dst.compare_exchange_weak(old, cur, std::memory_order_relaxed)) {}
+    while (cur > old &&
+           !dst.compare_exchange_weak(old, cur, std::memory_order_relaxed)) {}
 }
-#define PHASE_RSS_UPDATE_IO()    __phase_rss_update(g_phase_io_max_rss)
-#define PHASE_RSS_UPDATE_BUILD() __phase_rss_update(g_phase_build_max_rss)
-#define PHASE_RSS_UPDATE_LOGIC() __phase_rss_update(g_phase_logic_max_rss)
 
+#define PHASE_RSS_UPDATE_IO_LEGACY()    __phase_rss_update(g_phase_io_max_rss)
+#define PHASE_RSS_UPDATE_BUILD_LEGACY() __phase_rss_update(g_phase_build_max_rss)
+#define PHASE_RSS_UPDATE_LOGIC_LEGACY() __phase_rss_update(g_phase_logic_max_rss)
+
+
+// -----------------------------------------------------------------------------
+// OGDF accounting helpers
+// -----------------------------------------------------------------------------
 struct OgdfAcc {
     std::chrono::high_resolution_clock::time_point t0;
     OgdfAcc() : t0(std::chrono::high_resolution_clock::now()) {}
@@ -396,15 +526,15 @@ namespace solver {
             return true;
         }
         struct BlockData {
-            std::unique_ptr<ogdf::Graph> Gblk;
+            std::unique_ptr<ogdf::Graph> Gblk;  
             ogdf::NodeArray<ogdf::node> toCc;
             // ogdf::NodeArray<ogdf::node> toBlk;
             ogdf::NodeArray<ogdf::node> toOrig;
 
             std::unique_ptr<ogdf::StaticSPQRTree> spqr;
             std::unordered_map<ogdf::edge, ogdf::edge> skel2tree; // mapping from skeleton virtual edge to tree edge
-            ogdf::NodeArray<ogdf::node> parent; // mapping from node to parent in SPQR tree, it is possible since it is rooted,
-            // parent of root is nullptr
+            ogdf::NodeArray<ogdf::node> parent; // mapping from node to parent in SPQR tree, it is possible since it is rooted, 
+                                                // parent of root is nullptr
 
             ogdf::NodeArray<ogdf::node> blkToSkel;
 
@@ -418,7 +548,7 @@ namespace solver {
             // Cached global degrees (per block node) to avoid random access into global NodeArrays
             ogdf::NodeArray<int> globIn;
             ogdf::NodeArray<int> globOut;
-
+        
             BlockData() {}
 
             // BlockData() = default;
@@ -447,12 +577,12 @@ namespace solver {
 
             std::unique_ptr<ogdf::BCTree> bc;
             // std::vector<BlockData> blocks;
-            std::vector<std::unique_ptr<BlockData>> blocks;
+            std::vector<std::unique_ptr<BlockData>> blocks; 
         };
 
 
 
-        void printBlockEdges(std::vector<CcData> &/*comps*/) {
+        void printBlockEdges(std::vector<CcData> &comps) {
             // auto& C = ctx();
 
             // for (size_t cid = 0; cid < comps.size(); ++cid) {
@@ -466,7 +596,7 @@ namespace solver {
             //             node uB = eB->source();
             //             node vB = eB->target();
 
-
+                        
             //             node uG = cc.toOrig[ blk.toCc[uB] ];
             //             node vG = cc.toOrig[ blk.toCc[vB] ];
 
@@ -479,13 +609,13 @@ namespace solver {
 
 
 
-
+        
 
         void addSuperbubble(ogdf::node source, ogdf::node sink) {
             if (tls_superbubble_collector) {
                 tls_superbubble_collector->emplace_back(source, sink);
-                return;
-            }
+                    return;
+                }
             // Otherwise, commit directly to global state (sequential behavior)
             tryCommitSuperbubble(source, sink);
 
@@ -502,953 +632,1313 @@ namespace solver {
 
 
         namespace SPQRsolve {
-        struct EdgeDPState {
-            node s{nullptr};
-            node t{nullptr};
+            struct EdgeDPState {
+                node s{nullptr};      
+                node t{nullptr};
 
-            int localOutS{0};
-            int localInT{0};
-            int localOutT{0};
-            int localInS{0};
+                int localOutS{0};
+                int localInT{0};
+                int localOutT{0};
+                int localInS{0};
 
-            bool globalSourceSink{false};
+                bool globalSourceSink{false}; 
 
-            bool directST{false};
-            bool directTS{false};
+                bool directST{false};
+                bool directTS{false};
 
-            bool hasLeakage{false};
+                bool hasLeakage{false};
 
-            bool acyclic{true};
+                bool acyclic{true};
 
-            int getDirection() const {
-                if(acyclic && !globalSourceSink && localOutS>0 && localInT>0) return 1; // s -> t
-                if(acyclic && !globalSourceSink && localOutT>0 && localInS>0) return -1; // t -> s
-                return 0; // no direction ?
-            }
-        };
-
-        struct NodeDPState {
-            int outgoingCyclesCount{0};
-            node lastCycleNode{nullptr};
-            int outgoingSourceSinkCount{0};
-            node lastSourceSinkNode{nullptr};
-            int outgoingLeakageCount{0};
-            node lastLeakageNode{nullptr};
-        };
-
-        // pair of dp states for each edge for both directions
-        struct EdgeDP {
-            EdgeDPState down;   // value valid in  parent -> child  direction
-            EdgeDPState up;     // value valid in  child -> parent direction
-        };
-
-
-        void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
-            auto& C = ctx();
-
-
-            std::cout << "Edge dp states:" << std::endl;
-            for(auto &e:T.edges) {
-                {
-                    EdgeDPState state = edge_dp[e].down;
-                    if(state.s && state.t) {
-                        std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
-                        std::cout << "s = " << C.node2name[state.s] << ", ";
-                        std::cout << "t = " << C.node2name[state.t] << ", ";
-                        std::cout << "acyclic = " << state.acyclic << ", ";
-                        std::cout << "global source = " << state.globalSourceSink << ", ";
-                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
-                        std::cout << "localInS = " << state.localInS << ", ";
-                        std::cout << "localOutS = " << state.localOutS << ", ";
-                        std::cout << "localInT = " << state.localInT << ", ";
-                        std::cout << "localOutT = " << state.localOutT << ", ";
-                        std::cout << "directST = " << state.directST << ", ";
-                        std::cout << "directTS = " << state.directTS << ", ";
-
-                        std::cout << std::endl;
-                    }
+                int getDirection() const {
+                    if(acyclic && !globalSourceSink && localOutS>0 && localInT>0) return 1; // s -> t
+                    if(acyclic && !globalSourceSink && localOutT>0 && localInS>0) return -1; // t -> s
+                    return 0; // no direction ?
                 }
-
-                {
-                    EdgeDPState state = edge_dp[e].up;
-                    if(state.s && state.t) {
-                        std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
-                        std::cout << "s = " << C.node2name[state.s] << ", ";
-                        std::cout << "t = " << C.node2name[state.t] << ", ";
-                        std::cout << "acyclic = " << state.acyclic << ", ";
-                        std::cout << "global source = " << state.globalSourceSink << ", ";
-                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
-                        std::cout << "localInS = " << state.localInS << ", ";
-                        std::cout << "localOutS = " << state.localOutS << ", ";
-                        std::cout << "localInT = " << state.localInT << ", ";
-                        std::cout << "localOutT = " << state.localOutT << ", ";
-                        std::cout << "directST = " << state.directST << ", ";
-                        std::cout << "directTS = " << state.directTS << ", ";
-
-                        std::cout << std::endl;
-                    }
-                }
-            }
-
-            std::cout << "Node dp states: " << std::endl;
-            for(node v : T.nodes) {
-                std::cout << "Node " << v->index() << ", ";
-                std::cout << "outgoingCyclesCount: " << node_dp[v].outgoingCyclesCount << ", ";
-                std::cout << "outgoingLeakageCount: " << node_dp[v].outgoingLeakageCount << ", ";
-                std::cout << "outgoingSourceSinkCount: " << node_dp[v].outgoingSourceSinkCount << ", ";
-
-                std::cout << std::endl;
-
-            }
-        }
-
-        void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const Graph &T) {
-            auto& C = ctx();
-
-
-            std::cout << "Edge dp states:" << std::endl;
-            for(auto &e:T.edges) {
-                {
-                    EdgeDPState state = edge_dp[e].down;
-                    if(state.s && state.t) {
-                        std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
-                        std::cout << "s = " << C.node2name[state.s] << ", ";
-                        std::cout << "t = " << C.node2name[state.t] << ", ";
-                        std::cout << "acyclic = " << state.acyclic << ", ";
-                        std::cout << "global source = " << state.globalSourceSink << ", ";
-                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
-                        std::cout << "localInS = " << state.localInS << ", ";
-                        std::cout << "localOutS = " << state.localOutS << ", ";
-                        std::cout << "localInT = " << state.localInT << ", ";
-                        std::cout << "localOutT = " << state.localOutT << ", ";
-                        std::cout << "directST = " << state.directST << ", ";
-                        std::cout << "directTS = " << state.directTS << ", ";
-
-                        std::cout << std::endl;
-                    }
-                }
-
-                {
-                    EdgeDPState state = edge_dp[e].up;
-                    if(state.s && state.t) {
-                        std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
-                        std::cout << "s = " << C.node2name[state.s] << ", ";
-                        std::cout << "t = " << C.node2name[state.t] << ", ";
-                        std::cout << "acyclic = " << state.acyclic << ", ";
-                        std::cout << "global source = " << state.globalSourceSink << ", ";
-                        std::cout << "hasLeakage = " << state.hasLeakage << ", ";
-                        std::cout << "localInS = " << state.localInS << ", ";
-                        std::cout << "localOutS = " << state.localOutS << ", ";
-                        std::cout << "localInT = " << state.localInT << ", ";
-                        std::cout << "localOutT = " << state.localOutT << ", ";
-                        std::cout << "directST = " << state.directST << ", ";
-                        std::cout << "directTS = " << state.directTS << ", ";
-
-                        std::cout << std::endl;
-                    }
-                }
-            }
-
-        }
-
-        std::string nodeTypeToString(SPQRTree::NodeType t) {
-            switch (t) {
-            case SPQRTree::NodeType::SNode:
-                return "SNode";
-            case SPQRTree::NodeType::PNode:
-                return "PNode";
-            case SPQRTree::NodeType::RNode:
-                return "RNode";
-            default:
-                return "Unknown";
-            }
-        }
-
-
-        void dfsSPQR_order(
-            SPQRTree &spqr,
-            std::vector<ogdf::edge> &edge_order, // order of edges to process
-            std::vector<ogdf::node> &node_order,
-            node curr = nullptr,
-            node parent = nullptr,
-            edge e = nullptr
-        ) {
-            //PROFILE_FUNCTION();
-            if(curr == nullptr) {
-                curr = spqr.rootNode();
-                parent = curr;
-                dfsSPQR_order(spqr, edge_order, node_order, curr, parent);
-                return;
-            }
-
-
-
-            // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
-            node_order.push_back(curr);
-            for (adjEntry adj : curr->adjEntries) {
-                node child = adj->twinNode();
-                if (child == parent) continue;
-                dfsSPQR_order(spqr, edge_order, node_order, child, curr, adj->theEdge());
-            }
-            if(curr!=parent) edge_order.push_back(e);
-        }
-
-
-
-        // process edge in the direction of parent to child
-        // Computing A->B (curr_edge)
-
-        void processEdge(ogdf::edge curr_edge,
-                         ogdf::EdgeArray<EdgeDP> &dp,
-                         NodeArray<NodeDPState> &node_dp,
-                         const CcData &cc,
-                         BlockData &blk)
-        {
-            auto &C = ctx();
-
-            const ogdf::NodeArray<int> &globIn  = C.inDeg;
-            const ogdf::NodeArray<int> &globOut = C.outDeg;
-
-            EdgeDPState &state      = dp[curr_edge].down;
-            EdgeDPState &back_state = dp[curr_edge].up;
-
-            const StaticSPQRTree &spqr = *blk.spqr;
-
-            ogdf::node A = curr_edge->source();
-            ogdf::node B = curr_edge->target();
-
-            state.localOutS = 0;
-            state.localInT  = 0;
-            state.localOutT = 0;
-            state.localInS  = 0;
-
-            const Skeleton &skel    = spqr.skeleton(B);
-            const Graph    &skelG   = skel.getGraph();
-
-            Graph newGraph;
-
-            NodeArray<node> skelToNew(skelG, nullptr);
-            for (node v : skelG.nodes)
-                skelToNew[v] = newGraph.newNode();
-
-            NodeArray<node> newToSkel(newGraph, nullptr);
-            for (node v : skelG.nodes)
-                newToSkel[skelToNew[v]] = v;
-
-            // map bloc -> squelette
-            for (ogdf::node h : skelG.nodes) {
-                ogdf::node vB = skel.original(h);
-                blk.blkToSkel[vB] = h;
-            }
-
-            NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
-
-            auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
-                if (!vN) return nullptr;
-
-                ogdf::node vSkel = newToSkel[vN];
-                if (!vSkel) return nullptr;
-
-                ogdf::node vBlk = skel.original(vSkel);
-                if (!vBlk) return nullptr;
-
-                ogdf::node vCc = blk.toCc[vBlk];
-                if (!vCc) return nullptr;
-
-                return cc.toOrig[vCc];
             };
 
-            ogdf::node nS = nullptr, nT = nullptr;
-
-            for (edge e : skelG.edges) {
-                node u  = e->source();
-                node v  = e->target();
-                node nU = skelToNew[u];
-                node nV = skelToNew[v];
-
-                if (!skel.isVirtual(e)) {
-                    newGraph.newEdge(nU, nV);
-                    localOutDeg[nU]++;
-                    localInDeg[nV]++;
-                    continue;
-                }
-
-                auto D = skel.twinTreeNode(e);
-
-                if (D == A) {
-                    ogdf::node vBlk = skel.original(v);
-                    ogdf::node uBlk = skel.original(u);
-
-                    state.s = back_state.s = vBlk;
-                    state.t = back_state.t = uBlk;
-
-                    nS = nV;
-                    nT = nU;
-                    continue;
-                }
-
-                edge treeE = blk.skel2tree.at(e);
-                OGDF_ASSERT(treeE != nullptr);
-
-                const EdgeDPState child = dp[treeE].down;
-                int dir = child.getDirection();
-
-                ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
-                ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
-
-                if (dir == 1)
-                    newGraph.newEdge(nA, nB);
-                else if (dir == -1)
-                    newGraph.newEdge(nB, nA);
-
-                if (nA == nU && nB == nV) {
-                    localOutDeg[nA] += child.localOutS;
-                    localInDeg [nA] += child.localInS;
-                    localOutDeg[nB] += child.localOutT;
-                    localInDeg [nB] += child.localInT;
-                } else {
-                    localOutDeg[nB] += child.localOutT;
-                    localInDeg [nB] += child.localInT;
-                    localOutDeg[nA] += child.localOutS;
-                    localInDeg [nA] += child.localInS;
-                }
-
-                state.acyclic          &= child.acyclic;
-                state.globalSourceSink |= child.globalSourceSink;
-                state.hasLeakage       |= child.hasLeakage;
-            }
-
-            if (spqr.typeOf(B) == SPQRTree::NodeType::PNode) {
-                for (edge e : skelG.edges) {
-                    if (skel.isVirtual(e)) continue;
-
-                    node u  = e->source();
-                    node v  = e->target();
-                    node bU = skel.original(u);
-                    node bV = skel.original(v);
-
-                    if (state.s == bU && state.t == bV) {
-                        state.directST = true;
-                    } else if (state.s == bV && state.t == bU) {
-                        state.directTS = true;
-                    } else {
-                        assert(false);
-                    }
-                }
-            }
-
-            for (ogdf::node nV : newGraph.nodes) {
-                ogdf::node sV = newToSkel[nV];
-                ogdf::node bV = skel.original(sV);
-                ogdf::node gV = mapNewToGlobal(nV);
-
-                if (bV == state.s || bV == state.t)
-                    continue;
-
-                if (globIn[gV] != localInDeg[nV] || globOut[gV] != localOutDeg[nV]) {
-                    state.hasLeakage = true;
-                }
-
-                if (globIn[gV] == 0 || globOut[gV] == 0) {
-                    state.globalSourceSink = true;
-                }
-            }
-
-            // degrés locaux sur s, t
-            state.localInS  = localInDeg [nS];
-            state.localOutS = localOutDeg[nS];
-            state.localInT  = localInDeg [nT];
-            state.localOutT = localOutDeg[nT];
-
-            if (state.acyclic)
-                state.acyclic &= isAcyclic(newGraph);
-
-            if (!state.acyclic) {
-                node_dp[A].outgoingCyclesCount++;
-                node_dp[A].lastCycleNode = B;
-            }
-            if (state.globalSourceSink) {
-                node_dp[A].outgoingSourceSinkCount++;
-                node_dp[A].lastSourceSinkNode = B;
-            }
-            if (state.hasLeakage) {
-                node_dp[A].outgoingLeakageCount++;
-                node_dp[A].lastLeakageNode = B;
-            }
-        }
-
-
-
-        void processNode(node curr_node,
-                        EdgeArray<EdgeDP> &edge_dp,
-                        NodeArray<NodeDPState> &node_dp,
-                        const CcData &cc,
-                        BlockData &blk)
-        {
-            auto &C = ctx();
-
-            const ogdf::NodeArray<int> &globIn  = C.inDeg;
-            const ogdf::NodeArray<int> &globOut = C.outDeg;
-
-            ogdf::node A = curr_node;
-
-            NodeDPState curr_state = node_dp[A];
-
-            const StaticSPQRTree &spqr    = *blk.spqr;
-            const Skeleton       &skel    = spqr.skeleton(A);
-            const Graph          &skelGraph = skel.getGraph();
-
-            Graph newGraph;
-
-            NodeArray<node> skelToNew(skelGraph, nullptr);
-            for (node v : skelGraph.nodes)
-                skelToNew[v] = newGraph.newNode();
-            NodeArray<node> newToSkel(newGraph, nullptr);
-            for (node v : skelGraph.nodes)
-                newToSkel[skelToNew[v]] = v;
-
-            for (ogdf::node h : skelGraph.nodes) {
-                ogdf::node vB = skel.original(h);
-                blk.blkToSkel[vB] = h;
-            }
-
-            NodeArray<int>  localInDeg (newGraph, 0), localOutDeg(newGraph, 0);
-            NodeArray<bool> isSourceSink(newGraph, false);
-            int localSourceSinkCount = 0;
-            NodeArray<bool> isLeaking(newGraph, false);
-            int localLeakageCount = 0;
-
-            EdgeArray<bool>         isVirtual(newGraph, false);
-            EdgeArray<EdgeDPState*> edgeToDp (newGraph, nullptr);
-            EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
-            EdgeArray<node>         edgeChild(newGraph, nullptr);
-
-            std::vector<edge> virtualEdges;
-
-            auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
-                ogdf::node sV = blk.blkToSkel[bV];
-                ogdf::node nV = skelToNew[sV];
-                return nV;
+            struct NodeDPState {
+                int outgoingCyclesCount{0}; 
+                node lastCycleNode{nullptr}; 
+                int outgoingSourceSinkCount{0};
+                node lastSourceSinkNode{nullptr};
+                int outgoingLeakageCount{0};
+                node lastLeakageNode{nullptr};
             };
 
-            auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
-                if (!vN) return nullptr;
-                ogdf::node vSkel = newToSkel[vN];
-                if (!vSkel) return nullptr;
-                ogdf::node vBlk = skel.original(vSkel);
-                if (!vBlk) return nullptr;
-                ogdf::node vCc = blk.toCc[vBlk];
-                if (!vCc) return nullptr;
-                return cc.toOrig[vCc];
+            // pair of dp states for each edge for both directions
+            struct EdgeDP {
+                EdgeDPState down;   // value valid in  parent -> child  direction
+                EdgeDPState up;     // value valid in  child -> parent direction
             };
 
-            for (edge e : skelGraph.edges) {
-                node u  = e->source();
-                node v  = e->target();
-                node nU = skelToNew[u];
-                node nV = skelToNew[v];
 
-                if (!skel.isVirtual(e)) {
-                    edge newEdge = newGraph.newEdge(nU, nV);
-                    isVirtual[newEdge] = false;
-                    localOutDeg[nU]++;
-                    localInDeg [nV]++;
-                    continue;
-                }
+            void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp,  const Graph &T) {
+                auto& C = ctx();
 
-                node B = skel.twinTreeNode(e);
-                edge treeE = blk.skel2tree.at(e);
-                OGDF_ASSERT(treeE != nullptr);
 
-                EdgeDPState *child        = (B == blk.parent(A) ? &edge_dp[treeE].up   : &edge_dp[treeE].down);
-                EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
-                int dir = child->getDirection();
-
-                ogdf::node nS = mapBlockToNew(child->s);
-                ogdf::node nT = mapBlockToNew(child->t);
-
-                edge newEdge = nullptr;
-
-                if (dir == 1 || dir == 0) {
-                    newEdge = newGraph.newEdge(nS, nT);
-                    isVirtual[newEdge] = true;
-                    virtualEdges.push_back(newEdge);
-                    edgeToDp [newEdge] = edgeToUpdate;
-                    edgeToDpR[newEdge] = child;
-                    edgeChild[newEdge] = B;
-                } else if (dir == -1) {
-                    newEdge = newGraph.newEdge(nT, nS);
-                    isVirtual[newEdge] = true;
-                    virtualEdges.push_back(newEdge);
-                    edgeToDpR[newEdge] = child;
-                    edgeToDp [newEdge] = edgeToUpdate;
-                    edgeChild[newEdge] = B;
-                } else {
-                    newEdge = newGraph.newEdge(nS, nT);
-                    isVirtual[newEdge] = true;
-                    virtualEdges.push_back(newEdge);
-                    edgeChild[newEdge] = B;
-                    edgeToDpR[newEdge] = child;
-                    edgeToDp [newEdge] = edgeToUpdate;
-                }
-
-                if (nS == nU && nT == nV) {
-                    localOutDeg[nS] += child->localOutS;
-                    localInDeg [nS] += child->localInS;
-                    localOutDeg[nT] += child->localOutT;
-                    localInDeg [nT] += child->localInT;
-                } else {
-                    localOutDeg[nT] += child->localOutT;
-                    localInDeg [nT] += child->localInT;
-                    localOutDeg[nS] += child->localOutS;
-                    localInDeg [nS] += child->localInS;
-                }
-            }
-
-            for (node vN : newGraph.nodes) {
-                node vG = mapNewToGlobal(vN);
-                if (globIn[vG] == 0 || globOut[vG] == 0) {
-                    localSourceSinkCount++;
-                    isSourceSink[vN] = true;
-                }
-                if (globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
-                    localLeakageCount++;
-                    isLeaking[vN] = true;
-                }
-            }
-
-            if (spqr.typeOf(A) == StaticSPQRTree::NodeType::PNode) {
-                node pole0Blk = nullptr, pole1Blk = nullptr;
-                {
-                    auto it = skelGraph.nodes.begin();
-                    if (it != skelGraph.nodes.end()) pole0Blk = skel.original(*it++);
-                    if (it != skelGraph.nodes.end()) pole1Blk = skel.original(*it);
-                }
-
-                if (!pole0Blk || !pole1Blk)
-                    return;
-
-                node gPole0 = cc.toOrig[blk.toCc[pole0Blk]];
-                node gPole1 = cc.toOrig[blk.toCc[pole1Blk]];
-
-                int cnt01 = 0, cnt10 = 0;
-                for (edge e : skelGraph.edges) {
-                    if (!skel.isVirtual(e)) {
-                        node uG = mapNewToGlobal(skelToNew[e->source()]);
-                        node vG = mapNewToGlobal(skelToNew[e->target()]);
-                        if      (uG == gPole0 && vG == gPole1) ++cnt01;
-                        else if (uG == gPole1 && vG == gPole0) ++cnt10;
+                std::cout << "Edge dp states:" << std::endl;
+                for(auto &e:T.edges) {
+                    {
+                        EdgeDPState state = edge_dp[e].down;
+                        if(state.s && state.t) {
+                            std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
+                            std::cout << "s = " << C.node2name[state.s] << ", ";
+                            std::cout << "t = " << C.node2name[state.t] << ", ";
+                            std::cout << "acyclic = " << state.acyclic << ", ";
+                            std::cout << "global source = " << state.globalSourceSink << ", ";
+                            std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                            std::cout << "localInS = " << state.localInS << ", ";
+                            std::cout << "localOutS = " << state.localOutS << ", ";
+                            std::cout << "localInT = " << state.localInT << ", ";
+                            std::cout << "localOutT = " << state.localOutT << ", ";
+                            std::cout << "directST = " << state.directST << ", ";
+                            std::cout << "directTS = " << state.directTS << ", ";
+                            
+                            std::cout << std::endl;
+                        }
                     }
-                }
 
-                for (edge e : skelGraph.edges) {
-                    if (skel.isVirtual(e)) {
-                        node  B     = skel.twinTreeNode(e);
-                        edge  treeE = blk.skel2tree.at(e);
-
-                        EdgeDPState &st =
-                            (B == blk.parent(A) ? edge_dp[treeE].up
-                                                : edge_dp[treeE].down);
-
-                        if (st.s == pole0Blk && st.t == pole1Blk) {
-                            st.directST |= (cnt01 > 0);
-                            st.directTS |= (cnt10 > 0);
-                        } else if (st.s == pole1Blk && st.t == pole0Blk) {
-                            st.directST |= (cnt10 > 0);
-                            st.directTS |= (cnt01 > 0);
+                    {
+                        EdgeDPState state = edge_dp[e].up;
+                        if(state.s && state.t) {
+                            std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
+                            std::cout << "s = " << C.node2name[state.s] << ", ";
+                            std::cout << "t = " << C.node2name[state.t] << ", ";
+                            std::cout << "acyclic = " << state.acyclic << ", ";
+                            std::cout << "global source = " << state.globalSourceSink << ", ";
+                            std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                            std::cout << "localInS = " << state.localInS << ", ";
+                            std::cout << "localOutS = " << state.localOutS << ", ";
+                            std::cout << "localInT = " << state.localInT << ", ";
+                            std::cout << "localOutT = " << state.localOutT << ", ";
+                            std::cout << "directST = " << state.directST << ", ";
+                            std::cout << "directTS = " << state.directTS << ", ";
+                            
+                            std::cout << std::endl;
                         }
                     }
                 }
+
+                std::cout << "Node dp states: " << std::endl;
+                for(node v : T.nodes) {
+                    std::cout << "Node " << v->index() << ", ";
+                    std::cout << "outgoingCyclesCount: " << node_dp[v].outgoingCyclesCount << ", ";
+                    std::cout << "outgoingLeakageCount: " << node_dp[v].outgoingLeakageCount << ", ";
+                    std::cout << "outgoingSourceSinkCount: " << node_dp[v].outgoingSourceSinkCount << ", ";
+
+                    std::cout << std::endl;
+                    
+                }
             }
 
-            if (curr_state.outgoingCyclesCount >= 2) {
-                for (edge e : virtualEdges) {
-                    if (edgeToDp[e]->acyclic) {
-                        node_dp[edgeChild[e]].outgoingCyclesCount++;
-                        node_dp[edgeChild[e]].lastCycleNode = curr_node;
+            void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const Graph &T) {
+                auto& C = ctx();
+
+
+                std::cout << "Edge dp states:" << std::endl;
+                for(auto &e:T.edges) {
+                    {
+                        EdgeDPState state = edge_dp[e].down;
+                        if(state.s && state.t) {
+                            std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
+                            std::cout << "s = " << C.node2name[state.s] << ", ";
+                            std::cout << "t = " << C.node2name[state.t] << ", ";
+                            std::cout << "acyclic = " << state.acyclic << ", ";
+                            std::cout << "global source = " << state.globalSourceSink << ", ";
+                            std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                            std::cout << "localInS = " << state.localInS << ", ";
+                            std::cout << "localOutS = " << state.localOutS << ", ";
+                            std::cout << "localInT = " << state.localInT << ", ";
+                            std::cout << "localOutT = " << state.localOutT << ", ";
+                            std::cout << "directST = " << state.directST << ", ";
+                            std::cout << "directTS = " << state.directTS << ", ";
+                            
+                            std::cout << std::endl;
+                        }
                     }
-                    edgeToDp[e]->acyclic &= false;
+
+                    {
+                        EdgeDPState state = edge_dp[e].up;
+                        if(state.s && state.t) {
+                            std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
+                            std::cout << "s = " << C.node2name[state.s] << ", ";
+                            std::cout << "t = " << C.node2name[state.t] << ", ";
+                            std::cout << "acyclic = " << state.acyclic << ", ";
+                            std::cout << "global source = " << state.globalSourceSink << ", ";
+                            std::cout << "hasLeakage = " << state.hasLeakage << ", ";
+                            std::cout << "localInS = " << state.localInS << ", ";
+                            std::cout << "localOutS = " << state.localOutS << ", ";
+                            std::cout << "localInT = " << state.localInT << ", ";
+                            std::cout << "localOutT = " << state.localOutT << ", ";
+                            std::cout << "directST = " << state.directST << ", ";
+                            std::cout << "directTS = " << state.directTS << ", ";
+                            
+                            std::cout << std::endl;
+                        }
+                    }
                 }
-            } else if (node_dp[curr_node].outgoingCyclesCount == 1) {
-                for (edge e : virtualEdges) {
-                    if (edgeChild[e] != curr_state.lastCycleNode) {
-                        if (edgeToDp[e]->acyclic) {
+
+            }
+
+            std::string nodeTypeToString(SPQRTree::NodeType t) {
+                switch (t) {
+                    case SPQRTree::NodeType::SNode: return "SNode";
+                    case SPQRTree::NodeType::PNode: return "PNode";
+                    case SPQRTree::NodeType::RNode: return "RNode";
+                    default: return "Unknown";
+                }
+            }
+
+
+            void dfsSPQR_order(
+                SPQRTree &spqr,
+                std::vector<ogdf::edge> &edge_order, // order of edges to process
+                std::vector<ogdf::node> &node_order,
+                node curr = nullptr,
+                node parent = nullptr,
+                edge e = nullptr 
+            ) {
+                //PROFILE_FUNCTION();
+                if(curr == nullptr) {
+                    curr = spqr.rootNode();
+                    parent = curr;
+                    dfsSPQR_order(spqr, edge_order, node_order, curr, parent);
+                    return;
+                }
+
+
+
+                // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
+                node_order.push_back(curr);
+                for (adjEntry adj : curr->adjEntries) {
+                    node child = adj->twinNode();
+                    if (child == parent) continue;
+                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, adj->theEdge());
+                }
+                if(curr!=parent) edge_order.push_back(e);
+            }
+
+
+
+            // process edge in the direction of parent to child
+            // Computing A->B (curr_edge)
+            void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
+                //PROFILE_FUNCTION();
+                auto& C = ctx();
+
+                const ogdf::NodeArray<int> &globIn  = C.inDeg;
+                const ogdf::NodeArray<int> &globOut = C.outDeg;
+                            
+                EdgeDPState &state = dp[curr_edge].down;
+                EdgeDPState &back_state = dp[curr_edge].up;
+                
+                const StaticSPQRTree &spqr = *blk.spqr;
+                            
+                ogdf::node A = curr_edge->source();
+                ogdf::node B = curr_edge->target();
+                
+                state.localOutS = 0;
+                state.localInT  = 0;
+                state.localOutT = 0;
+                state.localInS  = 0;
+                
+                const Skeleton &skel = spqr.skeleton(B);
+                const Graph &skelGraph = skel.getGraph();
+
+                
+                // Building new graph with correct orientation of virtual edges
+                Graph newGraph;
+
+                NodeArray<node> skelToNew(skelGraph, nullptr);
+                for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
+                NodeArray<node> newToSkel(newGraph, nullptr);
+                for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+
+
+                {
+                    //PROFILE_BLOCK("processNode:: map block to skeleton nodes");
+                for (ogdf::node h : skelGraph.nodes) {
+                        ogdf::node vB = skel.original(h);
+                        blk.blkToSkel[vB] = h;
+                    }
+                }
+
+                
+                NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
+
+
+
+
+                // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
+                //     // global -> component
+                //     ogdf::node vComp = cc.toCopy[vG];
+                //     if (!vComp) return nullptr;
+
+                //     // component -> block
+                //     ogdf::node vBlk  = cc.toBlk[vComp];
+                //     if (!vBlk)  return nullptr;
+
+                //     // block -> skeleton
+                //     ogdf::node vSkel = blk.blkToSkel[vBlk];
+                //     if (!vSkel) return nullptr;
+
+                //     return skelToNew[vSkel];
+                // };
+
+                auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
+                    if (!vN) return nullptr;
+
+                    ogdf::node vSkel = newToSkel[vN];
+                    if (!vSkel) return nullptr;
+
+                    ogdf::node vBlk  = skel.original(vSkel);
+                    if (!vBlk) return nullptr;
+
+                    ogdf::node vCc   = blk.toCc[vBlk];
+                    if (!vCc) return nullptr;
+
+                    return cc.toOrig[vCc];
+                };
+
+
+                // auto mapBlkToNew = [&](ogdf::node bV) -> ogdf::node {
+                //     if (!bV) return nullptr;
+
+                //     ogdf::node vSkel = newToSkel[vN];
+                //     if (!vSkel) return nullptr;
+
+                //     ogdf::node vBlk  = skel.original(vSkel);
+                //     if (!vBlk) return nullptr;
+
+                //     ogdf::node vCc   = blk.toCc[vBlk];
+                //     if (!vCc) return nullptr;
+
+                //     return cc.toOrig[vCc];
+                // };
+
+
+
+
+
+
+                // For debug
+                auto printDegrees = [&]() {
+                    for(node vN:newGraph.nodes) {
+                        node vG = mapNewToGlobal(vN);
+
+                        // std::cout << C.node2name[vG] << ":    out: " << localOutDeg[vN] << ", in: " << localInDeg[vN] << std::endl;  
+                    }
+                };
+
+
+
+                ogdf::node nS, nT;
+
+
+                for(edge e : skelGraph.edges) {
+                    node u = e->source();
+                    node v = e->target();
+
+                    node nU = skelToNew[u];
+                    node nV = skelToNew[v];
+                    
+
+                    if(!skel.isVirtual(e)) {
+                        newGraph.newEdge(nU, nV);
+                        localOutDeg[nU]++;
+                        localInDeg[nV]++;
+
+                        continue;
+                    }
+                    
+                    auto D = skel.twinTreeNode(e);
+                    
+
+                    if(D == A) {
+                        ogdf::node vBlk = skel.original(v);
+                        ogdf::node uBlk = skel.original(u);
+                        
+                        // ogdf::node vG  = blk.toOrig[vCc];
+                        // ogdf::node uG  = blk.toOrig[uCc];
+
+                        state.s = back_state.s = vBlk;
+                        state.t = back_state.t = uBlk;
+
+                        nS = nV;
+                        nT = nU;
+                        
+
+                        continue;
+                    }
+
+
+                    edge treeE = blk.skel2tree.at(e);
+                    OGDF_ASSERT(treeE != nullptr);
+
+
+
+                    const EdgeDPState child = dp[treeE].down;
+                    int dir = child.getDirection();
+
+                    // ogdf::node nS = mapGlobalToNew(child.s);
+                    // ogdf::node nT = mapGlobalToNew(child.t);
+
+                    ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
+                    ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
+                    
+
+                    
+
+                    if(dir==1) {
+                        newGraph.newEdge(nA, nB);
+                    } else if(dir==-1) {
+                        newGraph.newEdge(nB, nA);
+                    } 
+
+
+                    if(nA == nU && nB == nV) {
+                        localOutDeg[nA]+=child.localOutS;
+                        localInDeg[nA]+=child.localInS;
+
+                        localOutDeg[nB]+=child.localOutT;
+                        localInDeg[nB]+=child.localInT;
+                    } else {
+                        localOutDeg[nB]+=child.localOutT; 
+                        localInDeg[nB]+=child.localInT;
+
+                        localOutDeg[nA]+=child.localOutS;
+                        localInDeg[nA]+=child.localInS;
+                    }
+
+
+
+                    state.acyclic &= child.acyclic;
+                    state.globalSourceSink |= child.globalSourceSink;
+                    state.hasLeakage |= child.hasLeakage;
+                }
+
+
+                // Direct ST/TS computation(only happens in P nodes)
+                if(spqr.typeOf(B) == SPQRTree::NodeType::PNode) {
+                    for(edge e : skelGraph.edges) {
+                        if(skel.isVirtual(e)) continue;
+                        node u = e->source();
+                        node v = e->target();
+
+                        // node nU = skelToNew[u];
+                        // node nV = skelToNew[v];
+
+                        node bU = skel.original(u);
+                        node bV = skel.original(v);
+
+
+                        // if(mapGlobalToNew(state.s) == nU && mapGlobalToNew(state.t) == nV) {
+                        //     state.directST = true;
+                        // } else if(mapGlobalToNew(state.s) == nV && mapGlobalToNew(state.t) == nU) {
+                        //     state.directTS = true;
+                        // } else {
+                        //     assert(false);
+                        // }
+
+                        if(state.s == bU && state.t == bV) {
+                            state.directST = true;
+                        } else if(state.s == bV && state.t == bU) {
+                            state.directTS = true;
+                        } else {
+                            assert(false);
+                        }
+                    }
+                }
+
+
+                // for (ogdf::node vN : newGraph.nodes) {
+                //     ogdf::node vG  = mapNewToGlobal(vN);
+                //     assert(vN == mapGlobalToNew(vG));
+
+                //     if (vG == state.s || vG == state.t)
+                //         continue;
+
+                    
+                //     if(globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
+                //         state.hasLeakage = true;
+                //     }
+
+                //     if (globIn[vG] == 0 || globOut[vG] == 0) {
+                //         state.globalSourceSink = true;
+                //     }
+                // }
+
+
+
+                for (ogdf::node nV : newGraph.nodes) {
+                    ogdf::node sV = newToSkel[nV];
+                    ogdf::node bV  = skel.original(sV);
+                    ogdf::node gV  = mapNewToGlobal(nV);
+
+                    if (bV == state.s || bV == state.t)
+                        continue;
+
+                    
+                    if(globIn[gV] != localInDeg[nV] || globOut[gV] != localOutDeg[nV]) {
+                        state.hasLeakage = true;
+                    }
+
+                    if (globIn[gV] == 0 || globOut[gV] == 0) {
+                        state.globalSourceSink = true;
+                    }
+                }
+
+
+
+
+
+                // state.localInS = localInDeg[mapGlobalToNew(state.s)];
+                // state.localOutS = localOutDeg[mapGlobalToNew(state.s)];
+
+                // state.localInT = localInDeg[mapGlobalToNew(state.t)];
+                // state.localOutT = localOutDeg[mapGlobalToNew(state.t)];
+
+
+                state.localInS = localInDeg[nS];
+                state.localOutS = localOutDeg[nS];
+
+                state.localInT = localInDeg[nT];
+                state.localOutT = localOutDeg[nT];
+
+
+
+                
+                if(state.acyclic) state.acyclic &= isAcyclic(newGraph);
+
+
+                if(!state.acyclic) {
+                    node_dp[A].outgoingCyclesCount++;
+                    node_dp[A].lastCycleNode = B;
+                }
+
+                if(state.globalSourceSink) {
+                    node_dp[A].outgoingSourceSinkCount++;
+                    node_dp[A].lastSourceSinkNode = B;
+                }
+
+                if(state.hasLeakage) {
+                    node_dp[A].outgoingLeakageCount++;
+                    node_dp[A].lastLeakageNode = B;
+                }
+            }
+
+
+            void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk) {
+                //PROFILE_FUNCTION();
+                auto& C = ctx();
+
+                const ogdf::NodeArray<int> &globIn  = C.inDeg;
+                const ogdf::NodeArray<int> &globOut = C.outDeg;
+
+                ogdf::node A = curr_node;
+                
+                const Graph &T = blk.spqr->tree();
+                
+                NodeDPState curr_state = node_dp[A]; 
+
+                const StaticSPQRTree &spqr = *blk.spqr;
+                            
+
+                const Skeleton &skel = spqr.skeleton(A);
+                const Graph &skelGraph = skel.getGraph();
+
+                
+                // Building new graph with correct orientation of virtual edges
+                Graph newGraph;
+
+                NodeArray<node> skelToNew(skelGraph, nullptr);
+                for (node v : skelGraph.nodes) skelToNew[v] = newGraph.newNode();
+                NodeArray<node> newToSkel(newGraph, nullptr);
+                for (node v : skelGraph.nodes) newToSkel[skelToNew[v]] = v;
+
+                for (ogdf::node h : skelGraph.nodes) {
+                    ogdf::node vB = skel.original(h);
+                    blk.blkToSkel[vB] = h;
+                }
+
+                
+                NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
+                
+                NodeArray<bool> isSourceSink(newGraph, false);
+                int localSourceSinkCount = 0;
+
+                NodeArray<bool> isLeaking(newGraph, false);
+                int localLeakageCount = 0;
+
+                EdgeArray<bool> isVirtual(newGraph, false);
+                EdgeArray<EdgeDPState*> edgeToDp(newGraph, nullptr);
+                EdgeArray<EdgeDPState*> edgeToDpR(newGraph, nullptr);
+                EdgeArray<node> edgeChild(newGraph, nullptr);
+
+
+                std::vector<edge> virtualEdges;
+
+
+                // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
+                //     // global -> component
+                //     ogdf::node vComp = cc.toCopy[vG];
+                //     if (!vComp) return nullptr;
+                //     // component -> block
+                //     ogdf::node vBlk  = cc.toBlk[vComp];
+                //     if (!vBlk)  return nullptr;
+                //     // block -> skeleton
+                //     ogdf::node vSkel = blk.blkToSkel[vBlk];
+                //     if (!vSkel) return nullptr;
+
+                //     return skelToNew[vSkel];
+                // };
+
+
+                auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
+                    ogdf::node sV = blk.blkToSkel[bV];
+                    ogdf::node nV = skelToNew[sV];
+                    return nV;
+                };
+
+
+
+                auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node {
+                    if (!vN) return nullptr;
+                    ogdf::node vSkel = newToSkel[vN];
+                    if (!vSkel) return nullptr;
+                    ogdf::node vBlk  = skel.original(vSkel);
+                    if (!vBlk) return nullptr;
+                    ogdf::node vCc   = blk.toCc[vBlk];
+                    if (!vCc) return nullptr;
+                    return cc.toOrig[vCc];
+                };
+
+
+
+
+                auto printDegrees = [&]() {
+                    for(node vN:newGraph.nodes) {
+                        node vG = mapNewToGlobal(vN);
+                    }
+                };
+
+
+                // Building new graph
+                {
+                    //PROFILE_BLOCK("processNode:: build oriented local graph");
+                for(edge e : skelGraph.edges) {
+                    node u = e->source();
+                    node v = e->target();
+
+                    node nU = skelToNew[u];
+                    node nV = skelToNew[v];
+                    
+
+                    if(!skel.isVirtual(e)) {
+                        auto newEdge = newGraph.newEdge(nU, nV);
+
+                        isVirtual[newEdge] = false;
+
+                        localOutDeg[nU]++;
+                        localInDeg[nV]++;
+
+                        continue;
+                    }
+                    
+                    auto B = skel.twinTreeNode(e);
+                    
+                    edge treeE = blk.skel2tree.at(e);
+                    OGDF_ASSERT(treeE != nullptr);
+
+
+
+                    EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
+                    EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
+                    int dir = child->getDirection();
+
+                    // ogdf::node nS = mapGlobalToNew(child->s);
+                    // ogdf::node nT = mapGlobalToNew(child->t);
+
+                    ogdf::node nS = mapBlockToNew(child->s);
+                    ogdf::node nT = mapBlockToNew(child->t);
+
+
+
+                    edge newEdge = nullptr;
+
+                    if(dir==1 || dir == 0) {
+                        newEdge = newGraph.newEdge(nS, nT);
+                        
+                        isVirtual[newEdge] = true;
+
+                        virtualEdges.push_back(newEdge);
+
+                        edgeToDp[newEdge] = edgeToUpdate;
+                        edgeToDpR[newEdge] = child;
+                        edgeChild[newEdge] = B;
+                    } else if(dir==-1) {
+                        newEdge = newGraph.newEdge(nT, nS);
+                        
+                        isVirtual[newEdge] = true;
+                        
+                        virtualEdges.push_back(newEdge);
+                        
+                        edgeToDpR[newEdge] = child;
+                        edgeToDp[newEdge] = edgeToUpdate;
+                        edgeChild[newEdge] = B;
+
+                        
+                    } else {
+                        newEdge = newGraph.newEdge(nS, nT);
+                        isVirtual[newEdge] = true;
+
+                        virtualEdges.push_back(newEdge);
+
+
+                        edgeChild[newEdge] = B;
+                        edgeToDpR[newEdge] = child;
+
+                        edgeToDp[newEdge] = edgeToUpdate;
+
+                    }
+
+                    if(nS == nU && nT == nV) {
+                        localOutDeg[nS]+=child->localOutS; 
+                        localInDeg[nS]+=child->localInS;
+
+                        localOutDeg[nT]+=child->localOutT;
+                        localInDeg[nT]+=child->localInT;
+                    } else {
+                        localOutDeg[nT]+=child->localOutT; 
+                        localInDeg[nT]+=child->localInT;
+
+                        localOutDeg[nS]+=child->localOutS;
+                        localInDeg[nS]+=child->localInS;
+                    }
+                    }
+                }
+
+            
+
+                {
+                    //PROFILE_BLOCK("processNode:: mark source/sink and leakage");
+                for(node vN : newGraph.nodes) {
+                    node vG = mapNewToGlobal(vN);
+                        // node vB = skel.original(newToSkel[vN]);
+                    if(globIn[vG] == 0 || globOut[vG] == 0) {
+                        localSourceSinkCount++;
+                        isSourceSink[vN] = true;
+                    }
+
+                    if(globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN]) {
+                        localLeakageCount++;
+                        isLeaking[vN] = true;
+                        }
+                    }
+                }
+
+
+                // calculating ingoing dp states of direct st and ts edges in P node
+                if (spqr.typeOf(A) == StaticSPQRTree::NodeType::PNode) {
+                    //PROFILE_BLOCK("processNode:: P-node direct edge analysis");
+                    node pole0Blk = nullptr, pole1Blk = nullptr;
+                    {
+                        auto it = skelGraph.nodes.begin();
+                        if (it != skelGraph.nodes.end()) pole0Blk = skel.original(*it++);
+                        if (it != skelGraph.nodes.end()) pole1Blk = skel.original(*it);
+                    }
+
+                    if (!pole0Blk || !pole1Blk)
+                        return;
+
+                    node gPole0 = cc.toOrig[blk.toCc[pole0Blk]];
+                    node gPole1 = cc.toOrig[blk.toCc[pole1Blk]];
+
+
+                    int cnt01 = 0, cnt10 = 0;
+                    for (edge e : skelGraph.edges) {
+                        if (!skel.isVirtual(e))
+                        {
+                            node uG = mapNewToGlobal(skelToNew[e->source()]);
+                            node vG = mapNewToGlobal(skelToNew[e->target()]);
+                            if (uG == gPole0 && vG == gPole1) ++cnt01;
+                            else if (uG == gPole1 && vG == gPole0) ++cnt10;
+                        }
+                    }
+
+
+                    for (edge e : skelGraph.edges) {
+                        if (skel.isVirtual(e))
+                        {
+                            node  B = skel.twinTreeNode(e);
+                            edge  treeE = blk.skel2tree.at(e);
+
+                            SPQRsolve::EdgeDPState &st = 
+                                (B == blk.parent(A) ? edge_dp[treeE].down
+                                : edge_dp[treeE].up);
+
+                            if (st.s == pole0Blk && st.t == pole1Blk) {
+                                st.directST |= (cnt01 > 0);
+                                st.directTS |= (cnt10 > 0);
+                            }
+                            else if (st.s == pole1Blk && st.t == pole0Blk) {
+                                st.directST |= (cnt10 > 0);
+                                st.directTS |= (cnt01 > 0);
+                            }
+                        }
+                    }
+                } 
+        
+
+
+                // Computing acyclicity
+                if(curr_state.outgoingCyclesCount>=2) {
+                    //PROFILE_BLOCK("processNode:: acyclicity - multi-outgoing case");
+                    for(edge e : virtualEdges) {
+                        if(edgeToDp[e]->acyclic) {
                             node_dp[edgeChild[e]].outgoingCyclesCount++;
                             node_dp[edgeChild[e]].lastCycleNode = curr_node;
                         }
                         edgeToDp[e]->acyclic &= false;
-                    } else {
-                        node nU    = e->source();
-                        node nV    = e->target();
-                        auto *st   = edgeToDp [e];
-                        auto *ts   = edgeToDpR[e];
-                        auto *child = edgeChild[e];
-                        bool  acyclic = false;
+                    }
+                } else if(node_dp[curr_node].outgoingCyclesCount == 1) {
+                    //PROFILE_BLOCK("processNode:: acyclicity - single-outgoing case");
+                    for (edge e : virtualEdges) {
+                        if(edgeChild[e] != curr_state.lastCycleNode) {
+                            if(edgeToDp[e]->acyclic) {
+                                node_dp[edgeChild[e]].outgoingCyclesCount++;
+                                node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                            }
+                            edgeToDp[e]->acyclic &= false;
+                        } else {                        
+                            node  nU   = e->source();
+                            node  nV   = e->target();
+                            auto *st  = edgeToDp[e];
+                            auto *ts  = edgeToDpR[e];
+                            auto *child = edgeChild[e];
+                            bool  acyclic = false;
 
-                        newGraph.delEdge(e);
-                        acyclic = isAcyclic(newGraph);
+                            newGraph.delEdge(e);
+                            acyclic = isAcyclic(newGraph);
 
-                        edge eRest = newGraph.newEdge(nU, nV);
-                        isVirtual[eRest] = true;
-                        edgeToDp [eRest] = st;
-                        edgeToDpR[eRest] = ts;
-                        edgeChild[eRest] = child;
+                            edge eRest = newGraph.newEdge(nU, nV);
+                            isVirtual[eRest] = true;
+                            edgeToDp [eRest] = st;
+                            edgeToDpR[eRest] = ts;
+                            edgeChild[eRest] = child;
+                
+                            if(edgeToDp[eRest]->acyclic && !acyclic) {
+                                node_dp[edgeChild[eRest]].outgoingCyclesCount++;
+                                node_dp[edgeChild[eRest]].lastCycleNode = curr_node;
+                            }
 
-                        if (edgeToDp[eRest]->acyclic && !acyclic) {
-                            node_dp[edgeChild[eRest]].outgoingCyclesCount++;
-                            node_dp[edgeChild[eRest]].lastCycleNode = curr_node;
+                            edgeToDp[eRest]->acyclic &= acyclic;
+                        }
+                    }
+
+                } else {
+                    //PROFILE_BLOCK("processNode:: acyclicity - FAS baseline");
+
+                    FeedbackArcSet FAS(newGraph);
+                    std::vector<edge> fas = FAS.run();
+                    // find_feedback_arcs(newGraph, fas, toRemove);
+
+                    EdgeArray<bool> isFas(newGraph, 0);
+                    for (edge e : fas) isFas[e] = true;
+
+                    for (edge e : virtualEdges) {
+
+                        if(edgeToDp[e]->acyclic && !isFas[e]) {
+                            node_dp[edgeChild[e]].outgoingCyclesCount++;
+                            node_dp[edgeChild[e]].lastCycleNode = curr_node;
                         }
 
-                        edgeToDp[eRest]->acyclic &= acyclic;
+                        edgeToDp[e]->acyclic &= isFas[e];
                     }
-                }
-            } else {
-                FeedbackArcSet FAS(newGraph);
-                std::vector<edge> fas = FAS.run();
 
-                EdgeArray<bool> isFas(newGraph, 0);
-                for (edge e : fas) isFas[e] = true;
 
-                for (edge e : virtualEdges) {
-                    if (edgeToDp[e]->acyclic && !isFas[e]) {
-                        node_dp[edgeChild[e]].outgoingCyclesCount++;
-                        node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                    }
-                    edgeToDp[e]->acyclic &= isFas[e];
-                }
-            }
+                    // NodeArray<int> comp(newGraph);
+                    // int sccs = strongComponents(newGraph, comp);
 
-            if (curr_state.outgoingSourceSinkCount >= 2) {
-                for (edge e : virtualEdges) {
-                    if (!edgeToDp[e]->globalSourceSink) {
-                        node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                        node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                    }
-                    edgeToDp[e]->globalSourceSink |= true;
+                    // std::vector<int> size(sccs, 0);
+                    // for (node v : newGraph.nodes) ++size[comp[v]];
+
+                    // int trivial = 0, nonTrivial = 0, ntIdx = -1;
+
+                    // for (int i = 0; i < sccs; ++i) {
+                    //     if (size[i] > 1) { ++nonTrivial; ntIdx = i; }
+                    //     else ++trivial;
+                    // }
+
+                    // if (nonTrivial >= 2){
+                    //     for (edge e : virtualEdges) {
+                    //         if(edgeToDp[e]->acyclic) {
+                    //             node_dp[edgeChild[e]].outgoingCyclesCount++;
+                    //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                    //         }
+
+                    //         edgeToDp[e]->acyclic &= false;
+                    //     }
+                    // } else if (nonTrivial == 1) {
+                    //     // std::vector<node> toRemove;
+                    //     // for (node v : newGraph.nodes)
+                    //     //     if (comp[v] != ntIdx) toRemove.push_back(v);
+
+                    //     FeedbackArcSet FAS(newGraph);
+                    //     std::vector<edge> fas = FAS.run();
+                    //     // find_feedback_arcs(newGraph, fas, toRemove);
+
+                    //     EdgeArray<bool> isFas(newGraph, 0);
+                    //     for (edge e : fas) isFas[e] = true;
+
+                    //     for (edge e : virtualEdges) {
+
+                    //         if(edgeToDp[e]->acyclic && !isFas[e]) {
+                    //             node_dp[edgeChild[e]].outgoingCyclesCount++;
+                    //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                    //         }
+
+                    //         edgeToDp[e]->acyclic &= isFas[e];
+                    //     }
+                    // }
                 }
-            } else if (curr_state.outgoingSourceSinkCount == 1) {
-                for (edge e : virtualEdges) {
-                    if (edgeChild[e] != curr_state.lastSourceSinkNode) {
-                        if (!edgeToDp[e]->globalSourceSink) {
+
+
+
+                // computing global sources/sinks
+                {
+                    //PROFILE_BLOCK("processNode:: compute global source/sink");
+                if(curr_state.outgoingSourceSinkCount >= 2) {
+                    // all ingoing have source
+                    for(edge e : virtualEdges) {
+                        if(!edgeToDp[e]->globalSourceSink) {
                             node_dp[edgeChild[e]].outgoingSourceSinkCount++;
                             node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
                         }
+
+
                         edgeToDp[e]->globalSourceSink |= true;
-                    } else {
-                        node vN = e->source();
-                        node uN = e->target();
-                        if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
-                            if (!edgeToDp[e]->globalSourceSink) {
+                    }
+                } else if(curr_state.outgoingSourceSinkCount == 1) {
+                    for(edge e : virtualEdges) {
+                        // if(!isVirtual[e]) continue;
+                        if(edgeChild[e] != curr_state.lastSourceSinkNode) {
+                            if(!edgeToDp[e]->globalSourceSink) {
                                 node_dp[edgeChild[e]].outgoingSourceSinkCount++;
                                 node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
                             }
+
+                            edgeToDp[e]->globalSourceSink |= true;
+                        } else {
+                            node vN = e->source(), uN = e->target();
+                            if((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
+                                if(!edgeToDp[e]->globalSourceSink) {
+                                    node_dp[edgeChild[e]].outgoingSourceSinkCount++;
+                                    node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
+                                }
+
+                                edgeToDp[e]->globalSourceSink |= true;
+                            }
+                        }
+                    }
+                } else {
+                    for(edge e : virtualEdges) {
+                        // if(!isVirtual[e]) continue;
+                        node vN = e->source(), uN = e->target();
+                        if((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
+                            if(!edgeToDp[e]->globalSourceSink) {
+                                node_dp[edgeChild[e]].outgoingSourceSinkCount++;
+                                node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
+                            }
+
                             edgeToDp[e]->globalSourceSink |= true;
                         }
-                    }
-                }
-            } else {
-                for (edge e : virtualEdges) {
-                    node vN = e->source();
-                    node uN = e->target();
-                    if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount) {
-                        if (!edgeToDp[e]->globalSourceSink) {
-                            node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                            node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
+                        
                         }
-                        edgeToDp[e]->globalSourceSink |= true;
                     }
                 }
-            }
 
-            if (curr_state.outgoingLeakageCount >= 2) {
-                for (edge e : virtualEdges) {
-                    if (!edgeToDp[e]->hasLeakage) {
-                        node_dp[edgeChild[e]].outgoingLeakageCount++;
-                        node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                    }
-                    edgeToDp[e]->hasLeakage |= true;
-                }
-            } else if (curr_state.outgoingLeakageCount == 1) {
-                for (edge e : virtualEdges) {
-                    if (edgeChild[e] != curr_state.lastLeakageNode) {
-                        if (!edgeToDp[e]->hasLeakage) {
+
+                // computing leakage
+                {
+                    //PROFILE_BLOCK("processNode:: compute leakage");
+                if(curr_state.outgoingLeakageCount >= 2) {
+                    for(edge e : virtualEdges) {
+                        // if(!isVirtual[e]) continue;
+
+                        if(!edgeToDp[e]->hasLeakage) {
                             node_dp[edgeChild[e]].outgoingLeakageCount++;
                             node_dp[edgeChild[e]].lastLeakageNode = curr_node;
                         }
+
                         edgeToDp[e]->hasLeakage |= true;
-                    } else {
-                        node vN = e->source();
-                        node uN = e->target();
-                        if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
-                            if (!edgeToDp[e]->hasLeakage) {
+                    }
+                } else if(curr_state.outgoingLeakageCount == 1) {
+                    for(edge e : virtualEdges) {
+                        // if(!isVirtual[e]) continue;
+
+                        if(edgeChild[e] != curr_state.lastLeakageNode) {
+                            if(!edgeToDp[e]->hasLeakage) {
                                 node_dp[edgeChild[e]].outgoingLeakageCount++;
                                 node_dp[edgeChild[e]].lastLeakageNode = curr_node;
                             }
                             edgeToDp[e]->hasLeakage |= true;
+                        } else {
+                            node vN = e->source(), uN = e->target();
+                            if((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
+                                if(!edgeToDp[e]->hasLeakage) {
+                                    node_dp[edgeChild[e]].outgoingLeakageCount++;
+                                    node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+                                }
+                                edgeToDp[e]->hasLeakage |= true;
+                            }
+                        }
+                    }
+                } else {
+                    for(edge e : virtualEdges) {
+                        // if(!isVirtual[e]) continue;
+
+                        node vN = e->source(), uN = e->target();
+                        if((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
+                            if(!edgeToDp[e]->hasLeakage) {
+                                node_dp[edgeChild[e]].outgoingLeakageCount++;
+                                node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+                            }
+                            edgeToDp[e]->hasLeakage |= true;
+                            }
                         }
                     }
                 }
-            } else {
-                for (edge e : virtualEdges) {
+
+
+                // updating local degrees of poles of states going into A
+                {
+                    //PROFILE_BLOCK("processNode:: update DP local degrees at poles");
+                for(edge e:virtualEdges) {
+                    // if(!isVirtual[e]) continue;
                     node vN = e->source();
                     node uN = e->target();
-                    if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount) {
-                        if (!edgeToDp[e]->hasLeakage) {
-                            node_dp[edgeChild[e]].outgoingLeakageCount++;
-                            node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+
+                    EdgeDPState *BA = edgeToDp[e];
+                    EdgeDPState *AB = edgeToDpR[e];
+
+                    BA->localInS = localInDeg[mapBlockToNew(BA->s)] - AB->localInS; 
+                    BA->localInT = localInDeg[mapBlockToNew(BA->t)] - AB->localInT; 
+
+                    BA->localOutS = localOutDeg[mapBlockToNew(BA->s)] - AB->localOutS; 
+                    BA->localOutT = localOutDeg[mapBlockToNew(BA->t)] - AB->localOutT; 
+                    }
+                }
+            }
+
+
+
+            void tryBubblePNodeGrouping(
+                const node &A,
+                const CcData &cc,
+                const BlockData &blk,
+                const EdgeArray<EdgeDP> &edge_dp
+            ) {    
+                if(blk.spqr->typeOf(A) != SPQRTree::NodeType::PNode) return;
+
+                const Skeleton &skel = blk.spqr->skeleton(A);
+                const Graph &skelGraph = skel.getGraph();
+
+
+                node bS, bT;
+                {
+                    auto it = skelGraph.nodes.begin();
+                    if (it != skelGraph.nodes.end()) bS = skel.original(*it++);
+                    if (it != skelGraph.nodes.end()) bT = skel.original(*it);
+                }
+
+
+
+                int directST = 0, directTS = 0;
+                for(auto &e:skelGraph.edges) {
+                    if(skel.isVirtual(e)) continue;
+
+                    node a = skel.original(e->source()), b = skel.original(e->target());
+
+                    if(a == bS && b == bT) directST++;
+                    else directTS++;
+                }
+
+
+                // printAllEdgeStates(edge_dp, blk.spqr->tree());
+
+                for(int q=0; q<2; q++) {       
+                    // s -> t
+                    
+                    // std::cout << "s: " << ctx().node2name[s] << ", t: " << ctx().node2name[t] << std::endl;
+                    std::vector<const EdgeDPState*> goodS, goodT;
+                    
+                    int localOutSSum=directST, localInTSum=directST;
+                    
+                    // std::cout << " at " << A << std::endl;
+
+                    for (adjEntry adj : A->adjEntries) {
+                        auto e = adj->theEdge();
+                        // std::cout << e->source() << " -> " << e->target() << std::endl;
+                        auto& state = (e->source() == A ? edge_dp[e].down : edge_dp[e].up);
+                        // directST = (state.s == s ? state.directST : state.directTS);
+                        // directTS = (state.s == s ? state.directTS : state.directST);
+                    
+
+                        
+                        int localOutS = (state.s==bS ? state.localOutS : state.localOutT), localInT = (state.t==bT ? state.localInT : state.localInS);
+
+                        localOutSSum += localOutS;
+                        localInTSum += localInT;
+                        // std::cout << adj->twinNode() << " has outS" <<  localOutS << " and outT " << localInT << std::endl; 
+
+                        if(localOutS > 0) {
+                            // std::cout << "PUSHING TO GOODs" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                            goodS.push_back(&state);
                         }
-                        edgeToDp[e]->hasLeakage |= true;
-                    }
-                }
-            }
 
-            for (edge e : virtualEdges) {
-                EdgeDPState *BA = edgeToDp [e];
-                EdgeDPState *AB = edgeToDpR[e];
-
-                BA->localInS  = localInDeg [mapBlockToNew(BA->s)] - AB->localInS;
-                BA->localInT  = localInDeg [mapBlockToNew(BA->t)] - AB->localInT;
-                BA->localOutS = localOutDeg[mapBlockToNew(BA->s)] - AB->localOutS;
-                BA->localOutT = localOutDeg[mapBlockToNew(BA->t)] - AB->localOutT;
-            }
-        }
-
-
-        void tryBubblePNodeGrouping(
-            const node &A,
-            const CcData &cc,
-            const BlockData &blk,
-            const EdgeArray<EdgeDP> &edge_dp
-        ) {
-            if(blk.spqr->typeOf(A) != SPQRTree::NodeType::PNode) return;
-
-            const Skeleton &skel = blk.spqr->skeleton(A);
-            const Graph &skelGraph = skel.getGraph();
-
-
-            node bS, bT;
-            {
-                auto it = skelGraph.nodes.begin();
-                if (it != skelGraph.nodes.end()) bS = skel.original(*it++);
-                if (it != skelGraph.nodes.end()) bT = skel.original(*it);
-            }
-
-
-
-            int directST = 0, directTS = 0;
-            for(auto &e:skelGraph.edges) {
-                if(skel.isVirtual(e)) continue;
-
-                node a = skel.original(e->source()), b = skel.original(e->target());
-
-                if(a == bS && b == bT) directST++;
-                else directTS++;
-            }
-
-
-            // printAllEdgeStates(edge_dp, blk.spqr->tree());
-
-            for(int q=0; q<2; q++) {
-                // s -> t
-
-                // std::cout << "s: " << ctx().node2name[s] << ", t: " << ctx().node2name[t] << std::endl;
-                std::vector<const EdgeDPState*> goodS, goodT;
-
-                int localOutSSum=directST, localInTSum=directST;
-
-                // std::cout << " at " << A << std::endl;
-
-                for (adjEntry adj : A->adjEntries) {
-                    auto e = adj->theEdge();
-                    // std::cout << e->source() << " -> " << e->target() << std::endl;
-                    auto& state = (e->source() == A ? edge_dp[e].down : edge_dp[e].up);
-                    // directST = (state.s == s ? state.directST : state.directTS);
-                    // directTS = (state.s == s ? state.directTS : state.directST);
-
-
-
-                    int localOutS = (state.s==bS ? state.localOutS : state.localOutT), localInT = (state.t==bT ? state.localInT : state.localInS);
-
-                    localOutSSum += localOutS;
-                    localInTSum += localInT;
-                    // std::cout << adj->twinNode() << " has outS" <<  localOutS << " and outT " << localInT << std::endl;
-
-                    if(localOutS > 0) {
-                        // std::cout << "PUSHING TO GOODs" << (e->source() == A ? e->target(): e->source()) << std::endl;
-                        goodS.push_back(&state);
+                        if(localInT > 0) {
+                            // std::cout << "PUSHING TO GOODt" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                            goodT.push_back(&state);
+                        }
                     }
 
-                    if(localInT > 0) {
-                        // std::cout << "PUSHING TO GOODt" << (e->source() == A ? e->target(): e->source()) << std::endl;
-                        goodT.push_back(&state);
+                    // if(q == 1) std::swap(goodS, goodT);
+                    // std::cout << "directST: " << directST << ", directTS: " << directTS << std::endl;
+
+                    
+
+                    // std::cout << ctx().node2name[cc.toOrig[blk.toCc[s]]] << ", " << ctx().node2name[cc.toOrig[blk.toCc[t]]] << " has s:" << goodS.size() << " and t:" << goodT.size() << std::endl;
+                    bool good = true;
+                    for(auto &state:goodS) {
+                        if((state->s==bS && state->localInS > 0) || (state->s==bT && state->localInT > 0)) {
+                            // std::cout << "BAD 1" << std::endl;
+                            good = false;
+                        } 
+
+                        good &= state->acyclic;
+                        good &= !state->globalSourceSink;
+                        good &= !state->hasLeakage;
+                    }
+
+                    for(auto &state:goodT) {
+                        if((state->t==bT && state->localOutT > 0) || (state->t==bS && state->localOutS > 0)) {
+                            // std::cout << "BAD 2" << std::endl;
+                            good = false;
+                        }
+                        
+                        
+                        good &= state->acyclic;
+                        good &= !state->globalSourceSink;
+                        good &= !state->hasLeakage;
+                    }
+
+                    good &= directTS == 0;
+                    good &= goodS == goodT;
+                    good &= goodS.size() > 0;
+
+                    good &= (localOutSSum == ctx().outDeg[cc.toOrig[blk.toCc[bS]]] && localInTSum == ctx().inDeg[cc.toOrig[blk.toCc[bT]]]);
+
+                    // std::cout << "localOutSSum: " << localOutSSum << ", localInTSum: " << localInTSum << std::endl;
+
+                    // std::cout << ctx().outDeg[cc.toOrig[blk.toCc[s]]] << ", " << 
+
+                    // std::cout << "SETS ARE SAME: " << (goodS == goodT) << std::endl;
+
+                    if(good) {
+                        // std::cout << "ADDING SUPERBUBBLE " << ctx().node2name[bS] << ", " << ctx().node2name[bT] << std::endl;
+                        addSuperbubble(cc.toOrig[blk.toCc[bS]], cc.toOrig[blk.toCc[bT]]);
+                    }
+
+                    std::swap(directST, directTS);
+                    std::swap(bS, bT);
+
+                }
+
+            }
+
+            
+            void tryBubble(const EdgeDPState &curr,
+                    const EdgeDPState &back,
+                    const BlockData &blk,
+                    const CcData &cc,
+                    bool swap, 
+                    bool additionalCheck
+            ) {
+                node S = swap ? blk.toOrig[curr.t] : blk.toOrig[curr.s];
+                node T = swap ? blk.toOrig[curr.s] : blk.toOrig[curr.t];
+
+                // std::cout << ctx().node2name[S] << " " << ctx().node2name[T] << " " << (additionalCheck) << std::endl;
+
+                
+                /* take the counts from the current direction … */
+
+                int outS = swap ? curr.localOutT  : curr.localOutS;
+                int outT = swap ? curr.localOutS : curr.localOutT;
+                int inS  = swap ? curr.localInT  : curr.localInS;
+                int inT  = swap ? curr.localInS : curr.localInT;
+
+
+                // if(curr.s && curr.t) {
+                //     std::cout << "s = " << ctx().node2name[curr.s] << ", ";
+                //     std::cout << "t = " << ctx().node2name[curr.t] << ", ";
+                //     std::cout << "acyclic = " << curr.acyclic << ", ";
+                //     std::cout << "global source = " << curr.globalSourceSink << ", ";
+                //     std::cout << "hasLeakage = " << curr.hasLeakage << ", ";
+                //     std::cout << "localInS = " << curr.localInS << ", ";
+                //     std::cout << "localOutS = " << curr.localOutS << ", ";
+                //     std::cout << "localInT = " << curr.localInT << ", ";
+                //     std::cout << "localOutT = " << curr.localOutT << ", ";
+                //     std::cout << "directST = " << curr.directST << ", ";
+                //     std::cout << "directTS = " << curr.directTS << ", ";
+                    
+                //     std::cout << std::endl;
+                // }
+
+                // if(back.s && back.t) {
+                //     std::cout << "s = " << ctx().node2name[back.s] << ", ";
+                //     std::cout << "t = " << ctx().node2name[back.t] << ", ";
+                //     std::cout << "acyclic = " << back.acyclic << ", ";
+                //     std::cout << "global source = " << back.globalSourceSink << ", ";
+                //     std::cout << "hasLeakage = " << back.hasLeakage << ", ";
+                //     std::cout << "localInS = " << back.localInS << ", ";
+                //     std::cout << "localOutS = " << back.localOutS << ", ";
+                //     std::cout << "localInT = " << back.localInT << ", ";
+                //     std::cout << "localOutT = " << back.localOutT << ", ";
+                //     std::cout << "directST = " << back.directST << ", ";
+                //     std::cout << "directTS = " << back.directTS << ", ";
+                    
+                //     std::cout << std::endl;
+                // }
+
+
+
+                // int outS = swap ? curr.localOutT + (int)back.directST : curr.localOutS + (int)back.directTS;
+                // int outT = swap ? curr.localOutS + (int)back.directTS : curr.localOutT + (int)back.directST;
+                // int inS  = swap ? curr.localInT + (int)back.directTS : curr.localInS + (int)back.directST;
+                // int inT  = swap ? curr.localInS + (int)back.directST: curr.localInT + (int)back.directTS;
+                // std::cout << "before: " << std::endl;
+                // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl; 
+
+                
+
+                if(back.directST) {
+                    // std::cout << " added because back.directST" << std::endl;
+                    if(!swap) {
+                        outS++;
+                        inT++;
+                    } else {
+                        inS++;
+                        outT++;
+                    }
+                } 
+                if(back.directTS){
+                    // std::cout << " added because back.directTS" << std::endl;
+                    if(!swap) {
+                        inS++;
+                        outT++;    
+                    } else {
+                        outS++;
+                        inT++;
                     }
                 }
 
-                // if(q == 1) std::swap(goodS, goodT);
-                // std::cout << "directST: " << directST << ", directTS: " << directTS << std::endl;
+                // std::cout << "after" << std::endl;
+                // std::cout << outS << " " << inS << " | " << outT << " " << inT << std::endl; 
+
+                bool backGood = true;
+
+                if (back.s == curr.s && back.t == curr.t) {
+                    backGood &= (!back.directTS);
+                } else if (back.s == curr.t && back.t == curr.s) {
+                    backGood &= (!back.directST);
+                }
+
+                bool acyclic = curr.acyclic;
+                bool noLeakage = !curr.hasLeakage;
+                bool noGSource = !curr.globalSourceSink;
 
 
 
-                // std::cout << ctx().node2name[cc.toOrig[blk.toCc[s]]] << ", " << ctx().node2name[cc.toOrig[blk.toCc[t]]] << " has s:" << goodS.size() << " and t:" << goodT.size() << std::endl;
-                bool good = true;
-                for(auto &state:goodS) {
-                    if((state->s==bS && state->localInS > 0) || (state->s==bT && state->localInT > 0)) {
-                        // std::cout << "BAD 1" << std::endl;
-                        good = false;
+                if (
+                    !additionalCheck &&
+                    acyclic &&
+                    noGSource &&
+                    noLeakage &&
+                    backGood &&
+                    outS > 0 &&
+                    inT > 0 &&
+                    ctx().outDeg[S] == outS &&
+                    ctx().inDeg [T] == inT &&
+                    !ctx().isEntry[S] &&
+                    !ctx().isExit [T])
+                {
+                    if(additionalCheck) {
+                        if(!swap) {
+                            if(back.directST) addSuperbubble(S, T);
+                        } else {
+                            if(back.directTS) addSuperbubble(S, T);
+                        }
+                    } else {
+                        addSuperbubble(S, T);
                     }
-
-                    good &= state->acyclic;
-                    good &= !state->globalSourceSink;
-                    good &= !state->hasLeakage;
                 }
 
-                for(auto &state:goodT) {
-                    if((state->t==bT && state->localOutT > 0) || (state->t==bS && state->localOutS > 0)) {
-                        // std::cout << "BAD 2" << std::endl;
-                        good = false;
-                    }
+            }
 
 
-                    good &= state->acyclic;
-                    good &= !state->globalSourceSink;
-                    good &= !state->hasLeakage;
+
+            void collectSuperbubbles(const CcData &cc, BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp) {
+                //PROFILE_FUNCTION();
+                const Graph &T = blk.spqr->tree();
+                // printAllStates(edge_dp, node_dp, T);
+
+                for(edge e : T.edges) {
+                    // std::cout << "CHECKING FOR " << e->source() << " " << e->target() << std::endl;
+                    const EdgeDPState &down = edge_dp[e].down;
+                    const EdgeDPState &up   = edge_dp[e].up;
+                    
+
+                    // if(blk.spqr->typeOf(e->target()) != SPQRTree::NodeType::SNode) {
+                    //     std::cout << "DOWN" << std::endl;
+                    bool additionalCheck;
+
+                    additionalCheck = (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
+                    tryBubble(down, up, blk, cc, false, additionalCheck);
+                    tryBubble(down, up, blk, cc, true, additionalCheck);
+                    // }
+                    
+                    // if(blk.spqr->typeOf(e->source()) != SPQRTree::NodeType::SNode) {
+                        // std::cout << "UP" << std::endl;
+                    additionalCheck = (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
+
+                        tryBubble(up, down, blk, cc, false, additionalCheck);
+                        tryBubble(up, down, blk, cc, true, additionalCheck);
+                    // }
+
+                    blk.isAcycic &= (down.acyclic && up.acyclic);
+
                 }
-
-                good &= directTS == 0;
-                good &= goodS == goodT;
-                good &= goodS.size() > 0;
-
-                good &= (localOutSSum == ctx().outDeg[cc.toOrig[blk.toCc[bS]]] && localInTSum == ctx().inDeg[cc.toOrig[blk.toCc[bT]]]);
-
-                // std::cout << "localOutSSum: " << localOutSSum << ", localInTSum: " << localInTSum << std::endl;
-
-                // std::cout << ctx().outDeg[cc.toOrig[blk.toCc[s]]] << ", " <<
-
-                // std::cout << "SETS ARE SAME: " << (goodS == goodT) << std::endl;
-
-                if(good) {
-                    // std::cout << "ADDING SUPERBUBBLE " << ctx().node2name[bS] << ", " << ctx().node2name[bT] << std::endl;
-                    addSuperbubble(cc.toOrig[blk.toCc[bS]], cc.toOrig[blk.toCc[bT]]);
-                }
-
-                std::swap(directST, directTS);
-                std::swap(bS, bT);
-
+                for(node v : T.nodes) {
+                    tryBubblePNodeGrouping(v, cc, blk, edge_dp);
+                } 
             }
-
-        }
-
-
-
-        void tryBubble(const EdgeDPState &curr,
-                       const EdgeDPState &back,
-                       const BlockData &blk,
-                       const CcData &/*cc*/,
-                       bool swap,
-                       bool additionalCheck)
-        {
-            node S = swap ? blk.toOrig[curr.t] : blk.toOrig[curr.s];
-            node T = swap ? blk.toOrig[curr.s] : blk.toOrig[curr.t];
-
-            int outS = swap ? curr.localOutT : curr.localOutS;
-            int outT = swap ? curr.localOutS : curr.localOutT;
-            int inS  = swap ? curr.localInT  : curr.localInS;
-            int inT  = swap ? curr.localInS  : curr.localInT;
-
-            if (back.directST) {
-                if (!swap) {
-                    outS++;
-                    inT++;
-                } else {
-                    inS++;
-                    outT++;
-                }
-            }
-            if (back.directTS) {
-                if (!swap) {
-                    inS++;
-                    outT++;
-                } else {
-                    outS++;
-                    inT++;
-                }
-            }
-
-            bool backGood = true;
-            if (back.s == curr.s && back.t == curr.t) {
-                backGood &= (!back.directTS);
-            } else if (back.s == curr.t && back.t == curr.s) {
-                backGood &= (!back.directST);
-            }
-
-            bool acyclic    = curr.acyclic;
-            bool noLeakage  = !curr.hasLeakage;
-            bool noGSource  = !curr.globalSourceSink;
-
-            if (!additionalCheck &&
-                acyclic &&
-                noGSource &&
-                noLeakage &&
-                backGood &&
-                outS > 0 &&
-                inT  > 0 &&
-                ctx().outDeg[S] == outS &&
-                ctx().inDeg [T] == inT &&
-                !ctx().isEntry[S] &&
-                !ctx().isExit [T])
-            {
-                addSuperbubble(S, T);
-            }
-        }
-
-
-
-        void collectSuperbubbles(const CcData &cc,
-                                 BlockData &blk,
-                                 EdgeArray<EdgeDP> &edge_dp,
-                                 NodeArray<NodeDPState> &/*node_dp*/)
-        {
-            const Graph &T = blk.spqr->tree();
-
-            for (edge e : T.edges) {
-                const EdgeDPState &down = edge_dp[e].down;
-                const EdgeDPState &up   = edge_dp[e].up;
-
-                bool additionalCheck =
-                    (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode &&
-                     blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
-                tryBubble(down, up, blk, cc, false, additionalCheck);
-                tryBubble(down, up, blk, cc, true, additionalCheck);
-
-                additionalCheck =
-                    (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode &&
-                     blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
-                tryBubble(up, down, blk, cc, false, additionalCheck);
-                tryBubble(up, down, blk, cc, true, additionalCheck);
-
-                blk.isAcycic &= (down.acyclic && up.acyclic);
-            }
-
-            for (node v : T.nodes) {
-                tryBubblePNodeGrouping(v, cc, blk, edge_dp);
-            }
-        }
-
 
         }
 
-        void checkBlockByCutVertices(const BlockData &blk, const CcData &/*cc*/)
+        void checkBlockByCutVertices(const BlockData &blk, const CcData &cc)    
         {
             MARK_SCOPE_MEM("sb/checkCutVertices");
 
-            if (!isAcyclic(*blk.Gblk)) {
+            if (!isAcyclic(*blk.Gblk)) { 
                 return;
             }
 
             auto &C      = ctx();
             const Graph &G = *blk.Gblk;
 
-            node src = nullptr, snk = nullptr;
+            node src=nullptr, snk=nullptr;
 
             for (node v : G.nodes) {
                 node vG   = blk.toOrig[v];
@@ -1459,52 +1949,36 @@ namespace solver {
                 bool isSnk = (outL == 0 && inL == inG);
 
                 if (isSrc ^ isSnk) {
-                    if (isSrc) {
-                        if (src) return;
-                        src = v;
-                    } else {
-                        if (snk) return;
-                        snk = v;
+                    if (isSrc) { 
+                        if(src) return; 
+                        src=v; 
+                    } else { 
+                        if(snk) return; 
+                        snk=v; 
                     }
                 } else if (!(inL == inG && outL == outG)) {
                     return;
                 }
             }
 
-            if (!src || !snk) {
-                return;
-            }
+            if (!src || !snk) { return; }
 
-            NodeArray<bool> vis(G, false);
-            std::stack<node> S;
-            vis[src] = true;
-            S.push(src);
-            bool reach = false;
-            while (!S.empty() && !reach) {
-                node u = S.top();
-                S.pop();
-                for (adjEntry a = u->firstAdj(); a; a = a->succ())
-                    if (a->isSource()) {
-                        node v = a->twinNode();
-                        if (!vis[v]) {
-                            if (v == snk) {
-                                reach = true;
-                                break;
-                            }
-                            vis[v] = true;
-                            S.push(v);
-                        }
+            NodeArray<bool> vis(G,false); std::stack<node> S; vis[src]=true; S.push(src);
+            bool reach=false;
+            while(!S.empty() && !reach){
+                node u=S.top();S.pop();
+                for(adjEntry a=u->firstAdj();a;a=a->succ())
+                    if(a->isSource()){
+                        node v=a->twinNode();
+                        if(!vis[v]){ if(v==snk){reach=true;break;}
+                                    vis[v]=true; S.push(v);}
                     }
             }
-            if (!reach) {
-                return;
-            }
+            if(!reach) { return; }
 
-            node srcG = blk.toOrig[src];
-            node snkG = blk.toOrig[snk];
+            node srcG = blk.toOrig[src], snkG = blk.toOrig[snk];
             addSuperbubble(srcG, snkG);
         }
-
 
 
 
@@ -1515,7 +1989,7 @@ namespace solver {
             if (!blk.spqr || blk.Gblk->numberOfNodes() < 3) {
                 return;
             }
-
+            
             const Graph &T = blk.spqr->tree();
 
             EdgeArray<SPQRsolve::EdgeDP> dp(T);
@@ -1531,7 +2005,7 @@ namespace solver {
             for(auto e:edgeOrder) {
                 SPQRsolve::processEdge(e, dp, node_dp, cc, blk);
             }
-
+            
             for(auto v:nodeOrder) {
                 SPQRsolve::processNode(v, dp, node_dp, cc, blk);
             }
@@ -1564,10 +2038,10 @@ namespace solver {
                             break;
                         }
                     }
-
+                    
                     if(ok) {
                         addSuperbubble(a, b);
-                    }
+                    } 
                 }
             }
 
@@ -1580,7 +2054,7 @@ namespace solver {
         //     // const std::vector<node>& verts,
         //         const std::unordered_set<node> &verts,
         //         CcData& cc,
-        //         BlockData& blk) {
+        //         BlockData& blk) {        
         //     //PROFILE_FUNCTION();
 
         //     {
@@ -1757,7 +2231,7 @@ namespace solver {
 
                     {
                         MARK_SCOPE_MEM("sb/worker_bcTree/build");
-                        cc->bc = OGDF_NEW_UNIQUE("ogdf/BCTree::ctor", BCTree, *cc->Gcc);
+                        cc->bc = std::make_unique<BCTree>(*cc->Gcc);
                     }
 
                     std::vector<BlockPrep> localPreps;
@@ -1894,280 +2368,290 @@ namespace solver {
             return nullptr;
         }
 
-        void solve() {
+
+
+                
+
+        void solveStreaming() {
             auto& C = ctx();
             Graph& G = C.G;
 
-            int nCC = 0;
-            NodeArray<int> compIdx(G);
-            std::vector<std::vector<node>> bucket;
-            std::vector<std::vector<edge>> edgeBuckets;
-            std::vector<std::unique_ptr<CcData>> components;
-            std::vector<BlockPrep> blockPreps;
-            std::vector<std::unique_ptr<BlockData>> allBlockData;
             std::vector<WorkItem> workItems;
 
-            // ===================== PHASE I/O =====================
-            {
-                METRICS_PHASE_BEGIN(metrics::Phase::IO);
-                MEM_TIME_BLOCK("I/O: superbubbles/cc+buckets");
-                MARK_SCOPE_MEM("sb/io/cc_buckets");
+            std::vector<std::unique_ptr<CcData>> components;
+            std::vector<std::unique_ptr<BlockData>> allBlockData;
 
+            {
+                // PROFILE_BLOCK("solve:: prepare");
+
+
+                NodeArray<int> compIdx(G);
+                int nCC;
                 {
                     MARK_SCOPE_MEM("sb/phase/ComputeCC");
-                    nCC = OGDF_EVAL("ogdf/connectedComponents", connectedComponents(G, compIdx));
+                    //PROFILE_BLOCK("solveStreaming:: ComputeCC");
+                    nCC = connectedComponents(G, compIdx);
                 }
 
                 components.resize(nCC);
-                bucket.assign(nCC, {});
-                edgeBuckets.assign(nCC, {});
 
+                std::vector<std::vector<node>> bucket(nCC);
                 {
                     MARK_SCOPE_MEM("sb/phase/BucketNodes");
+                    //PROFILE_BLOCK("solveStreaming:: bucket nodes");
                     for (node v : G.nodes) {
                         bucket[compIdx[v]].push_back(v);
                     }
                 }
 
+                std::vector<std::vector<edge>> edgeBuckets(nCC);
+
                 {
                     MARK_SCOPE_MEM("sb/phase/BucketEdges");
+                    //PROFILE_BLOCK("solveStreaming:: bucket edges");
                     for (edge e : G.edges) {
                         edgeBuckets[compIdx[e->source()]].push_back(e);
                     }
                 }
 
-                PHASE_RSS_UPDATE_IO();
-                METRICS_PHASE_END(metrics::Phase::IO);
-            }
+
+                NodeArray<node> orig_to_cc(G, nullptr);
 
 
-            // ===================== PHASE BUILD =====================
-            {
-                METRICS_PHASE_BEGIN(metrics::Phase::BUILD);
-                MEM_TIME_BLOCK("BUILD: superbubbles/BC+SPQR");
-                MARK_SCOPE_MEM("sb/build/all");
-                ACCUM_BUILD();
+                logger::info("Streaming over {} components", nCC);
+
+                
+
+
+                std::vector<BlockPrep> blockPreps;
 
                 {
-                    MARK_SCOPE_MEM("sb/phase/GccBuildParallel");
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-                    std::vector<std::thread> workers;
-                    workers.reserve(numThreads);
+                    PROFILE_BLOCK("solve:: building data");
+                    MEM_TIME_BLOCK("BUILD: BC+SPQR");
+                    ACCUM_BUILD();
 
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
+                    {
+                        MARK_SCOPE_MEM("sb/phase/GccBuildParallel");
+                        size_t numThreads = std::thread::hardware_concurrency();
+                        numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+                        std::vector<std::thread> workers;
+                        workers.reserve(numThreads);
 
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        workers.emplace_back([&, tid]() {
-                            size_t chunkSize = std::max<size_t>(1, nCC / std::max<size_t>(numThreads, 1));
-                            size_t processed = 0;
-                            while (true) {
-                                size_t startIndex, endIndex;
-                                {
-                                    std::lock_guard<std::mutex> lock(workMutex);
-                                    if (nextIndex >= static_cast<size_t>(nCC)) break;
-                                    startIndex = nextIndex;
-                                    endIndex   = std::min(nextIndex + chunkSize, static_cast<size_t>(nCC));
-                                    nextIndex  = endIndex;
-                                }
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
 
-                                for (size_t ci = startIndex; ci < endIndex; ++ci) {
-                                    int cid = static_cast<int>(ci);
-                                    auto cc = std::make_unique<CcData>();
-
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            workers.emplace_back([&, tid]() {
+                                size_t chunkSize = std::max<size_t>(1, nCC / numThreads);
+                                size_t processed = 0;
+                                while (true) {
+                                    size_t startIndex, endIndex;
                                     {
-                                        MARK_SCOPE_MEM("sb/gcc/rebuild");
-                                        cc->Gcc = std::make_unique<Graph>();
-                                        cc->toOrig.init(*cc->Gcc, nullptr);
-
-                                        std::unordered_map<node, node> orig_to_cc_local;
-                                        orig_to_cc_local.reserve(bucket[cid].size());
-
-                                        for (node vG : bucket[cid]) {
-                                            node vC = cc->Gcc->newNode();
-                                            cc->toOrig[vC] = vG;
-                                            orig_to_cc_local[vG] = vC;
-                                        }
-
-                                        for (edge e : edgeBuckets[cid]) {
-                                            cc->Gcc->newEdge(orig_to_cc_local[e->source()], orig_to_cc_local[e->target()]);
-                                        }
+                                        std::lock_guard<std::mutex> lock(workMutex);
+                                        if (nextIndex >= static_cast<size_t>(nCC)) break;
+                                        startIndex = nextIndex;
+                                        endIndex = std::min(nextIndex + chunkSize, static_cast<size_t>(nCC));
+                                        nextIndex = endIndex;
                                     }
 
-                                    components[cid] = std::move(cc);
-                                    processed++;
+                                    for (size_t ci = startIndex; ci < endIndex; ++ci) {
+                                        int cid = static_cast<int>(ci);
+                                        auto cc = std::make_unique<CcData>();
+
+                                        {
+                                            MARK_SCOPE_MEM("sb/gcc/rebuild");
+                                            cc->Gcc = std::make_unique<Graph>();
+                                            cc->toOrig.init(*cc->Gcc, nullptr);
+                        
+                                            std::unordered_map<node, node> orig_to_cc_local;
+                                            orig_to_cc_local.reserve(bucket[cid].size());
+
+                                            for (node vG : bucket[cid]) {
+                                                node vC = cc->Gcc->newNode();
+                                                cc->toOrig[vC] = vG;
+                                                orig_to_cc_local[vG] = vC;
+                                            }
+
+                                            for (edge e : edgeBuckets[cid]) {
+                                                cc->Gcc->newEdge(orig_to_cc_local[e->source()], orig_to_cc_local[e->target()]);
+                                            }
+                                        }
+
+                                        components[cid] = std::move(cc);
+                                        processed++;
+                                    }
+
+                                    auto chunkEnd = std::chrono::high_resolution_clock::now();
+                                    auto chunkDuration = std::chrono::duration_cast<std::chrono::microseconds>(chunkEnd - std::chrono::high_resolution_clock::now());
+                                    // chunk size adapt kept as in your code
+                                    (void)chunkDuration;
                                 }
+                                std::cout << "Thread " << tid << " built " << processed << " components (Gcc)" << std::endl;
+                            });
+                        }
+
+                        for (auto &t : workers) t.join();
+                    }
+
+                    {
+                        MARK_SCOPE_MEM("sb/phase/BCtrees");
+
+                        size_t numThreads = std::thread::hardware_concurrency();
+                        numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+
+                        std::vector<pthread_t> threads(numThreads);
+
+                        std::mutex workMutex;
+                        size_t nextIndex = 0;
+
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                            size_t stackSize = C.stackSize;
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
                             }
-                            std::cout << "Thread " << tid << " built " << processed << " components (Gcc)" << std::endl;
-                        });
-                    }
 
-                    for (auto &t : workers) t.join();
-                }
+                            ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
+                                tid,
+                                numThreads,
+                                nCC,
+                                &nextIndex,
+                                &workMutex,
+                                &components,
+                                &blockPreps
+                            };
 
-                {
-                    MARK_SCOPE_MEM("sb/phase/BCtrees");
+                            int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
 
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-
-                    std::vector<pthread_t> threads(numThreads);
-
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-
-                        size_t stackSize = C.stackSize;
-                        if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                            std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            pthread_attr_destroy(&attr);
                         }
 
-                        ThreadBcTreeArgs* args = new ThreadBcTreeArgs{
-                            tid,
-                            numThreads,
-                            nCC,
-                            &nextIndex,
-                            &workMutex,
-                            &components,
-                            &blockPreps
-                        };
-
-                        int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                        for (size_t tid = 0; tid < numThreads; ++tid) {
+                            pthread_join(threads[tid], nullptr);
                         }
-                        pthread_attr_destroy(&attr);
                     }
 
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
-                    }
-                }
+                    allBlockData.resize(blockPreps.size());
 
-                // BlockData + SPQR
-                allBlockData.resize(blockPreps.size());
-                {
-                    MARK_SCOPE_MEM("sb/phase/BlockDataBuildAll");
+                    {
+                        MARK_SCOPE_MEM("sb/phase/BlockDataBuildAll");
 
-                    size_t numThreads2 = std::thread::hardware_concurrency();
-                    numThreads2 = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads2});
-                    std::vector<pthread_t> threads2(numThreads2);
+                        size_t numThreads2 = std::thread::hardware_concurrency();
+                        numThreads2 = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads2});
+                        std::vector<pthread_t> threads2(numThreads2);
 
-                    std::mutex workMutex2;
-                    size_t nextIndex2 = 0;
+                        std::mutex workMutex2;
+                        size_t nextIndex2 = 0;
 
-                    for (size_t tid = 0; tid < numThreads2; ++tid) {
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
+                        for (size_t tid = 0; tid < numThreads2; ++tid) {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
 
-                size_t stackSize = C.stackSize;
-                if(pthread_attr_setstacksize(&attr, stackSize) != 0){
-                    std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
-                }
+                            // size_t stackSize = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                            size_t stackSize = C.stackSize;
 
-                        ThreadBlockBuildArgs* args = new ThreadBlockBuildArgs{
-                            tid,
-                            numThreads2,
-                            blockPreps.size(),
-                            &nextIndex2,
-                            &workMutex2,
-                            &blockPreps,
-                            &allBlockData
-                        };
+                            if(pthread_attr_setstacksize(&attr, stackSize) != 0){
+                                std::cout << "[Error] pthread_attr_setstacksize" << std::endl;
+                            }
 
-                        int ret = pthread_create(&threads2[tid], &attr, worker_buildBlockData, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
+                            ThreadBlockBuildArgs* args = new ThreadBlockBuildArgs{
+                                tid,
+                                numThreads2,
+                                blockPreps.size(),
+                                &nextIndex2,
+                                &workMutex2,
+                                &blockPreps,
+                                &allBlockData
+                            };
+
+                            int ret = pthread_create(&threads2[tid], &attr, worker_buildBlockData, args);
+                            if (ret != 0) {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
                         }
 
-                        pthread_attr_destroy(&attr);
+                        for (size_t tid = 0; tid < numThreads2; ++tid) {
+                            pthread_join(threads2[tid], nullptr);
+                        }
                     }
 
-                    for (size_t tid = 0; tid < numThreads2; ++tid) {
-                        pthread_join(threads2[tid], nullptr);
+                    workItems.reserve(allBlockData.size());
+                    for (size_t i = 0; i < allBlockData.size(); ++i) {
+                        workItems.push_back({blockPreps[i].cc, blockPreps[i].bNode});
                     }
                 }
-
-                workItems.reserve(allBlockData.size());
-                for (size_t i = 0; i < allBlockData.size(); ++i) {
-                    workItems.push_back({blockPreps[i].cc, blockPreps[i].bNode});
-                }
-
-                PHASE_RSS_UPDATE_BUILD();
-                METRICS_PHASE_END(metrics::Phase::BUILD);
             }
 
-
-            // ===================== PHASE LOGIC =====================
             {
-                METRICS_PHASE_BEGIN(metrics::Phase::LOGIC);
-                MEM_TIME_BLOCK("LOGIC: superbubbles/all");
-                MARK_SCOPE_MEM("sb/logic/all");
+                MEM_TIME_BLOCK("LOGIC: solve blocks (pthreads)");
                 ACCUM_LOGIC();
+                PROFILE_BLOCK("solve:: process blocks (pthreads, large stack)");
+                MARK_SCOPE_MEM("sb/phase/SolveBlocks");
 
-                findMiniSuperbubbles();
+                std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> blockResults(workItems.size());
 
-                {
-                    MEM_TIME_BLOCK("LOGIC: superbubbles/solve blocks (pthreads)");
-                    MARK_SCOPE_MEM("sb/phase/SolveBlocks");
+                size_t numThreads = std::thread::hardware_concurrency();
+                numThreads = std::min({(size_t)C.threads, workItems.size(), numThreads});
+                if (numThreads == 0) numThreads = 1;
 
-                    std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> blockResults(workItems.size());
+                std::vector<pthread_t> threads(numThreads);
+                std::mutex workMutex;
+                size_t nextIndex = 0;
 
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, workItems.size(), numThreads});
-                    if (numThreads == 0) numThreads = 1;
+                for (size_t tid = 0; tid < numThreads; ++tid) {
+                    pthread_attr_t attr;
+                    pthread_attr_init(&attr);
+                    // size_t stackSize = 1024ULL * 1024ULL * 1024ULL * 20ULL; 
+                    size_t stackSize = C.stackSize;
 
-                    std::vector<pthread_t> threads(numThreads);
-                    std::mutex workMutex;
-                    size_t nextIndex = 0;
+                    pthread_attr_setstacksize(&attr, stackSize);
 
-        for (size_t tid = 0; tid < numThreads; ++tid) {
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            size_t stackSize = C.stackSize;
-            pthread_attr_setstacksize(&attr, stackSize);
+                    ThreadProcessArgs* args = new ThreadProcessArgs{
+                        tid,
+                        numThreads,
+                        workItems.size(),
+                        &nextIndex,
+                        &workMutex,
+                        &workItems,
+                        &allBlockData,
+                        &blockResults
+                    };
 
-                        ThreadProcessArgs* args = new ThreadProcessArgs{
-                            tid,
-                            numThreads,
-                            workItems.size(),
-                            &nextIndex,
-                            &workMutex,
-                            &workItems,
-                            &allBlockData,
-                            &blockResults
-                        };
-
-                        int ret = pthread_create(&threads[tid], &attr, worker_processBlocks, args);
-                        if (ret != 0) {
-                            std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                            delete args;
-                        }
-                        pthread_attr_destroy(&attr);
+                    int ret = pthread_create(&threads[tid], &attr, worker_processBlocks, args);
+                    if (ret != 0) {
+                        std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                        delete args;
                     }
-
-                    for (size_t tid = 0; tid < numThreads; ++tid) {
-                        pthread_join(threads[tid], nullptr);
-                    }
-
-                    for (const auto& candidates : blockResults) {
-                        for (const auto& p : candidates) {
-                            tryCommitSuperbubble(p.first, p.second);
-                        }
-                    }
+                    pthread_attr_destroy(&attr);
                 }
 
-                PHASE_RSS_UPDATE_LOGIC();
-                METRICS_PHASE_END(metrics::Phase::LOGIC);
+                for (size_t tid = 0; tid < numThreads; ++tid) {
+                    pthread_join(threads[tid], nullptr);
+                }
+
+                for (const auto& candidates : blockResults) {
+                    for (const auto& p : candidates) {
+                        tryCommitSuperbubble(p.first, p.second);
+                    }
+                }
             }
         }
-  
+
+        void solve() {
+            TIME_BLOCK("Finding superbubbles in blocks");
+            findMiniSuperbubbles();
+            solveStreaming();
+        }
     }
 
     namespace snarls {
@@ -4661,7 +5145,6 @@ namespace solver {
 
 
 
-
 int main(int argc, char** argv) {
     rlimit rl;
     rl.rlim_cur = RLIM_INFINITY;
@@ -4676,7 +5159,6 @@ int main(int argc, char** argv) {
     readArgs(argc, argv);
 
     {
-        //MEM_TIME_BLOCK("I/O: read graph");
         MARK_SCOPE_MEM("io/read_graph");
         PROFILE_BLOCK("Graph reading");
         ::GraphIO::readGraph();
@@ -4684,27 +5166,29 @@ int main(int argc, char** argv) {
 
     if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE) {
         solver::superbubble::solve();
-
-        std::cout << "Superbubbles found:\n";
-        std::cout << ctx().superbubbles.size() << std::endl;
+        VLOG << "[main] Superbubble solve finished. Oriented superbubbles: "
+             << ctx().superbubbles.size() << std::endl;
     } else if (ctx().bubbleType == Context::BubbleType::SNARL) {
         solver::snarls::solve();
-        std::cout << "Snarls found..\n";
+        VLOG << "[main] Snarl solve finished. Snarls: "
+             << ctx().snarls.size() << std::endl;
     }
 
     {
-        //MEM_TIME_BLOCK("I/O: write output");
         MARK_SCOPE_MEM("io/write_output");
         PROFILE_BLOCK("Writing output");
         TIME_BLOCK("Writing output");
         ::GraphIO::writeSuperbubbles();
     }
 
-    std::cout << "Snarls found: " << snarlsFound << std::endl;
+    if (ctx().bubbleType == Context::BubbleType::SNARL) {
+        std::cout << "Snarls found: " << snarlsFound << std::endl;
+    }
 
     PROFILING_REPORT();
 
-    logger::info("Process PeakRSS: {:.2f} GiB", memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
+    logger::info("Process PeakRSS: {:.2f} GiB",
+                 memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
 
     mark::report();
     if (!g_report_json_path.empty()) {

@@ -5,19 +5,23 @@ Context::Context()
     , outDeg  (G, 0)
     , isEntry (G, false)
     , isExit  (G, false)
-    , graphPath ("")
+    , graphPath("")
     , outputPath("")
     , gfaInput(false)
     , doubleGraph(false)
-    , logLevel(Context::LOG_WARN)
+    , logLevel(Context::LOG_WARN) 
     , timingEnabled(true)
     , threads(1)
-    , bubbleType(Context::BubbleType::SUPERBUBBLE)
+    , stackSize(1ULL * 1024ULL * 1024ULL * 1024ULL)
+    , bubbleType(Context::SUPERBUBBLE)
+    , directedSuperbubbles(false)
+    , inputFormat(InputFormat::Auto)
+    , compression(Compression::None)
     , _edge2types(G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE))
     , _edge2cnt(G, std::make_pair(0,0))
     , _goodCutVertices(G, false)
-{}
-
+{
+}
 
 Context& ctx() {
     static Context instance;

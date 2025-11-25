@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <cstddef>
 
 enum class EdgePartType { PLUS, MINUS, NONE };
 
@@ -14,6 +15,22 @@ struct Context
 {
     enum LogLevel  { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
     enum BubbleType { SUPERBUBBLE, SNARL };
+
+    // Input file format (graph representation)
+    enum class InputFormat {
+        Auto,        // autodetect from extension
+        Gfa,         // GFA (bidirected interpretation)
+        GfaDirected, // GFA interpreted as directed graph
+        Graph        // internal .graph format (directed)
+    };
+
+    // Input file compression (autodetected from file suffix)
+    enum class Compression {
+        None,
+        Gzip,
+        Bzip2,
+        Xz
+    };
 
     struct PairHash {
         std::size_t operator()(const std::pair<int, int>& p) const {
@@ -27,10 +44,9 @@ struct Context
     ogdf::NodeArray<bool> isEntry;
     ogdf::NodeArray<bool> isExit;
 
-
     std::string graphPath   = "";
     std::string outputPath  = "";
-    bool        gfaInput    = false;
+    bool        gfaInput    = false;  // kept for backward compatibility
     bool        doubleGraph = false;
     LogLevel    logLevel    = LOG_INFO;
     bool        timingEnabled = true;
@@ -38,6 +54,9 @@ struct Context
     std::size_t stackSize   = 1ULL * 1024ULL * 1024ULL * 1024ULL; 
 
     BubbleType  bubbleType  = SUPERBUBBLE;
+    bool        directedSuperbubbles = false;
+    InputFormat inputFormat = InputFormat::Auto;
+    Compression compression = Compression::None;
 
     ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> _edge2types; 
     ogdf::EdgeArray<std::pair<int, int>>                   _edge2cnt;   
@@ -71,6 +90,7 @@ struct Context
 
     Context();
     Context(const Context&) = delete;
+    Context& operator=(const Context&) = delete;
 };
 
 Context& ctx();
