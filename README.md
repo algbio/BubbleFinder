@@ -50,9 +50,19 @@ Commands:
       Snarls (typically on bidirected graphs from GFA)
 
 Format options (input format):
-  --gfa            GFA input (bidirected)
-  --gfa-directed   GFA input interpreted as directed graph
-  --graph          Internal .graph format (directed)
+  --gfa
+      GFA input (bidirected).
+  --gfa-directed
+      GFA input interpreted as a directed graph.
+  --graph
+      .graph text format with one directed edge per line:
+        • first line: two integers n and m
+            - n = number of distinct node IDs declared
+            - m = number of directed edges
+        • next m lines: 'u v' (separated by whitespace),
+            each describing a directed edge from u to v.
+        • u and v are arbitrary node identifiers (strings
+            without whitespace).
   If none of these is given, the format is auto-detected
   from the file extension (e.g. .gfa, .graph).
 
@@ -74,7 +84,7 @@ General options:
   --gfa-directed
       Force GFA input interpreted as directed graph
   --graph
-      Force .graph input (directed)
+      Force .graph text format (see 'Format options' above)
   --report-json <file>
       Write JSON metrics report
   -m <bytes>

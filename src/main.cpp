@@ -197,16 +197,17 @@ static void usage(const char* prog, int exitCode) {
     };
 
     static const OptionHelp options[] = {
-        { "-g", "<file>", "Input graph file (possibly compressed)" },
-        { "-o", "<file>", "Output file" },
-        { "-j", "<threads>", "Number of threads" },
-        { "--gfa", nullptr, "Force GFA input (bidirected)" },
-        { "--gfa-directed", nullptr,
-          "Force GFA input interpreted as directed graph" },
-        { "--graph", nullptr, "Force .graph input (directed)" },
+        { "-g", "<file>",  "Input graph file (possibly compressed)" },
+        { "-o", "<file>",  "Output file" },
+        { "-j", "<threads>","Number of threads" },
+        { "--gfa", nullptr,          "Force GFA input (bidirected)" },
+        { "--gfa-directed", nullptr, "Force GFA input interpreted as directed graph" },
+        { "--graph", nullptr,
+          "Force .graph text format (see 'Format options' above)" },
         { "--report-json", "<file>", "Write JSON metrics report" },
-        { "-m", "<bytes>", "Stack size in bytes" },
-        { "-h, --help", nullptr, "Show this help message and exit" }
+        { "-m", "<bytes>",           "Stack size in bytes" },
+        { "-h, --help", nullptr,     "Show this help message and exit" }
+        // -sanity is intentionally undocumented (internal/debug)
     };
 
     std::cerr << "Usage:\n"
@@ -221,9 +222,19 @@ static void usage(const char* prog, int exitCode) {
     std::cerr << "\n";
 
     std::cerr << "Format options (input format):\n"
-              << "  --gfa            GFA input (bidirected)\n"
-              << "  --gfa-directed   GFA input interpreted as directed graph\n"
-              << "  --graph          Internal .graph format (directed)\n"
+              << "  --gfa\n"
+              << "      GFA input (bidirected).\n"
+              << "  --gfa-directed\n"
+              << "      GFA input interpreted as a directed graph.\n"
+              << "  --graph\n"
+              << "      .graph text format with one directed edge per line:\n"
+              << "        • first line: two integers n and m\n"
+              << "            - n = number of distinct node IDs declared\n"
+              << "            - m = number of directed edges\n"
+              << "        • next m lines: 'u v' (separated by whitespace),\n"
+              << "            each describing a directed edge from u to v.\n"
+              << "        • u and v are arbitrary node identifiers (strings\n"
+              << "            without whitespace).\n"
               << "  If none of these is given, the format is auto-detected\n"
               << "  from the file extension (e.g. .gfa, .graph).\n\n";
 
