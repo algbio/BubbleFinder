@@ -119,6 +119,8 @@ If you look at `example/tiny1.png` you'll notice that the bidirected edge `{a+, 
 
 ## <a id="orientation-projection"></a>Orientation projection
 
+
+
 Superbubbles are classically defined on **directed** graphs, whereas GFA graphs are **bidirected**. In `superbubbles` mode, BubbleFinder therefore first converts the bidirected graph into a doubled directed graph, where each segment `v` has two oriented copies `v+` and `v-`, and superbubbles are detected between oriented endpoints (e.g. `(a+, e-)` and its mirror `(e+, a-)`).
 
 To report results at the level of segments, independently of the arbitrary orientation chosen in the doubled graph, we apply an **orientation projection**:
@@ -131,6 +133,17 @@ The final output is a single unordered pair of segment IDs, e.g. `a e`. This pro
 <p align="center">
   <img src="example/projection-example.svg" alt="Orientation projection example">
 </p>
+
+In this example, the directed graph on segments has three superbubbles with endpoints `(A, B)`, `(B, E)` and `(E, F)`. After running the superbubble algorithm on the doubled graph and applying the orientation projection, BubbleFinder reports exactly these three segment-level superbubbles:
+
+```text
+3
+A B
+E F
+B E
+```
+
+
 
 ## <a id="algorithm-correctness"></a>Algorithm correctness 
 
