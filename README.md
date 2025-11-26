@@ -154,9 +154,9 @@ Structure:
 
 ```text
 3
-A B
-E F
-B E
+a b
+e f
+b e
 ```
 
 Interpretation:
@@ -220,7 +220,7 @@ The final output is a single unordered pair of segment IDs, e.g. `a e`. This pro
   <img src="example/projection-example.svg" alt="Orientation projection example">
 </p>
 
-In this example, the directed graph on segments has three superbubbles with endpoints `(A, B)`, `(B, E)` and `(E, F)`. After running the superbubble algorithm on the doubled graph and applying the orientation projection, BubbleFinder reports exactly these three pairs in its **pair format output** (see [Pair format](#pair-format)).
+In this example, the directed graph on segments has three superbubbles with endpoints `(a, b)`, `(b, e)` and `(e, f)`. After running the superbubble algorithm on the doubled graph and applying the orientation projection, BubbleFinder reports exactly these three pairs in its **pair format output** (see [Pair format](#pair-format)).
 
 ## <a id="algorithm-correctness"></a>Algorithm correctness 
 
