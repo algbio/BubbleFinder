@@ -11,14 +11,14 @@ BubbleFinder supports two modes:
 - `superbubbles`: computes superbubbles in a (virtually) doubled representation of the bidirected graph and is supposed to replicate the behavior of [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun). Notice that BubbleGun also reports weak superbubbles, i.e. for a bubble with entry `s` and exit `t`, it also reports the structures which also have an edge from `t` to `s` (thus the interior of the bubble is not acyclic).
 
 ## Table of Contents
-- [1. Installation](#1-installation)
-- [2. Running](#2-running)
-- [3. Example](#3-example)
-- [4. Development](#4-development)
+- [1. Installation](#installation)
+- [2. Running](#running)
+- [3. Example](#example)
+- [4. Development](#development)
   - [GFA format and bidirected graphs](#gfa-format-and-bidirected-graphs)
-  - [Snarl algorithm correctness](#snarl-algorithm-correctness)
+  - [Algorithm correctness](#algorithm-correctness)
 
-# 1. Installation
+# <a id="installation"></a>1. Installation
 
 At the moment, building from source has been tested only on linux:
 
@@ -34,7 +34,7 @@ Now `BubbleFinder` is in the root directory.
 
 `conda` distributions for both linux and macos will be supported in the very near future.
 
-# 2. Running 
+# <a id="running"></a>2. Running 
 
 To run BubbleFinder:
 ```
@@ -93,7 +93,7 @@ General options:
       Show this help message and exit
 ```
 
-# 3. Example
+# <a id="example"></a>3. Example
 
 Consider the bidirected graph below, which is encoded the file `example/tiny1.gfa`. 
 
@@ -111,13 +111,13 @@ a+ d- f+ g-
 ```
 The number of the first line is the number of lines in the file, and the following lines contains incidences such that *any* pair of incidences on each line is a snarl. So the snarls are {g+, k-} (from the second line in the file), and {a+, d-}, {a+, f+}, {a+, g-}, {d-, f+}, {d-, g-}, {f+, g-} (from the third line in the file).
 
-# 4. Development
+# <a id="development"></a>4. Development
 
-## GFA format and bidirected graphs
+## <a id="gfa-format-and-bidirected-graphs"></a>GFA format and bidirected graphs
 
 If you look at `example/tiny1.png` you'll notice that the bidirected edge `{a+, b+}` appearing in the graph image has been encoded as `L	a	+	b	-	0M`. This is because in GFA links are directed. So, the rule is that to compute snarls from a GFA file, for every link `a x b y` in the GFa file, (where x, y ∈ {+, -}), we flip the second sign `y` as `¬y`, and make an edge `{ax, b¬y}`. Then we compute snarls in this bidirected graph.
 
-## Algorithm correctness 
+## <a id="algorithm-correctness"></a>Algorithm correctness 
 
 This repository includes a brute-force implementation and a random test harness to validate both the snarl and superbubble algorithms.
 
