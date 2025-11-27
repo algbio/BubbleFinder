@@ -13,6 +13,8 @@ BubbleFinder supports two main modes:
 ## Table of Contents
 - [1. Installation](#installation)
 - [2. Running](#running)
+  - [Input data](#input)
+  - [Command-line options](#options)
   - [Output format](#output-format)
 - [3. Development](#development)
   - [GFA format and bidirected graphs](#gfa-format-and-bidirected-graphs)
@@ -37,67 +39,85 @@ Now `BubbleFinder` is in the root directory.
 
 `conda` distributions for both Linux and macOS will be supported in the very near future.
 
-# <a id="running"></a>2. Running 
+# <a id="running"></a>2. Running BubbleFinder
 
-To run BubbleFinder:
+Command line to run BubbleFinder:
 
-```text
-Usage:
+```
   ./BubbleFinder <command> -g <graphFile> -o <outputFile> [options]
-
-Commands:
-  superbubbles
-      Bidirected superbubbles (GFA -> bidirected by default)
-  directed-superbubbles
-      Directed superbubbles (directed graph)
-  snarls
-      Snarls (typically on bidirected graphs from GFA)
-
-Format options (input format):
-  --gfa
-      GFA input (bidirected).
-  --gfa-directed
-      GFA input interpreted as a directed graph.
-  --graph
-      .graph text format with one directed edge per line:
-        • first line: two integers n and m
-            - n = number of distinct node IDs declared
-            - m = number of directed edges
-        • next m lines: 'u v' (separated by whitespace),
-            each describing a directed edge from u to v.
-        • u and v are arbitrary node identifiers (strings
-            without whitespace).
-  If none of these is given, the format is auto-detected
-  from the file extension (e.g. .gfa, .graph).
-
-Compression:
-  Compression is auto-detected from the file name suffix:
-    .gz / .bgz  -> gzip
-    .bz2        -> bzip2
-    .xz         -> xz
-
-General options:
-  -g <file>
-      Input graph file (possibly compressed)
-  -o <file>
-      Output file
-  -j <threads>
-      Number of threads
-  --gfa
-      Force GFA input (bidirected)
-  --gfa-directed
-      Force GFA input interpreted as directed graph
-  --graph
-      Force .graph text format (see 'Format options' above)
-  --report-json <file>
-      Write JSON metrics report
-  -m <bytes>
-      Stack size in bytes
-  -h, --help
-      Show this help message and exit
 ```
 
-## <a id="output-format"></a>2.1 Output format
+Available commands are: 
+  - `superbubbles` - Find bidirected superbubbles (GFA -> bidirected by default)
+  - `directed-superbubbles` - Find directed superbubbles (directed graph)
+  - `snarls` - Find snarls (typically on bidirected graphs from GFA)
+
+
+## <a id="input"></a>2.1. Input data
+
+BubbleFinder supports bidirected and directed graphs in [GFA](https://github.com/GFA-spec/GFA-spec) and internal `.graph` format.
+
+BubbleFinder `.graph` text format:
+- first line: two integers n and m
+    - n = number of distinct node IDs declared
+    - m = number of directed edges
+- next m lines: 'u v' (separated by whitespace),
+    each describing a directed edge from u to v.
+- u and v are arbitrary node identifiers (strings
+    without whitespace).
+
+
+You can force the format of the input graph with the following flags:
+
+  `--gfa`
+      GFA input (bidirected).
+
+  `--gfa-directed`
+      GFA input interpreted as a directed graph.
+
+  `--graph`
+      BubbleFinder `.graph` text format with one directed edge per line (described above).
+
+  If none of these is given, the format is auto-detected from the file extension (e.g., `.gfa`, `.graph`).
+
+Input files can be compressed with gzip, bzip2 or xz.  Compression is auto-detected from the file name suffix:
+```
+.gz / .bgz  -> gzip
+.bz2        -> bzip2
+.xz         -> xz
+```
+
+## <a id="options"></a>2.2. Command line options
+Complete list of options:
+  `-g <file>`
+      Input graph file (possibly compressed)
+
+  `-o <file>`
+      Output file
+
+  `-j <threads>`
+      Number of threads
+
+  `--gfa`
+      Force GFA input (bidirected)
+
+  `--gfa-directed`
+      Force GFA input interpreted as directed graph
+
+  `--graph`
+      Force .graph text format (see 'Format options' above)
+
+  `--report-json <file>`
+      Write JSON metrics report
+
+  `-m <bytes>`
+      Stack size in bytes
+
+  `-h`, `--help`
+      Show the help message and exit
+
+
+## <a id="output-format"></a>2.3 Output format
 
 All commands write plain text with the same global structure:
 
@@ -174,25 +194,19 @@ For `superbubbles`, these pairs are obtained after running the superbubble algor
 
 ## <a id="gfa-format-and-bidirected-graphs"></a>GFA format and bidirected graphs
 
-The tiny example `example/tiny1.gfa` is interpreted as the following bidirected graph:
-
-<p align="center">
-  <img src="example/tiny1.png" alt="Tiny bidirected example graph (tiny1.gfa)">
-</p>
-
-In this graph, the bidirected edge `{a+, b+}` is represented in the GFA file by the link:
+If you look at `example/tiny1.png` you'll notice that the bidirected edge `{a+, b+}` appearing in the graph image has been encoded as:
 
 ```text
 L	a	+	b	-	0M
 ```
 
-This is because GFA links are directed. To build the bidirected graph on which snarls are computed, we apply the following rule to every GFA link
+This is because in GFA, links are directed. So, the rule is that to compute snarls from a GFA file, for every link
 
 ```text
 a x b y
 ```
 
-(where `x, y ∈ {+, -}`): we flip the second orientation `y` to `¬y` and create the bidirected edge `{a x, b ¬y}`. All snarls are then computed on this bidirected graph.
+in the GFA file (where `x, y ∈ {+, -}`), we flip the second sign `y` as `¬y`, and make a bidirected edge `{a x, b ¬y}`. Then we compute snarls in this bidirected graph.
 
 ## <a id="orientation-projection"></a>Orientation projection
 
