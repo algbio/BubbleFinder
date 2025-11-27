@@ -89,32 +89,33 @@ Input files can be compressed with gzip, bzip2 or xz.  Compression is auto-detec
 
 ## <a id="options"></a>2.2. Command line options
 Complete list of options:
-  `-g <file>`
-      Input graph file (possibly compressed)
 
-  `-o <file>`
-      Output file
+`-g <file>`
+  Input graph file (possibly compressed)
 
-  `-j <threads>`
-      Number of threads
+`-o <file>`
+  Output file
 
-  `--gfa`
-      Force GFA input (bidirected)
+`-j <threads>`
+  Number of threads
 
-  `--gfa-directed`
-      Force GFA input interpreted as directed graph
+`--gfa`
+  Force GFA input (bidirected)
 
-  `--graph`
-      Force .graph text format (see 'Format options' above)
+`--gfa-directed`
+  Force GFA input interpreted as directed graph
 
-  `--report-json <file>`
-      Write JSON metrics report
+`--graph`
+  Force .graph text format (see 'Format options' above)
 
-  `-m <bytes>`
-      Stack size in bytes
+`--report-json <file>`
+  Write JSON metrics report
 
-  `-h`, `--help`
-      Show the help message and exit
+`-m <bytes>`
+  Stack size in bytes
+
+`-h`, `--help`
+  Show the help message and exit
 
 
 ## <a id="output-format"></a>2.3 Output format
