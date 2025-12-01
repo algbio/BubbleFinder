@@ -174,6 +174,8 @@ using namespace ogdf;
 
 static std::string g_report_json_path;
 
+// True if the top-level command is "stats"
+static bool g_statsCommand = false;
 
 // -----------------------------------------------------------------------------
 // CLI helpers
@@ -196,18 +198,26 @@ static void usage(const char* prog, int exitCode) {
         { "directed-superbubbles",
           "Directed superbubbles (directed graph)" },
         { "snarls",
-          "Snarls (typically on bidirected graphs from GFA)" }
+          "Snarls (typically on bidirected graphs from GFA)" },
+        { "stats",
+          "Graph statistics only (no superbubbles/snarls output)" }
     };
 
     static const OptionHelp options[] = {
         { "-g", "<file>",  "Input graph file (possibly compressed)" },
-        { "-o", "<file>",  "Output file" },
+        { "-o", "<file>",  "Output file (required unless only --stats is used)" },
         { "-j", "<threads>","Number of threads" },
         { "--gfa", nullptr,          "Force GFA input (bidirected)" },
         { "--gfa-directed", nullptr, "Force GFA input interpreted as directed graph" },
         { "--graph", nullptr,
           "Force .graph text format (see 'Format options' above)" },
         { "--report-json", "<file>", "Write JSON metrics report" },
+        { "--stats", "<spec>",
+          "Compute statistics. <spec> is a comma-separated list of:\n"
+          "          blocks=<file>   2-connected block sizes (nodes+edges)\n"
+          "          spqr=<file>     SPQR component sizes (per SPQR-tree node)\n"
+          "      If -o is omitted but --stats is given, only statistics are computed."
+        },
         { "-m", "<bytes>",           "Stack size in bytes" },
         { "-h, --help", nullptr,     "Show this help message and exit" }
         // -sanity is intentionally undocumented (internal/debug)
@@ -215,12 +225,12 @@ static void usage(const char* prog, int exitCode) {
 
     std::cerr << "Usage:\n"
               << "  " << prog
-              << " <command> -g <graphFile> -o <outputFile> [options]\n\n";
+              << " <command> -g <graphFile> [options]\n\n"
+              << "  Commands:\n";
 
-    std::cerr << "Commands:\n";
     for (const auto &c : commands) {
-        std::cerr << "  " << c.name << "\n"
-                  << "      " << c.desc << "\n";
+        std::cerr << "    " << c.name << "\n"
+                  << "        " << c.desc << "\n";
     }
     std::cerr << "\n";
 
@@ -258,7 +268,6 @@ static void usage(const char* prog, int exitCode) {
 
     std::exit(exitCode);
 }
-
 
 static std::string nextArgOrDie(const std::vector<std::string>& a,
                                 std::size_t& i,
@@ -377,6 +386,59 @@ static bool outputParentDirWritable(const std::string &path, std::string &errOut
 }
 
 // -----------------------------------------------------------------------------
+// Forward declarations
+// -----------------------------------------------------------------------------
+namespace solver {
+    namespace blockstats {
+        void compute_block_sizes_and_write(const std::string &outPath);
+    }
+    namespace spqrstats {
+        void compute_spqr_sizes_and_write(const std::string &outPath);
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Parsing of the --stats option
+// -----------------------------------------------------------------------------
+static void parseStatsSpec(const std::string &spec) {
+    auto &C = ctx();
+    auto &S = C.stats; // StatsConfig in Context
+
+    std::stringstream ss(spec);
+    std::string item;
+
+    while (std::getline(ss, item, ',')) {
+        if (item.empty())
+            continue;
+
+        auto pos = item.find('=');
+        if (pos == std::string::npos || pos == 0 || pos + 1 >= item.size()) {
+            std::cerr << "Error: invalid --stats item '" << item
+                      << "'. Expected form kind=path.\n";
+            std::exit(1);
+        }
+
+        std::string kind = item.substr(0, pos);
+        std::string path = item.substr(pos + 1);
+
+        std::string kindLC = toLowerCopy(kind);
+
+        if (kindLC == "blocks") {
+            S.blocks = true;
+            S.blocksPath = path;
+        } else if (kindLC == "spqr" || kindLC == "3cc") {
+            S.spqr = true;
+            S.spqrPath = path;
+        } else {
+            std::cerr << "Error: unknown stats kind '" << kind
+                      << "' in --stats (supported: blocks, spqr).\n";
+            std::exit(1);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Argument parsing
 // -----------------------------------------------------------------------------
 void readArgs(int argc, char** argv) {
@@ -389,23 +451,31 @@ void readArgs(int argc, char** argv) {
 
     std::size_t i = 1;
 
-    // 1) Subcommand
+    // 1) Top-level command
     const std::string cmd = args[i];
 
     if (cmd == "-h" || cmd == "--help") {
         usage(args[0].c_str(), 0);
+
+    } else if (cmd == "stats") {
+        // statistics-only command (no solvers run in main())
+        g_statsCommand = true;
+
     } else if (cmd == "superbubbles") {
         C.bubbleType           = Context::BubbleType::SUPERBUBBLE;
         C.directedSuperbubbles = false;
+
     } else if (cmd == "directed-superbubbles") {
         C.bubbleType           = Context::BubbleType::SUPERBUBBLE;
         C.directedSuperbubbles = true;
+
     } else if (cmd == "snarls") {
         C.bubbleType           = Context::BubbleType::SNARL;
         C.directedSuperbubbles = false;
+
     } else {
         std::cerr << "Error: unknown command '" << cmd
-                  << "'. Expected one of: superbubbles, directed-superbubbles, snarls.\n\n";
+                  << "'. Expected one of: superbubbles, directed-superbubbles, snarls, stats.\n\n";
         usage(args[0].c_str(), 1);
     }
 
@@ -450,6 +520,10 @@ void readArgs(int argc, char** argv) {
 
         } else if (s == "--report-json") {
             g_report_json_path = nextArgOrDie(args, i, "--report-json");
+
+        } else if (s == "--stats") {
+            std::string spec = nextArgOrDie(args, i, "--stats");
+            parseStatsSpec(spec);
 
         } else if (s == "-j") {
             const std::string v = nextArgOrDie(args, i, "-j");
@@ -497,8 +571,21 @@ void readArgs(int argc, char** argv) {
         std::cerr << "Error: missing -g <graphFile>.\n\n";
         usage(args[0].c_str(), 1);
     }
-    if (C.outputPath.empty()) {
+
+    bool anyStats =
+        C.stats.blocks ||
+        C.stats.spqr;
+
+    // If no stats are requested, an output file is mandatory (solver mode).
+    // If stats are requested, -o can be omitted (stats-only mode).
+    if (C.outputPath.empty() && !anyStats) {
         std::cerr << "Error: missing -o <outputFile>.\n\n";
+        usage(args[0].c_str(), 1);
+    }
+
+    // If command is "stats", require --stats <spec> to be given.
+    if (g_statsCommand && !anyStats) {
+        std::cerr << "Error: 'stats' command requires --stats <spec>.\n\n";
         usage(args[0].c_str(), 1);
     }
 
@@ -595,6 +682,267 @@ struct OgdfAcc {
 
 
 namespace solver {
+    namespace spqrstats {
+        void compute_spqr_sizes_and_write(const std::string &outPath)
+        {
+            auto &C = ctx();
+            ogdf::Graph &G = C.G;
+
+            if (G.numberOfNodes() == 0) {
+                std::cerr << "[spqrstats] graph is empty, nothing to do\n";
+                return;
+            }
+
+            ogdf::NodeArray<int> compIdx(G);
+            int nCC = ogdf::connectedComponents(G, compIdx);
+
+            std::vector<std::vector<ogdf::node>> nodeBuckets(nCC);
+            std::vector<std::vector<ogdf::edge>> edgeBuckets(nCC);
+
+            for (ogdf::node v : G.nodes) {
+                nodeBuckets[compIdx[v]].push_back(v);
+            }
+            for (ogdf::edge e : G.edges) {
+                edgeBuckets[compIdx[e->source()]].push_back(e);
+            }
+
+            std::vector<size_t> compSizes;
+            compSizes.reserve(G.numberOfNodes()); 
+
+            for (int cid = 0; cid < nCC; ++cid) {
+
+                ogdf::Graph Gcc;
+                ogdf::NodeArray<ogdf::node> nodeToOrig(Gcc, nullptr);
+                std::unordered_map<ogdf::node, ogdf::node> origToCc;
+                origToCc.reserve(nodeBuckets[cid].size());
+
+                // Copy nodes
+                for (ogdf::node vG : nodeBuckets[cid]) {
+                    ogdf::node vC = Gcc.newNode();
+                    nodeToOrig[vC] = vG;
+                    origToCc[vG] = vC;
+                }
+
+                // Copy edges
+                for (ogdf::edge eG : edgeBuckets[cid]) {
+                    ogdf::node uC = origToCc[eG->source()];
+                    ogdf::node vC = origToCc[eG->target()];
+                    Gcc.newEdge(uC, vC);
+                }
+
+                if (Gcc.numberOfEdges() < 2) {
+                    continue; // nothing interesting for SPQR
+                }
+
+                ogdf::BCTree bc(Gcc);
+
+                for (ogdf::node bNode : bc.bcTree().nodes) {
+                    if (bc.typeOfBNode(bNode) != ogdf::BCTree::BNodeType::BComp)
+                        continue;
+
+                    std::vector<ogdf::edge> edgesCc;
+                    edgesCc.reserve(bc.hEdges(bNode).size());
+                    for (ogdf::edge hE : bc.hEdges(bNode)) {
+                        ogdf::edge eCc = bc.original(hE);
+                        if (!eCc) continue;
+                        if (eCc->source() == eCc->target()) continue;
+                        edgesCc.push_back(eCc);
+                    }
+                    if (edgesCc.empty())
+                        continue;
+
+                    std::sort(edgesCc.begin(), edgesCc.end(),
+                            [](ogdf::edge a, ogdf::edge b) {
+                                return a->index() < b->index();
+                            });
+                    edgesCc.erase(
+                        std::unique(edgesCc.begin(), edgesCc.end(),
+                                    [](ogdf::edge a, ogdf::edge b) {
+                                        return a->index() == b->index();
+                                    }),
+                        edgesCc.end());
+
+                    std::vector<ogdf::node> vertsCc;
+                    vertsCc.reserve(edgesCc.size() * 2);
+                    for (ogdf::edge eCc : edgesCc) {
+                        vertsCc.push_back(eCc->source());
+                        vertsCc.push_back(eCc->target());
+                    }
+                    std::sort(vertsCc.begin(), vertsCc.end(),
+                            [](ogdf::node a, ogdf::node b) {
+                                return a->index() < b->index();
+                            });
+                    vertsCc.erase(std::unique(vertsCc.begin(), vertsCc.end()),
+                                vertsCc.end());
+
+                    if (vertsCc.size() < 3 || edgesCc.size() < 3)
+                        continue;
+
+                    ogdf::Graph Gblock;
+                    std::unordered_map<ogdf::node, ogdf::node> ccToBlock;
+                    ccToBlock.reserve(vertsCc.size());
+
+                    for (ogdf::node vCc : vertsCc) {
+                        ogdf::node vB = Gblock.newNode();
+                        ccToBlock[vCc] = vB;
+                    }
+                    for (ogdf::edge eCc : edgesCc) {
+                        ogdf::node uB = ccToBlock[eCc->source()];
+                        ogdf::node vB = ccToBlock[eCc->target()];
+                        Gblock.newEdge(uB, vB);
+                    }
+
+                    if (Gblock.numberOfNodes() < 3 || Gblock.numberOfEdges() < 3)
+                        continue;
+
+                    try {
+                        ogdf::StaticSPQRTree spqr(Gblock);
+
+                        const ogdf::Graph &T = spqr.tree();
+                        for (ogdf::node t : T.nodes) {
+                            if (spqr.typeOf(t) != ogdf::SPQRTree::NodeType::RNode)
+                                continue;
+
+                            auto &Skel  = spqr.skeleton(t);
+                            auto &Gskel = Skel.getGraph();
+
+                            size_t sz = static_cast<size_t>(Gskel.numberOfNodes())
+                                    + static_cast<size_t>(Gskel.numberOfEdges());
+                            compSizes.push_back(sz);
+                        }
+                    } catch (const std::exception &e) {
+                        std::cerr << "[spqrstats] SPQR decomposition failed on a block: "
+                                << e.what() << "\n";
+                    }
+                }
+            }
+
+            std::ofstream ofs(outPath);
+            if (!ofs) {
+                std::cerr << "[spqrstats] cannot open '" << outPath
+                        << "' for writing SPQR component sizes\n";
+                return;
+            }
+
+            for (size_t s : compSizes) {
+                ofs << s << '\n';
+            }
+            ofs.close();
+
+            std::cerr << "[spqrstats] wrote " << compSizes.size()
+                    << " 3-connected (SPQR R-node) component sizes to "
+                    << outPath << "\n";
+        }
+
+    }
+    namespace blockstats {
+        void compute_block_sizes_and_write(const std::string &outPath)
+        {
+            auto &C = ctx();
+            ogdf::Graph &G = C.G;
+
+            if (G.numberOfNodes() == 0) {
+                std::cerr << "[blockstats] graph is empty, nothing to do\n";
+                return;
+            }
+
+            ogdf::NodeArray<int> compIdx(G);
+            int nCC = ogdf::connectedComponents(G, compIdx);
+
+            std::vector<std::vector<ogdf::node>> nodeBuckets(nCC);
+            std::vector<std::vector<ogdf::edge>> edgeBuckets(nCC);
+
+            for (ogdf::node v : G.nodes) {
+                nodeBuckets[compIdx[v]].push_back(v);
+            }
+            for (ogdf::edge e : G.edges) {
+                edgeBuckets[compIdx[e->source()]].push_back(e);
+            }
+
+            std::vector<size_t> blockSizes;
+            blockSizes.reserve(G.numberOfNodes());  
+            for (int cid = 0; cid < nCC; ++cid) {
+
+                ogdf::Graph Gcc;
+                ogdf::NodeArray<ogdf::node> nodeToOrig(Gcc, nullptr);
+                ogdf::EdgeArray<ogdf::edge> edgeToOrig(Gcc, nullptr);
+
+                std::unordered_map<ogdf::node, ogdf::node> origToCc;
+                origToCc.reserve(nodeBuckets[cid].size());
+
+                for (ogdf::node vG : nodeBuckets[cid]) {
+                    ogdf::node vC = Gcc.newNode();
+                    nodeToOrig[vC] = vG;
+                    origToCc[vG] = vC;
+                }
+
+                for (ogdf::edge eG : edgeBuckets[cid]) {
+                    ogdf::node uC = origToCc[eG->source()];
+                    ogdf::node vC = origToCc[eG->target()];
+                    ogdf::edge eC = Gcc.newEdge(uC, vC);
+                    edgeToOrig[eC] = eG;
+                }
+
+                ogdf::BCTree bc(Gcc);
+
+                for (ogdf::node bNode : bc.bcTree().nodes) {
+                    if (bc.typeOfBNode(bNode) != ogdf::BCTree::BNodeType::BComp)
+                        continue;
+
+                    std::vector<ogdf::edge> edgesCc;
+                    edgesCc.reserve(bc.hEdges(bNode).size());
+                    for (ogdf::edge hE : bc.hEdges(bNode)) {
+                        ogdf::edge eCc = bc.original(hE); 
+                        if (eCc) edgesCc.push_back(eCc);
+                    }
+
+                    std::sort(edgesCc.begin(), edgesCc.end(),
+                            [](ogdf::edge a, ogdf::edge b) {
+                                return a->index() < b->index();
+                            });
+                    edgesCc.erase(
+                        std::unique(edgesCc.begin(), edgesCc.end(),
+                                    [](ogdf::edge a, ogdf::edge b) {
+                                        return a->index() == b->index();
+                                    }),
+                        edgesCc.end());
+
+                    std::vector<ogdf::node> vertsCc;
+                    vertsCc.reserve(edgesCc.size() * 2);
+                    for (ogdf::edge eCc : edgesCc) {
+                        vertsCc.push_back(eCc->source());
+                        vertsCc.push_back(eCc->target());
+                    }
+                    std::sort(vertsCc.begin(), vertsCc.end(),
+                            [](ogdf::node a, ogdf::node b) {
+                                return a->index() < b->index();
+                            });
+                    vertsCc.erase(std::unique(vertsCc.begin(), vertsCc.end()),
+                                vertsCc.end());
+
+                    size_t blockSize = vertsCc.size() + edgesCc.size();
+                    blockSizes.push_back(blockSize);
+                }
+            }
+
+            std::ofstream ofs(outPath);
+            if (!ofs) {
+                std::cerr << "[blockstats] cannot open '" << outPath
+                        << "' for writing block sizes\n";
+                return;
+            }
+
+            for (size_t s : blockSizes) {
+                ofs << s << '\n';
+            }
+            ofs.close();
+
+            std::cerr << "[blockstats] wrote " << blockSizes.size()
+                    << " block sizes to " << outPath << "\n";
+        }
+
+    }
+
     namespace superbubble {
         namespace {
             thread_local std::vector<std::pair<ogdf::node, ogdf::node>> *tls_superbubble_collector = nullptr;
@@ -5245,25 +5593,26 @@ int main(int argc, char** argv) {
 
     readArgs(argc, argv);
 
-    readArgs(argc, argv);
+    auto &C = ctx();
 
     {
         std::string err;
 
-        if (!inputFileReadable(ctx().graphPath, err)) {
+        if (!inputFileReadable(C.graphPath, err)) {
             std::cerr << "Error: cannot open input graph file '"
-                      << ctx().graphPath << "' for reading: "
+                      << C.graphPath << "' for reading: "
                       << err << "\n";
             return 1;
         }
 
-        if (!outputParentDirWritable(ctx().outputPath, err)) {
+        if (!C.outputPath.empty() &&
+            !outputParentDirWritable(C.outputPath, err)) {
             std::cerr << "Error: cannot write output file '"
-                      << ctx().outputPath << "': "
+                      << C.outputPath << "': "
                       << err << "\n";
             return 1;
         }
-    }    
+    }
 
     {
         MARK_SCOPE_MEM("io/read_graph");
@@ -5271,25 +5620,48 @@ int main(int argc, char** argv) {
         ::GraphIO::readGraph();
     }
 
-    if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE) {
-        solver::superbubble::solve();
-        VLOG << "[main] Superbubble solve finished. Oriented superbubbles: "
-             << ctx().superbubbles.size() << std::endl;
-    } else if (ctx().bubbleType == Context::BubbleType::SNARL) {
-        solver::snarls::solve();
-        VLOG << "[main] Snarl solve finished. Snarls: "
-             << ctx().snarls.size() << std::endl;
-    }
-
+    // -------------------------------------------------------------------------
+    // Statistics (blocks, SPQR, etc.)
+    // -------------------------------------------------------------------------
     {
-        MARK_SCOPE_MEM("io/write_output");
-        PROFILE_BLOCK("Writing output");
-        TIME_BLOCK("Writing output");
-        ::GraphIO::writeSuperbubbles();
+        auto &S = C.stats;
+
+        if (S.blocks) {
+            MARK_SCOPE_MEM("stats/blocks");
+            PROFILE_BLOCK("Block statistics");
+            solver::blockstats::compute_block_sizes_and_write(S.blocksPath);
+        }
+
+        if (S.spqr) {
+            MARK_SCOPE_MEM("stats/spqr");
+            PROFILE_BLOCK("SPQR statistics");
+            solver::spqrstats::compute_spqr_sizes_and_write(S.spqrPath);
+        }
     }
 
-    if (ctx().bubbleType == Context::BubbleType::SNARL) {
-        std::cout << "Snarls found: " << snarlsFound << std::endl;
+    bool runSolvers = !g_statsCommand && !C.outputPath.empty();
+
+    if (runSolvers) {
+        if (C.bubbleType == Context::BubbleType::SUPERBUBBLE) {
+            solver::superbubble::solve();
+            VLOG << "[main] Superbubble solve finished. Oriented superbubbles: "
+                 << C.superbubbles.size() << std::endl;
+        } else if (C.bubbleType == Context::BubbleType::SNARL) {
+            solver::snarls::solve();
+            VLOG << "[main] Snarl solve finished. Snarls: "
+                 << C.snarls.size() << std::endl;
+        }
+
+        {
+            MARK_SCOPE_MEM("io/write_output");
+            PROFILE_BLOCK("Writing output");
+            TIME_BLOCK("Writing output");
+            ::GraphIO::writeSuperbubbles();
+        }
+
+        if (C.bubbleType == Context::BubbleType::SNARL) {
+            std::cout << "Snarls found: " << snarlsFound << std::endl;
+        }
     }
 
     PROFILING_REPORT();

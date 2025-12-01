@@ -44,14 +44,14 @@ Now `BubbleFinder` is in the root directory.
 Command line to run BubbleFinder:
 
 ```
-  ./BubbleFinder <command> -g <graphFile> -o <outputFile> [options]
+  ./BubbleFinder <command> -g <graphFile> [options]
 ```
 
 Available commands are: 
   - `superbubbles` - Find bidirected superbubbles (GFA -> bidirected by default)
   - `directed-superbubbles` - Find directed superbubbles (directed graph)
   - `snarls` - Find snarls (typically on bidirected graphs from GFA)
-
+  - `stats` - Compute graph statistics only (no superbubbles/snarls output)
 
 ## <a id="input"></a>2.1. Input data
 
@@ -90,31 +90,38 @@ Input files can be compressed with gzip, bzip2 or xz.  Compression is auto-detec
 ## <a id="options"></a>2.2. Command line options
 Complete list of options:
 
-`-g <file>`
+`-g <file>`  
   Input graph file (possibly compressed)
 
-`-o <file>`
-  Output file
+`-o <file>`  
+  Output file (required for `superbubbles` / `directed-superbubbles` / `snarls` unless only `--stats` is used)
 
-`-j <threads>`
+`-j <threads>`  
   Number of threads
 
-`--gfa`
+`--gfa`  
   Force GFA input (bidirected)
 
-`--gfa-directed`
+`--gfa-directed`  
   Force GFA input interpreted as directed graph
 
-`--graph`
+`--graph`  
   Force .graph text format (see 'Format options' above)
 
-`--report-json <file>`
+`--report-json <file>`  
   Write JSON metrics report
 
-`-m <bytes>`
+`--stats <spec>`  
+  Compute graph statistics. `<spec>` is a comma-separated list of items of the form `kind=path`, for example:
+  - `blocks=<file>` : write one 2-connected block size (nodes+edges) per line  
+  - `spqr=<file>`   : write one 3-connected component size (SPQR R-node skeleton, nodes+edges) per line  
+
+  If `--stats` is given and `-o` is omitted, BubbleFinder runs in statistics-only mode (no superbubble/snarls output is produced).
+
+`-m <bytes>`  
   Stack size in bytes
 
-`-h`, `--help`
+`-h`, `--help`  
   Show the help message and exit
 
 

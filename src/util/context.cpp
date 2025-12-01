@@ -20,6 +20,7 @@ Context::Context()
     , _edge2types(G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE))
     , _edge2cnt(G, std::make_pair(0,0))
     , _goodCutVertices(G, false)
+    , stats()
 {
 }
 

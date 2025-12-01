@@ -16,7 +16,6 @@ struct Context
     enum LogLevel  { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
     enum BubbleType { SUPERBUBBLE, SNARL };
 
-    // Input file format (graph representation)
     enum class InputFormat {
         Auto,        // autodetect from extension
         Gfa,         // GFA (bidirected interpretation)
@@ -36,6 +35,14 @@ struct Context
         std::size_t operator()(const std::pair<int, int>& p) const {
             return std::hash<int>()(p.first) ^ (std::hash<int>()(p.second) << 1);
         }
+    };
+
+    // Configuration for statistics (used by --stats).
+    struct StatsConfig {
+        bool        blocks    = false;
+        std::string blocksPath;
+        bool        spqr      = false;
+        std::string spqrPath;
     };
 
     ogdf::Graph           G;
@@ -87,6 +94,8 @@ struct Context
     };
 
     std::unordered_set<std::vector<std::string>, VectorStringHash, VectorStringEqual> snarls;
+
+    StatsConfig stats; // statistics configuration (filled by --stats)
 
     Context();
     Context(const Context&) = delete;
