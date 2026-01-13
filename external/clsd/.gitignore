@@ -1,0 +1,14 @@
+.deps/
+Makefile
+aclocal.m4
+autom4te.cache/
+autoscan.log
+config.log
+config.status
+config_ac.h
+stamp-h1
+clsd-*.tar.gz
+
+*.o
+clsd
+
