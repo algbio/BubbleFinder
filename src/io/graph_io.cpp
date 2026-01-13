@@ -65,7 +65,8 @@ void readStandard()
         std::size_t operator()(EdgeKey const& k) const {
             std::size_t h1 = std::hash<std::string>{}(k.u);
             std::size_t h2 = std::hash<std::string>{}(k.v);
-            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+            std::size_t h1_h = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+            return h1_h;
         }
     };
 
@@ -129,7 +130,6 @@ void readStandard()
     }
 }
 
-
 void readGFA()
 {
     auto &C = ctx();
@@ -140,15 +140,27 @@ void readGFA()
     std::ifstream in(C.graphPath);
     if (!in) throw std::runtime_error("Cannot open " + C.graphPath);
 
+    // [AJOUT] Nettoyage préalable pour le stockages des données brutes
+    C.gfaSegmentIds.clear();
+    C.gfaLinkLines.clear();
+
+    // Initialisation de la map des types d'incidences pour Snarls/Ultrabubbles
+    if (C.bubbleType == Context::BubbleType::SNARL ||
+        C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+        C._edge2types.init(C.G,
+                           std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+    }
+
     std::unordered_set<std::string> have_segment;
     std::vector<std::string> raw_edges;
     raw_edges.reserve(1 << 16);
 
+    // Helper pour créer les nœuds lazy (Superbubble)
     auto ensure = [&](const std::string& name){
         if (!C.name2node.count(name)) {
             auto id = C.G.newNode();
             C.name2node[name] = id;
-            C.node2name[id] = name;
+            C.node2name[id]   = name;
         }
     };
 
@@ -156,38 +168,42 @@ void readGFA()
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') continue;
 
+        // Lecture des Segments (S)
         if (line[0] == 'S') {
             std::istringstream iss(line);
             std::string tok, id, seq;
             if (!(iss >> tok >> id >> seq)) {
-                std::ostringstream oss;
-                oss << "Invalid GFA S-line in '" << C.graphPath
-                    << "': expected at least 3 whitespace-separated fields. Line: "
-                    << line;
-                throw std::runtime_error(oss.str());
-            }
-            if (tok != "S") {
+                // On peut loguer une erreur ou continuer, ici on continue par sécurité
                 continue;
             }
-            if (id.empty()) {
-                std::ostringstream oss;
-                oss << "Invalid GFA S-line in '" << C.graphPath
-                    << "': empty segment ID. Line: " << line;
-                throw std::runtime_error(oss.str());
-            }
+            if (tok != "S") continue;
+            if (id.empty()) continue;
 
-            if (C.bubbleType == Context::BubbleType::SNARL) {
+            // [FIX] Protection contre double S-line (évite de créer des nœuds fantômes)
+            if (C.name2node.count(id)) continue;
+
+            // [AJOUT] Stockage de l'ID brut pour l'aux-graph (recompute snarls)
+            C.gfaSegmentIds.push_back(id);
+
+            // Création des nœuds selon le mode
+            if (C.bubbleType == Context::BubbleType::SNARL ||
+                C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+                // 1 segment = 1 nœud OGDF
                 have_segment.insert(id);
                 auto newNode = C.G.newNode();
-                C.name2node[id] = newNode;
+                C.name2node[id]      = newNode;
                 C.node2name[newNode] = id;
+
             } else {
+                // SUPERBUBBLE : 1 segment = 2 nœuds (id+, id-)
                 have_segment.insert(id);
                 ensure(id + "+");
                 ensure(id + "-");
             }
             continue;
         }
+
+        // Lecture des Liens (L) -> Stockage temporaire
         if (line[0] == 'L') {
             raw_edges.push_back(line);
             continue;
@@ -196,8 +212,15 @@ void readGFA()
 
     in.close();
 
+    // [AJOUT] Copie des liens bruts pour l'aux-graph
+    C.gfaLinkLines = raw_edges;
+
+
+    // --- Définition des structures de hachage et helpers pour la 2ème passe ---
+
     auto flip = [](char c){ return c == '+' ? '-' : '+'; };
 
+    // Pour SUPERBUBBLE
     struct EdgeKey {
         std::string u, v;
         bool operator==(const EdgeKey& o) const { return u == o.u && v == o.v; }
@@ -211,6 +234,7 @@ void readGFA()
     };
     std::unordered_set<EdgeKey, EdgeKeyHash> seen;
 
+    // Pour SNARL (comptage des multi-edges pour insérer _trash)
     struct PairHash {
         std::size_t operator()(const std::pair<std::string,std::string>& p) const noexcept {
             std::size_t h1 = std::hash<std::string>{}(p.first);
@@ -218,37 +242,50 @@ void readGFA()
             return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
         }
     };
-    std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pair_count;
-    for (const std::string& e : raw_edges) {
-        std::istringstream iss(e);
-        std::string tok, from, to, ovl_str;
-        char o1 = 0, o2 = 0;
-        if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) {
-            std::ostringstream oss;
-            oss << "Invalid GFA L-line in '" << C.graphPath
-                << "': expected at least 6 whitespace-separated fields. Line: "
-                << e;
-            throw std::runtime_error(oss.str());
-        }
-        if (tok != "L") continue;
+    std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pair_count_snarl;
 
-        if ((o1 != '+' && o1 != '-') || (o2 != '+' && o2 != '-')) {
-            std::ostringstream oss;
-            oss << "Invalid orientation in GFA L-line in '" << C.graphPath
-                << "': expected '+' or '-'. Line: " << e;
-            throw std::runtime_error(oss.str());
+    if (C.bubbleType == Context::BubbleType::SNARL) {
+        for (const std::string& e : raw_edges) {
+            std::istringstream iss(e);
+            std::string tok, from, to, ovl_str;
+            char o1 = 0, o2 = 0;
+            if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) continue;
+            if (tok != "L") continue;
+            
+            if (have_segment.count(from) && have_segment.count(to)) {
+                auto key = (from < to) ? std::make_pair(from, to) : std::make_pair(to, from);
+                pair_count_snarl[key]++;
+            }
         }
-        if (!have_segment.count(from) || !have_segment.count(to)) {
-            std::ostringstream oss;
-            oss << "GFA L-line in '" << C.graphPath
-                << "' references undefined segment(s): '" << from
-                << "' or '" << to << "'. Line: " << e;
-            throw std::runtime_error(oss.str());
-        }
-
-        auto key = (from < to) ? std::make_pair(from, to) : std::make_pair(to, from);
-        pair_count[key]++;
     }
+
+    // Pour ULTRABUBBLE (Déduplication bidirectionnelle stricte)
+    struct BiEdgeKey {
+        std::string u;
+        EdgePartType su;
+        std::string v;
+        EdgePartType sv;
+        bool operator==(BiEdgeKey const& o) const noexcept {
+            return u == o.u && su == o.su && v == o.v && sv == o.sv;
+        }
+    };
+    struct BiEdgeKeyHash {
+        std::size_t operator()(BiEdgeKey const& k) const noexcept {
+            auto hs = [](EdgePartType t) -> std::size_t {
+                return t == EdgePartType::PLUS ? 0x9e3779b9u :
+                       t == EdgePartType::MINUS ? 0x85ebca6bu : 0u;
+            };
+            std::size_t h1 = std::hash<std::string>{}(k.u) ^ (hs(k.su) + 0x9e3779b97f4a7c15ULL);
+            std::size_t h2 = std::hash<std::string>{}(k.v) ^ (hs(k.sv) + 0x9e3779b97f4a7c15ULL);
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
+        }
+    };
+    std::unordered_set<BiEdgeKey, BiEdgeKeyHash> seen_bidir_ultrabubble;
+    if (C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+        seen_bidir_ultrabubble.reserve(raw_edges.size() * 2);
+    }
+
+    // --- Lambdas d'ajout d'arêtes ---
 
     auto add_edge_double = [&](const std::string& u, const std::string& v){
         EdgeKey key{u, v};
@@ -257,21 +294,18 @@ void readGFA()
         }
     };
 
-    auto add_edge_bidirected = [&]( std::string& u,
-                                    std::string& v,
-                                    EdgePartType t1,
-                                    EdgePartType t2)
+    auto add_edge_snarl = [&](std::string& u, std::string& v, 
+                              EdgePartType t1, EdgePartType t2) 
     {
         if (u > v) {
             std::swap(u, v);
             std::swap(t1, t2);
         }
-
         auto key = std::make_pair(u, v);
-        bool multi = pair_count[key] > 1;
+        bool multi = pair_count_snarl[key] > 1;
 
         if (!multi) {
-            auto e = C.G.newEdge(C.name2node[u], C.name2node[v]);
+            ogdf::edge e = C.G.newEdge(C.name2node[u], C.name2node[v]);
             C._edge2types[e] = std::make_pair(t1, t2);
             return;
         }
@@ -281,14 +315,46 @@ void readGFA()
         C.node2name[mid_node] = mid_name;
 
         {
-            auto e1 = C.G.newEdge(C.name2node[u], mid_node);
+            ogdf::edge e1 = C.G.newEdge(C.name2node[u], mid_node);
             C._edge2types[e1] = std::make_pair(t1, EdgePartType::PLUS);
         }
         {
-            auto e2 = C.G.newEdge(mid_node, C.name2node[v]);
+            ogdf::edge e2 = C.G.newEdge(mid_node, C.name2node[v]);
             C._edge2types[e2] = std::make_pair(EdgePartType::PLUS, t2);
         }
     };
+
+    // [CORRECTION] Gestion propre de la canonicalisation pour Ultrabubbles
+    auto add_edge_ultrabubble = [&](const std::string& u_in,
+                                    const std::string& v_in,
+                                    EdgePartType t1_in,
+                                    EdgePartType t2_in)
+    {
+        ogdf::node u = C.name2node[u_in];
+        ogdf::node v = C.name2node[v_in];
+        EdgePartType su = t1_in;
+        EdgePartType sv = t2_in;
+
+        // Canonicalisation basée sur l'index OGDF
+        // Si on swap les noeuds, on DOIT swapper les signes associés
+        if (u->index() > v->index()) {
+            std::swap(u, v);
+            std::swap(su, sv); 
+        }
+
+        const std::string& u_name = C.node2name[u];
+        const std::string& v_name = C.node2name[v];
+
+        BiEdgeKey key{u_name, su, v_name, sv};
+        if (!seen_bidir_ultrabubble.insert(key).second) {
+            return; // doublon strict déjà traité
+        }
+
+        ogdf::edge e = C.G.newEdge(u, v);
+        C._edge2types[e] = std::make_pair(su, sv);
+    };
+
+    // --- Deuxième passe : Création des arêtes ---
 
     for (const std::string& e : raw_edges) {
         std::istringstream iss(e);
@@ -296,10 +362,7 @@ void readGFA()
         char o1 = 0, o2 = 0;
 
         if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str)) {
-            std::ostringstream oss;
-            oss << "Invalid GFA L-line in '" << C.graphPath
-                << "' while building graph. Line: " << e;
-            throw std::runtime_error(oss.str());
+             throw std::runtime_error("Invalid GFA L-line: " + e);
         }
         if (tok != "L") continue;
 
@@ -320,7 +383,6 @@ void readGFA()
                 const std::string u = from + std::string(1, o1);
                 const std::string v = to   + std::string(1, o2);
                 add_edge_double(u, v);
-
             } else {
                 throw std::logic_error("Unexpected inputFormat in readGFA() for SUPERBUBBLE");
             }
@@ -328,10 +390,17 @@ void readGFA()
         } else if (C.bubbleType == Context::BubbleType::SNARL) {
             auto t1 = (o1 == '+' ? EdgePartType::PLUS  : EdgePartType::MINUS);
             auto t2 = (o2 == '+' ? EdgePartType::MINUS : EdgePartType::PLUS);
-            add_edge_bidirected(from, to, t1, t2);
+            add_edge_snarl(from, to, t1, t2);
+
+        } else if (C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+            auto t1 = (o1 == '+' ? EdgePartType::PLUS  : EdgePartType::MINUS);
+            auto t2 = (o2 == '+' ? EdgePartType::MINUS : EdgePartType::PLUS);
+            // On appelle le helper qui gère le swap correctement
+            add_edge_ultrabubble(from, to, t1, t2);
         }
     }
 }
+
 
 namespace {
 
@@ -351,14 +420,14 @@ namespace {
     }
 
     std::string decompressToTempFile(const std::string &path,
-                                    Context::Compression comp)
+                                     Context::Compression comp)
     {
         char tmpl[] = "/tmp/bubblefinder_XXXXXX";
         int fd = mkstemp(tmpl);
         if (fd == -1) {
             throw std::runtime_error("mkstemp failed when creating temp file for decompression");
         }
-        ::close(fd); 
+        ::close(fd);
 
         std::string tmpPath = tmpl;
 
@@ -422,7 +491,7 @@ namespace {
         return tmpPath;
     }
 
-} 
+}
 
 
 void readGraph() {
@@ -641,8 +710,10 @@ project_bubblegun_pairs_from_doubled() {
 
 void writeSuperbubbles() {
     auto &C = ctx();
-    std::vector<std::pair<std::string, std::string>> res;
 
+    // ------------------------------------------------------------------
+    // 1. Cas SNARL : sortie déjà définie en termes de C.snarls (incidences)
+    // ------------------------------------------------------------------
     if (C.bubbleType == Context::BubbleType::SNARL) {
         if (C.outputPath.empty()) {
             std::cout << C.snarls.size() << "\n";
@@ -676,7 +747,63 @@ void writeSuperbubbles() {
         return;
     }
 
-    // SUPERBUBBLE mode
+    // ------------------------------------------------------------------
+    // 2. Cas ULTRABUBBLE : utiliser C.ultrabubbleIncidences
+    // ------------------------------------------------------------------
+    if (C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+        auto pair_hash = [](const std::pair<std::string,std::string> &p) -> std::size_t {
+            std::size_t h1 = std::hash<std::string>{}(p.first);
+            std::size_t h2 = std::hash<std::string>{}(p.second);
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
+        };
+        std::unordered_set<std::pair<std::string,std::string>, decltype(pair_hash)>
+            seen(0, pair_hash);
+
+        std::vector<std::pair<std::string,std::string>> res;
+        res.reserve(C.ultrabubbleIncidences.size());
+
+        for (auto &p : C.ultrabubbleIncidences) {
+            std::string a = p.first;
+            std::string b = p.second;
+            if (b < a) std::swap(a, b);
+            std::pair<std::string,std::string> key{a,b};
+            if (seen.insert(key).second) {
+                res.emplace_back(std::move(key));
+            }
+        }
+
+        if (C.outputPath.empty()) {
+            std::cout << res.size() << "\n";
+            for (auto &p : res) {
+                std::cout << p.first << " " << p.second << "\n";
+            }
+            if (!std::cout) {
+                throw std::runtime_error("Error while writing ultrabubbles to standard output");
+            }
+        } else {
+            std::ofstream out(C.outputPath);
+            if (!out) {
+                throw std::runtime_error("Failed to open output file '" +
+                                         C.outputPath + "' for writing");
+            }
+            out << res.size() << "\n";
+            for (auto &p : res) {
+                out << p.first << " " << p.second << "\n";
+            }
+            if (!out) {
+                throw std::runtime_error("Error while writing ultrabubbles to output file '" +
+                                         C.outputPath + "'");
+            }
+        }
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Cas SUPERBUBBLE (comportement existant)
+    // ------------------------------------------------------------------
+
+    std::vector<std::pair<std::string, std::string>> res;
+
     if (C.inputFormat == Context::InputFormat::Gfa &&
         !C.directedSuperbubbles) {
 
@@ -708,12 +835,13 @@ void writeSuperbubbles() {
             return std::pair<std::string,std::string>{std::move(a), std::move(b)};
         };
 
-        auto pair_hash = [](const std::pair<std::string,std::string>& pr)->std::size_t {
+        auto pair_hash2 = [](const std::pair<std::string,std::string>& pr)->std::size_t {
             std::size_t h1 = std::hash<std::string>{}(pr.first);
             std::size_t h2 = std::hash<std::string>{}(pr.second);
             return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1<<6) + (h1>>2));
         };
-        std::unordered_set<std::pair<std::string,std::string>, decltype(pair_hash)> seen(0, pair_hash);
+        std::unordered_set<std::pair<std::string,std::string>, decltype(pair_hash2)>
+            seen2(0, pair_hash2);
 
         for (auto& w : C.superbubbles) {
             const std::string s = C.node2name[w.first];
@@ -726,7 +854,7 @@ void writeSuperbubbles() {
             fin.second = strip(fin.second);
 
             if (fin.first != fin.second) {
-                if (seen.insert(fin).second) {
+                if (seen2.insert(fin).second) {
                     res.emplace_back(std::move(fin));
                 }
             }
@@ -762,4 +890,4 @@ void writeSuperbubbles() {
     }
 }
 
-} 
+}

@@ -14,7 +14,7 @@ enum class EdgePartType { PLUS, MINUS, NONE };
 struct Context
 {
     enum LogLevel  { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
-    enum BubbleType { SUPERBUBBLE, SNARL };
+    enum BubbleType { SUPERBUBBLE, SNARL, ULTRABUBBLE };
 
     // Input file format (graph representation)
     enum class InputFormat {
@@ -52,6 +52,16 @@ struct Context
     bool        timingEnabled = true;
     unsigned    threads     = 1;
     std::size_t stackSize   = 1ULL * 1024ULL * 1024ULL * 1024ULL; 
+
+
+    
+    std::vector<std::pair<std::string,std::string>> ultrabubbleIncidences;
+    std::vector<std::string> gfaSegmentIds;
+    std::vector<std::string> gfaLinkLines;
+
+
+
+    
 
     BubbleType  bubbleType  = SUPERBUBBLE;
     bool        directedSuperbubbles = false;
