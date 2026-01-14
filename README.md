@@ -251,7 +251,8 @@ The brute-force program outputs results in a format consumed by `src/bruteforce.
 We also include a generator of random graphs and a driver script that compares the brute-force implementation with BubbleFinder. The script is `src/bruteforce.py`, and it can operate in two modes:
 
 - **Snarls** (default)
-- **Superbubbles** (via `--superbubbles`)
+- **Superbubbles** 
+- **Ultrabubbles**
 
 #### Snarls
 
