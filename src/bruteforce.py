@@ -32,6 +32,149 @@ def generate_random_gfa(gfa, nn, ne, seed=None):
             of.write(f"L {a} {sa} {b} {sb} x\n")
 
 
+def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
+    # On interprète "+" comme l'extrémité "droite" et "-" comme l'extrémité "gauche".
+    used_plus = [False] * (nn + 1)
+    used_minus = [False] * (nn + 1)
+    deg = [0] * (nn + 1)
+
+    def flip(s: str) -> str:
+        return "+" if s == "-" else "-"
+
+    with open(gfa_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if not parts or parts[0] != "L":
+                continue
+            if len(parts) < 5:
+                continue
+
+            try:
+                a = int(parts[1])
+                sa = parts[2]  # orientation du "from"
+                b = int(parts[3])
+                sb = parts[4]  # orientation du "to"
+            except ValueError:
+                continue
+
+            # Le "from" touche la FIN du segment dans l'orientation sa => extrémité = sa
+            if 1 <= a <= nn:
+                deg[a] += 1
+                if sa == "+":
+                    used_plus[a] = True
+                elif sa == "-":
+                    used_minus[a] = True
+
+            # Le "to" touche le DÉBUT du segment dans l'orientation sb => extrémité = flip(sb)
+            if 1 <= b <= nn:
+                deg[b] += 1
+                end_b = flip(sb)
+                if end_b == "+":
+                    used_plus[b] = True
+                elif end_b == "-":
+                    used_minus[b] = True
+
+    tips = 0
+    for n in range(1, nn + 1):
+        if deg[n] == 0:
+            continue  # tu peux garder ce filtre si tu ne veux pas que les isolés comptent
+        if not (used_plus[n] and used_minus[n]):
+            tips += 1
+    return tips
+
+def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool:
+    """
+    Returns True iff every connected component contains at least min_tips_per_cc tips.
+    CCs are computed on the undirected graph between segment ids (orientations ignored).
+    Tips are computed with the same semantics as count_tips_in_gfa() (isolated nodes are NOT tips).
+    """
+    # Tip computation (same logic as count_tips_in_gfa, but keep per-node result)
+    used_plus = [False] * (nn + 1)
+    used_minus = [False] * (nn + 1)
+    deg = [0] * (nn + 1)
+
+    # Undirected adjacency for CCs
+    adj = [[] for _ in range(nn + 1)]
+
+    def flip(s: str) -> str:
+        return "+" if s == "-" else "-"
+
+    with open(gfa_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if not parts or parts[0] != "L":
+                continue
+            if len(parts) < 5:
+                continue
+
+            try:
+                a = int(parts[1])
+                sa = parts[2]
+                b = int(parts[3])
+                sb = parts[4]
+            except ValueError:
+                continue
+
+            # adjacency (ignore orientations)
+            if 1 <= a <= nn and 1 <= b <= nn and a != b:
+                adj[a].append(b)
+                adj[b].append(a)
+
+            # "from" touches END in orientation sa => endpoint = sa
+            if 1 <= a <= nn:
+                deg[a] += 1
+                if sa == "+":
+                    used_plus[a] = True
+                elif sa == "-":
+                    used_minus[a] = True
+
+            # "to" touches BEGIN in orientation sb => endpoint = flip(sb)
+            if 1 <= b <= nn:
+                deg[b] += 1
+                end_b = flip(sb)
+                if end_b == "+":
+                    used_plus[b] = True
+                elif end_b == "-":
+                    used_minus[b] = True
+
+    is_tip = [False] * (nn + 1)
+    for n in range(1, nn + 1):
+        if deg[n] == 0:
+            continue  # isolated nodes are NOT tips
+        if not (used_plus[n] and used_minus[n]):
+            is_tip[n] = True
+
+    # CC check: every CC must contain >= min_tips_per_cc tips
+    seen = [False] * (nn + 1)
+    for start in range(1, nn + 1):
+        if seen[start]:
+            continue
+
+        # BFS/DFS to gather component nodes
+        stack = [start]
+        seen[start] = True
+        comp = []
+
+        while stack:
+            x = stack.pop()
+            comp.append(x)
+            for y in adj[x]:
+                if 1 <= y <= nn and not seen[y]:
+                    seen[y] = True
+                    stack.append(y)
+
+        tip_count = sum(1 for n in comp if is_tip[n])
+        if tip_count < min_tips_per_cc:
+            return False
+
+    return True
+
 def make_canonical_snarl(epts):
     def flip(s): return "+" if s == "-" else "-"
     norm = tuple(sorted(epts))
@@ -266,6 +409,19 @@ def main():
         help="Test superbubbles instead of snarls/ultrabubbles",
     )
 
+    parser.add_argument(
+        "--min-tips-per-cc",
+        type=int,
+        default=0,
+        help="Require at least this many tips IN EACH connected component (0 disables filtering).",
+    )
+    parser.add_argument(
+        "--max-gen-attempts",
+        type=int,
+        default=1000,
+        help="Max attempts to generate a graph satisfying --min-tips-per-cc (avoid infinite loops).",
+    )
+
     args = parser.parse_args()
 
     if args.superbubbles:
@@ -290,80 +446,52 @@ def main():
     notes = []
 
     for idx in range(args.n_graphs):
-        nn = rng.randint(args.min_nodes, args.max_nodes)
-        ne = rng.randint(args.min_edges, args.max_edges)
+        while True:
+            nn = rng.randint(args.min_nodes, args.max_nodes)
+            ne = rng.randint(args.min_edges, args.max_edges)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            gfa_path = tmp / "input.gfa"
-            generate_random_gfa(gfa_path, nn, ne, seed=rng.randint(0, 10**9))
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                gfa_path = tmp / "input.gfa"
 
-            bad = False
-            reasons = set()
+                attempts = 0
+                failed_min_tips = False
+                while True:
+                    attempts += 1
+                    generate_random_gfa(gfa_path, nn, ne, seed=rng.randint(0, 10**9))
 
-            try:
-                if mode == "superbubbles":
-                    bf_snarls = run_superbubbles_bf(brute, gfa_path)
-                else:
-                    bf_snarls = run_snarls_bf(brute, gfa_path)
-            except subprocess.CalledProcessError as e:
-                bad = True
-                reasons.add("bruteforce_error")
-                print(f"[Graph {idx}] ERROR in brute-force (returncode={e.returncode})")
-                if e.output:
-                    print("  [bruteforce stdout]:")
-                    print("  <<<")
-                    print(e.output.rstrip())
-                    print("  >>>")
-                if e.stderr:
-                    print("  [bruteforce stderr]:")
-                    print("  <<<")
-                    print(e.stderr.rstrip())
-                    print("  >>>")
+                    if args.min_tips_per_cc <= 0:
+                        break
 
-                sample = None
-                if len(notes) < args.max_report_graphs:
-                    sample = gfa_path.read_text()
-                if args.keep_failing:
-                    dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
-                    dst.write_text(gfa_path.read_text())
-                    dstout = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stdout.txt"
-                    dsterr = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stderr.txt"
-                    dstout.write_text(e.output or "")
-                    dsterr.write_text(e.stderr or "")
+                    if cc_min_tips_ok_in_gfa(gfa_path, nn, args.min_tips_per_cc):
+                        break
 
-                notes.append({
-                    "index": idx,
-                    "n_nodes": nn,
-                    "n_edges": ne,
-                    "reasons": sorted(reasons),
-                    "threads": tlist,
-                    "gfa": sample,
-                    "has_divergence": _has_divergence_reason(reasons),
-                })
-                fails += 1
-                continue
+                    if attempts >= args.max_gen_attempts:
+                        failed_min_tips = True
+                        break
 
-            per_thread = {}
-            bf_err = False
-            for th in tlist:
-                out = tmp / f"out_t{th}.sbfind"
+                if failed_min_tips:
+                    continue
+
+                bad = False
+                reasons = set()
+
                 try:
-                    per_thread[th] = run_bubblefinder(
-                        bf_bin, gfa_path, out, threads=th, mode=mode
-                    )
+                    if mode == "superbubbles":
+                        bf_snarls = run_superbubbles_bf(brute, gfa_path)
+                    else:
+                        bf_snarls = run_snarls_bf(brute, gfa_path)
                 except subprocess.CalledProcessError as e:
                     bad = True
-                    bf_err = True
-                    reasons.add("bubblefinder_error")
-                    print(f"[Graph {idx}] ERROR in BubbleFinder (threads={th}, returncode={e.returncode})")
+                    reasons.add("bruteforce_error")
+                    print(f"[Graph {idx}] ERROR in brute-force (returncode={e.returncode})")
                     if e.output:
-                        print("  [BubbleFinder stdout]:")
+                        print("  [bruteforce stdout]:")
                         print("  <<<")
                         print(e.output.rstrip())
                         print("  >>>")
                     if e.stderr:
-                        print("  [BubbleFinder stderr]:")
+                        print("  [bruteforce stderr]:")
                         print("  <<<")
                         print(e.stderr.rstrip())
                         print("  >>>")
@@ -372,10 +500,10 @@ def main():
                     if len(notes) < args.max_report_graphs:
                         sample = gfa_path.read_text()
                     if args.keep_failing:
-                        dstgfa = Path("/tmp") / f"fail_graph_{idx}.gfa"
-                        dstgfa.write_text(gfa_path.read_text())
-                        dstout = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stdout.txt"
-                        dsterr = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stderr.txt"
+                        dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
+                        dst.write_text(gfa_path.read_text())
+                        dstout = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stdout.txt"
+                        dsterr = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stderr.txt"
                         dstout.write_text(e.output or "")
                         dsterr.write_text(e.stderr or "")
 
@@ -391,68 +519,120 @@ def main():
                     fails += 1
                     break
 
-            if bf_err:
-                continue
+                per_thread = {}
+                bf_err = False
+                for th in tlist:
+                    out = tmp / f"out_t{th}.sbfind"
+                    try:
+                        per_thread[th] = run_bubblefinder(
+                            bf_bin, gfa_path, out, threads=th, mode=mode
+                        )
+                    except subprocess.CalledProcessError as e:
+                        bad = True
+                        bf_err = True
+                        reasons.add("bubblefinder_error")
+                        print(f"[Graph {idx}] ERROR in BubbleFinder (threads={th}, returncode={e.returncode})")
+                        if e.output:
+                            print("  [BubbleFinder stdout]:")
+                            print("  <<<")
+                            print(e.output.rstrip())
+                            print("  >>>")
+                        if e.stderr:
+                            print("  [BubbleFinder stderr]:")
+                            print("  <<<")
+                            print(e.stderr.rstrip())
+                            print("  >>>")
 
-            divergent = False
-            for th in tlist:
-                missing, extra = compare_snarls(bf_snarls, per_thread[th])
-                if missing or extra:
-                    divergent = True
-                    reasons.add("divergence_bruteforce_vs_bubblefinder")
-                    print(f"[Graph {idx}] DIVERGENCE brute-force vs BubbleFinder (threads={th})")
-                    print(f"  nodes={nn}, edges={ne}")
-                    if missing:
-                        print(f"  {Feat} missing in BubbleFinder:")
-                        for sn in sorted(missing):
-                            print("    ", sn)
-                    if extra:
-                        print(f"  Extra {feat} in BubbleFinder:")
-                        for sn in sorted(extra):
-                            print("    ", sn)
+                        sample = None
+                        if len(notes) < args.max_report_graphs:
+                            sample = gfa_path.read_text()
+                        if args.keep_failing:
+                            dstgfa = Path("/tmp") / f"fail_graph_{idx}.gfa"
+                            dstgfa.write_text(gfa_path.read_text())
+                            dstout = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stdout.txt"
+                            dsterr = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stderr.txt"
+                            dstout.write_text(e.output or "")
+                            dsterr.write_text(e.stderr or "")
 
-            if len(tlist) > 1:
-                ref = tlist[0]
-                ref_set = per_thread[ref]
-                for th in tlist[1:]:
-                    missing, extra = compare_snarls(ref_set, per_thread[th])
+                        notes.append({
+                            "index": idx,
+                            "n_nodes": nn,
+                            "n_edges": ne,
+                            "reasons": sorted(reasons),
+                            "threads": tlist,
+                            "gfa": sample,
+                            "has_divergence": _has_divergence_reason(reasons),
+                        })
+                        fails += 1
+                        break
+
+                if bf_err:
+                    break
+
+                divergent = False
+                for th in tlist:
+                    missing, extra = compare_snarls(bf_snarls, per_thread[th])
                     if missing or extra:
                         divergent = True
-                        reasons.add("divergence_between_threads")
-                        print(f"[Graph {idx}] DIVERGENCE between threads={ref} and threads={th}")
+                        reasons.add("divergence_bruteforce_vs_bubblefinder")
+                        print(f"[Graph {idx}] DIVERGENCE brute-force vs BubbleFinder (threads={th})")
+                        print(f"  nodes={nn}, edges={ne}")
                         if missing:
-                            print(f"  {Feat} missing in threads={th} vs {ref}:")
+                            print(f"  {Feat} missing in BubbleFinder:")
                             for sn in sorted(missing):
                                 print("    ", sn)
                         if extra:
-                            print(f"  Extra {feat} in threads={th} vs {ref}:")
+                            print(f"  Extra {feat} in BubbleFinder:")
                             for sn in sorted(extra):
                                 print("    ", sn)
 
-            if divergent:
-                bad = True
+                if len(tlist) > 1:
+                    ref = tlist[0]
+                    ref_set = per_thread[ref]
+                    for th in tlist[1:]:
+                        missing, extra = compare_snarls(ref_set, per_thread[th])
+                        if missing or extra:
+                            divergent = True
+                            reasons.add("divergence_between_threads")
+                            print(f"[Graph {idx}] DIVERGENCE between threads={ref} and threads={th}")
+                            if missing:
+                                print(f"  {Feat} missing in threads={th} vs {ref}:")
+                                for sn in sorted(missing):
+                                    print("    ", sn)
+                            if extra:
+                                print(f"  Extra {feat} in threads={th} vs {ref}:")
+                                    # NOTE: unchanged
+                                    # (kept exactly as in your original logic/structure)
+                                    # If this line was working for you before, it remains so.
+                                for sn in sorted(extra):
+                                    print("    ", sn)
 
-            if bad:
-                sample = None
-                if len(notes) < args.max_report_graphs:
-                    sample = gfa_path.read_text()
-                if args.keep_failing:
-                    dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
-                    dst.write_text(gfa_path.read_text())
-                    print(f"  GFA saved to {dst}")
+                if divergent:
+                    bad = True
 
-                notes.append({
-                    "index": idx,
-                    "n_nodes": nn,
-                    "n_edges": ne,
-                    "reasons": sorted(reasons),
-                    "threads": tlist,
-                    "gfa": sample,
-                    "has_divergence": _has_divergence_reason(reasons),
-                })
-                fails += 1
-            else:
-                print(f"[Graph {idx}] OK (nodes={nn}, edges={ne}, threads={tlist})")
+                if bad:
+                    sample = None
+                    if len(notes) < args.max_report_graphs:
+                        sample = gfa_path.read_text()
+                    if args.keep_failing:
+                        dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
+                        dst.write_text(gfa_path.read_text())
+                        print(f"  GFA saved to {dst}")
+
+                    notes.append({
+                        "index": idx,
+                        "n_nodes": nn,
+                        "n_edges": ne,
+                        "reasons": sorted(reasons),
+                        "threads": tlist,
+                        "gfa": sample,
+                        "has_divergence": _has_divergence_reason(reasons),
+                    })
+                    fails += 1
+                else:
+                    print(f"[Graph {idx}] OK (nodes={nn}, edges={ne}, threads={tlist})")
+
+                break  # done with this graph index (idx): exit resampling loop
 
     print(f"Total number of graphs tested: {args.n_graphs}")
     print(f"Number of graphs with divergence or errors: {fails}")

@@ -5,10 +5,12 @@
 
 `BubbleFinder` exploits the [SPQR trees](https://en.wikipedia.org/wiki/SPQR_tree) of the biconnected components of the undirected counterparts of the input bidirected graph, and traverses them efficiently to identify all snarls and superbubbles.
 
-BubbleFinder supports two main modes:
+BubbleFinder supports three main modes:
 
 - `snarls`: computes **all** snarls and is supposed to replicate the behavior of [vg snarl](https://github.com/vgteam/vg) (when run with parameters `-a -T`). Note that `vg snarl` prunes some snarls to output only a linear number of snarls; thus `BubbleFinder` finds more snarls than `vg snarl`.
 - `superbubbles`: computes superbubbles in a (virtually) doubled representation of the bidirected graph and is supposed to replicate the behavior of [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun). Since superbubbles are classically defined on **directed** graphs, BubbleFinder first runs the algorithm on this doubled directed representation, then projects the results back to unordered pairs of segment IDs (see [Orientation projection](#orientation-projection)). Notice that BubbleGun also reports weak superbubbles, i.e. for a bubble with entry `s` and exit `t`, it also reports the structures which also have an edge from `t` to `s` (thus the interior of the bubble is not acyclic).
+- `ultrabubbles`: computes ultrabubbles by orienting each connected component with a DFS procedure and then running the [clsd](https://github.com/Fabianexe/clsd/tree/c49598fcb149b2c224a4625e0bf4b870f27ec166) superbubble algorithm on the resulting directed skeleton; **requires at least one tip per connected component in the input graph**.
+
 
 ## Table of Contents
 - [1. Installation](#installation)
@@ -51,6 +53,7 @@ Available commands are:
   - `superbubbles` - Find bidirected superbubbles (GFA -> bidirected by default)
   - `directed-superbubbles` - Find directed superbubbles (directed graph)
   - `snarls` - Find snarls (typically on bidirected graphs from GFA)
+  - `ultrabubbles` - Find ultrabubbles (typically on bidirected graphs from GFA)
 
 
 ## <a id="input"></a>2.1. Input data
@@ -128,7 +131,7 @@ All commands write plain text with the same global structure:
 Each result line encodes one or more **unordered pairs of endpoints**.  
 What an "endpoint" looks like depends on the command:
 
-- `snarls`: endpoints are **oriented incidences**, e.g. `a+`, `d-`.
+- `snarls` / `ultrabubbles`: endpoints are **oriented incidences**, e.g. `a+`, `d-`.
 - `superbubbles` / `directed-superbubbles`: endpoints are **segment IDs without orientation**, e.g. `a`, `e`.
 
 The only difference between commands is:
@@ -268,6 +271,18 @@ This will:
 - run BubbleFinder in snarl mode,
 - compare their outputs (missing / extra pairs / segfaults),
 - and additionally check that BubbleFinder’s output is consistent across different thread counts if you pass several values to `--threads`.
+
+#### Ultrabubbles
+
+To run random tests on ultrabubbles, use the brute-force ultrabubble binary (e.g. `./build/ultrabubbles_bf`). Since the current ultrabubble implementation in BubbleFinder requires **at least one tip per connected component**, you can restrict the generated random graphs with:
+
+```bash
+python3 src/bruteforce.py \
+  --bruteforce-bin ./build/ultrabubbles_bf \
+  --bubblefinder-bin ./BubbleFinder \
+  --n-graphs 100 \
+  --min-tips-per-cc 1
+```
 
 #### Superbubbles
 

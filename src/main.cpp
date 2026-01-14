@@ -5241,37 +5241,60 @@ namespace solver {
             ogdf::NodeArray<bool> isTip;
         };
 
-        static EdgePartType getNodeEdgeType(ogdf::node v, ogdf::edge e) {
-            auto &C = ctx();
+        static inline EdgePartType getNodeEdgeTypeCached(
+            ogdf::node v,
+            ogdf::edge e,
+            const ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> &etype
+        ) {
             OGDF_ASSERT(v != nullptr && e != nullptr);
-            OGDF_ASSERT(v->graphOf() == &C.G);
-            OGDF_ASSERT(e->graphOf() == &C.G);
 
-            if (e->source() == v) return C._edge2types(e).first;
-            if (e->target() == v) return C._edge2types(e).second;
+            if (e->source() == v) return etype[e].first;
+            if (e->target() == v) return etype[e].second;
 
             OGDF_ASSERT(false);
             return EdgePartType::NONE;
         }
 
-        static void orient(ogdf::node v,
-                        bool plus_enter,
-                        ogdf::NodeArray<int> &plus_dir,
-                        const ogdf::NodeArray<ogdf::node> &origToNew,
-                        ogdf::Graph &directedGraph)
-        {
+        struct DirectedEdgeBuilder {
+            int nextId; 
+            std::vector<std::pair<int,int>> edges;
+
+            explicit DirectedEdgeBuilder(int original_n, size_t reserve_edges = 0)
+                : nextId(original_n)
+            {
+                if (reserve_edges) edges.reserve(reserve_edges);
+            }
+
+            inline int newIntermediate() { return nextId++; }
+
+            inline void addEdge(int a, int b) {
+                edges.emplace_back(a, b);
+            }
+        };
+
+
+        static void orient_emit(
+            ogdf::node v,
+            bool plus_enter,
+            ogdf::NodeArray<int> &plus_dir,
+            const ogdf::NodeArray<int> &nodeId, 
+            const ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> &etype,
+            DirectedEdgeBuilder &out
+        ) {
             std::array<EdgePartType,2> order = {EdgePartType::PLUS, EdgePartType::MINUS};
             if (plus_enter) std::swap(order[0], order[1]);
+
+            const int vid = nodeId[v];
 
             for (EdgePartType order_sign : order) {
                 for (auto ae : v->adjEntries) {
                     ogdf::edge e = ae->theEdge();
                     ogdf::node u = ae->twinNode();
 
-                    EdgePartType sign   = getNodeEdgeType(v, e);
-                    EdgePartType n_sign = getNodeEdgeType(u, e);
-
+                    EdgePartType sign   = getNodeEdgeTypeCached(v, e, etype);
                     if (sign != order_sign) continue;
+
+                    EdgePartType n_sign = getNodeEdgeTypeCached(u, e, etype);
 
                     if (!plus_dir[u]) {
                         if (plus_dir[v] == 1) {
@@ -5279,30 +5302,33 @@ namespace solver {
                         } else {
                             plus_dir[u] = 1 + (sign != n_sign);
                         }
-                        orient(u, n_sign == EdgePartType::PLUS, plus_dir, origToNew, directedGraph);
+                        orient_emit(u, n_sign == EdgePartType::PLUS, plus_dir, nodeId, etype, out);
                     }
 
-                    if (v->index() < u->index()) {
-                        bool inconsistent =
-                            ((n_sign == sign) == (plus_dir[u] == plus_dir[v]));
+                    const int uid = nodeId[u];
+
+                    // add edges only once (same as your v->index() < u->index())
+                    if (vid < uid) {
+                        bool inconsistent = ((n_sign == sign) == (plus_dir[u] == plus_dir[v]));
 
                         if (inconsistent) {
-                            ogdf::node x = directedGraph.newNode(); // new intermediate node
-                            // if ((plus_dir[node] == 1) == (sign == '+')) => v->x<-u
+                            int x = out.newIntermediate();
+
                             if ((plus_dir[v] == 1) == (sign == EdgePartType::PLUS)) {
-                                directedGraph.newEdge(origToNew[v], x);
-                                directedGraph.newEdge(origToNew[u], x);
+                                // v -> x <- u
+                                out.addEdge(vid, x);
+                                out.addEdge(uid, x);
                             } else {
-                                // v<-x->u
-                                directedGraph.newEdge(x, origToNew[v]);
-                                directedGraph.newEdge(x, origToNew[u]);
+                                // v <- x -> u
+                                out.addEdge(x, vid);
+                                out.addEdge(x, uid);
                             }
                         } else if ((plus_dir[v] == 1) == (sign == EdgePartType::PLUS)) {
                             // orientation consistent: v -> u
-                            directedGraph.newEdge(origToNew[v], origToNew[u]);
+                            out.addEdge(vid, uid);
                         } else {
                             // orientation consistent: u -> v
-                            directedGraph.newEdge(origToNew[u], origToNew[v]);
+                            out.addEdge(uid, vid);
                         }
                     }
                 }
@@ -5316,120 +5342,105 @@ namespace solver {
             auto &C = ctx();
             ogdf::Graph &G = C.G;
 
+            ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> etype(G);
+            for (ogdf::edge e : G.edges) {
+                etype[e] = C._edge2types(e);
+            }
+
+            // Assign stable ids [0..original_n) in the same order as G.nodes iteration
+            const int original_n = G.numberOfNodes();
+            ogdf::NodeArray<int> nodeId(G, -1);
+            std::vector<ogdf::node> id2orig;
+            id2orig.resize(original_n, nullptr);
+
+            {
+                int id = 0;
+                for (ogdf::node v : G.nodes) {
+                    nodeId[v] = id;
+                    id2orig[id] = v;
+                    ++id;
+                }
+                OGDF_ASSERT(id == original_n);
+            }
+
+            // find tips
             ogdf::NodeArray<bool> is_tip(G, false);
             ogdf::NodeArray<int>  plus_dir(G, 0);
-
-            int tipCount = 0; 
 
             for (ogdf::node v : G.nodes) {
                 bool saw_plus  = false;
                 bool saw_minus = false;
 
                 for (auto ae : v->adjEntries) {
-                    EdgePartType t = getNodeEdgeType(v, ae->theEdge());
+                    EdgePartType t = getNodeEdgeTypeCached(v, ae->theEdge(), etype);
                     if (t == EdgePartType::PLUS)  saw_plus = true;
                     if (t == EdgePartType::MINUS) saw_minus = true;
+                    if (saw_plus && saw_minus) break;
                 }
                 is_tip[v] = !(saw_plus && saw_minus);
-
-                if (is_tip[v]) ++tipCount; // ADDED
             }
 
-            // ADDED: fail fast if no tips exist anywhere in the graph
-            if (tipCount == 0) {
-                throw std::runtime_error(
-                    "Ultrabubble orientation failed: no tips found in the graph. "
-                    "The graph must contain at least one tip."
-                );
-            }
-
-            ogdf::Graph directedGraph;
-            ogdf::NodeArray<ogdf::node> origToNew(G, nullptr);
-
-            for (ogdf::node v : G.nodes) {
-                origToNew[v] = directedGraph.newNode();
-            }
-
-            const int original_n = directedGraph.numberOfNodes(); 
+            DirectedEdgeBuilder out(original_n, /*reserve_edges=*/2ull * (size_t)G.numberOfEdges());
 
             for (ogdf::node v : G.nodes) {
                 if (!plus_dir[v] && is_tip[v]) {
-                    plus_dir[v] = 1;          
-                    orient(v, true, plus_dir, origToNew, directedGraph);
+                    plus_dir[v] = 1; // plus outwards
+                    orient_emit(v, true, plus_dir, nodeId, etype, out);
                 }
             }
 
             for (ogdf::node v : G.nodes) {
                 if (!plus_dir[v]) {
-                    throw std::runtime_error("Unoriented node in ultrabubble orient(): " + C.node2name[v]);
+                    throw std::runtime_error(
+                        "Ultrabubble: orientation failed (unoriented node: " + C.node2name[v] + "). "
+                        "Please check that each connected component of the input graph contains at least one tip."
+                    );
                 }
             }
 
-            struct PairHash {
-                std::size_t operator()(const std::pair<int,int> &p) const noexcept {
-                    return (std::uint64_t(std::uint32_t(p.first)) << 32) ^ std::uint32_t(p.second);
-                }
-            };
-            std::unordered_set<std::pair<int,int>, PairHash> seen;
-            seen.reserve(directedGraph.numberOfEdges() * 2);
+            // dedup directed edges
+            auto &directed_edges = out.edges;
+            std::sort(directed_edges.begin(), directed_edges.end());
+            directed_edges.erase(std::unique(directed_edges.begin(), directed_edges.end()),
+                                directed_edges.end());
 
-            std::vector<std::pair<int,int>> directed_edges;
-            directed_edges.reserve(directedGraph.numberOfEdges());
-
-            for (ogdf::edge e : directedGraph.edges) {
-                int a = e->source()->index();
-                int b = e->target()->index();
-                std::pair<int,int> key{a,b};
-                if (seen.insert(key).second) {
-                    directed_edges.push_back(key);
-                }
-            }
-
+            // run superbubbles on directed edges (CLSd)
             std::vector<std::pair<int,int>> superbubbles =
                 compute_superbubbles_from_edges(directed_edges);
 
-            std::vector<ogdf::node> idx2orig(original_n, nullptr);
-            for (ogdf::node v : G.nodes) {
-                int idx = origToNew[v]->index();
-                OGDF_ASSERT(0 <= idx && idx < original_n);
-                idx2orig[idx] = v;
-            }
-
+            // map back to original nodes + build ultrabubble incidences EXACT like UltraFinder
             C.ultrabubbleIncidences.clear();
             C.ultrabubbleIncidences.reserve(superbubbles.size());
 
             for (auto &sb : superbubbles) {
-                int xid = sb.first;   
-                int yid = sb.second;  
+                int xid = sb.first;   // entrance (CLSd)
+                int yid = sb.second;  // exit (CLSd)
 
+                if (xid < 0 || yid < 0) continue;
                 if (xid >= original_n || yid >= original_n) continue;
 
-                ogdf::node x = idx2orig[xid];
-                ogdf::node y = idx2orig[yid];
+                ogdf::node x = id2orig[xid];
+                ogdf::node y = id2orig[yid];
                 if (!x || !y) continue;
 
                 std::string xname = C.node2name[x];
                 std::string yname = C.node2name[y];
 
+                // UltraFinder sign logic:
+                // entrance uses "-+" ; exit uses "+-"
                 char xsign = "-+"[ plus_dir[x] == 1 ];
                 char ysign = "+-"[ plus_dir[y] == 1 ];
 
+                // UltraFinder ordering:
                 if (xid > yid) {
-                    C.ultrabubbleIncidences.emplace_back(
-                        yname + ysign,
-                        xname + xsign
-                    );
+                    C.ultrabubbleIncidences.emplace_back(yname + ysign, xname + xsign);
                 } else {
-                    C.ultrabubbleIncidences.emplace_back(
-                        xname + xsign,
-                        yname + ysign
-                    );
+                    C.ultrabubbleIncidences.emplace_back(xname + xsign, yname + ysign);
                 }
             }
 
             std::cout << "ULTRABUBBLES found: " << C.ultrabubbleIncidences.size() << "\n";
         }
-
 
     }
 }
