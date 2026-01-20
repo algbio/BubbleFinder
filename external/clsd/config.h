@@ -21,6 +21,12 @@ struct superbubble {
     Vertex* exit;
 };
 
+struct supertree {
+	std::vector<supertree*> childreen;
+	Vertex* entrance;
+	Vertex* exit;
+};
+
 class Config {
 private:
     std::vector<orderElement> orders;
@@ -37,12 +43,12 @@ private:
     std::string orderpath; 
     bool stats; 
     std::string statspath; 
-    bool trees; 
     std::string treespath; 
     bool debug; 
     bool undirected; 
     bool directed; 
 public:
+    bool trees; 
     void addOrder(Vertex*, Vertex*, bool);
     std::vector<orderElement>::iterator begin();
     std::vector<orderElement>::iterator end();
@@ -56,7 +62,11 @@ public:
     void writeComplete();
     void writeOrder();
     void writeStats(std::vector<Vertex>&);
+
+    void outputTree(supertree* t, std::ostream& treefile);
+
     void writeTree();
+    std::vector<supertree*> getTrees();
     void parseParameter(int, char*[]);
     void printdebug(std::string);
     std::string getPath();

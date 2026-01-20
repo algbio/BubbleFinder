@@ -6,9 +6,13 @@
 #include <utility>
 #include <cstdlib> 
 
+#include <iostream>
+
 std::vector<std::pair<int,int>>
 compute_superbubbles_from_edges(
-    const std::vector<std::pair<int,int>>& edges
+    const std::vector<std::pair<int,int>>& edges,
+    std::vector<supertree*>* out_trees 
+
 ) {
     std::set<int> node_set;
     for (const auto& e : edges) {
@@ -91,6 +95,7 @@ compute_superbubbles_from_edges(
     conf.setVertices(static_cast<long unsigned int>(vertices.size()));
     conf.setEdges(static_cast<long unsigned int>(edges.size()));
     conf.setMultiedges(0);
+    conf.trees = (out_trees != nullptr);
 
     conf.startClock();
 
@@ -112,21 +117,29 @@ compute_superbubbles_from_edges(
 
     conf.endClock();
 
-    std::vector<std::pair<int,int>> result;
 
+    
+    std::vector<std::pair<int,int>> result;
+    
     const auto& bubs = conf.getSuperbubbles();
     result.reserve(bubs.size());
-
+    
     for (const auto& sb : bubs) {
         Vertex* entrance = sb.entrance;
         Vertex* exit     = sb.exit;
-
+        
         int ent_id = std::stoi(entrance->getID());
         int ex_id  = std::stoi(exit->getID());
-
+        
         result.emplace_back(ent_id, ex_id);
     }
 
+    if(out_trees != nullptr) {
+        *out_trees = conf.getTrees();
+        // conf.writeTree();
+        // std::cout << out_trees->size() << " supertrees computed.\n";
+    }
+    
     for (auto& p : str2int) {
         delete[] p.second;
     }

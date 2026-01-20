@@ -5552,10 +5552,106 @@ namespace solver {
                             // { std::lock_guard<std::mutex> lk(clsd_mtx);
                             //   superbubbles = compute_superbubbles_from_edges(directed_edges);
                             // }
-                            superbubbles = compute_superbubbles_from_edges(directed_edges);
 
+                            std::vector<supertree*> trees;
+                            superbubbles = compute_superbubbles_from_edges(directed_edges, &trees);
+
+                            
+
+                            // for(auto &t:trees) {
+                            //     Config::outputTree(t, C.ultrabubbleTreeOutputPath);
+                            // }
+
+                            if(trees.size() > 0) {
+                                auto hierarchy = [&](auto&& self, supertree* t, std::string &res) -> void {
+                                    int xid = std::stoi(t->entrance->getID());
+                                    int yid = std::stoi(t->exit->getID());
+
+                                    bool valid = (xid >= 0 && xid < k) && (yid >= 0 && yid < k);
+
+
+                                    std::string X="", Y="";
+
+                                    if(valid) {
+                                        ogdf::node x = cc[xid];
+                                        ogdf::node y = cc[yid];
+
+                                        std::string xname = C.node2name[x];
+                                        std::string yname = C.node2name[y];
+
+                                        char xsign = "-+"[ plus_dir[x] == 1 ];
+                                        char ysign = "+-"[ plus_dir[y] == 1 ];
+
+                                        X = xname + xsign;
+                                        Y = yname + ysign;
+                                    }
+
+                                    if (valid && !t->childreen.empty()) {
+                                        res += "(";
+                                    }
+
+                                     for (size_t i = 0; i < t->childreen.size(); ++i) {
+                                        self(self, t->childreen[i], res);
+                                        if (i != t->childreen.size() - 1 && valid) {
+                                            res += ",";
+                                        }
+                                    }
+
+                                    if (valid && !t->childreen.empty()) {
+                                        res += ")";
+                                    }
+
+                                    if (valid) {
+                                        res += "<" + X + "," + Y + ">";
+                                    }
+
+                                    // if (! t->childreen.empty()) {
+                                    //     res += "(";
+                                    //     for(long unsigned int i = 0; i < t->childreen.size(); i++) {
+                                    //         self(self, t->childreen[i], res);
+                                    //         if (i != t->childreen.size()-1) {
+                                    //             res += ",";
+                                    //         }
+                                    //     }
+                                    //     res += ")";
+                                    // }
+                                    // res += "<" + t->entrance->getID();
+                                    // res += "," + t->exit->getID();
+                                    // res += ">";
+                                };
+
+                                // auto hierarchy = [&](auto&& self, supertree* t, std::string &res) -> void { 
+                                //     if (! t->childreen.empty()) { 
+                                //         res += "("; 
+                                //         for(long unsigned int i = 0; i < t->childreen.size(); i++) { 
+                                //             self(self, t->childreen[i], res); 
+                                //             if (i != t->childreen.size()-1) { 
+                                //                 res += ","; 
+                                //             } 
+                                //         } res += ")"; 
+                                //     } 
+                                //     res += "<" + t->entrance->getID(); 
+                                //     res += "," + t->exit->getID(); 
+                                //     res += ">"; 
+                                // };
+
+                                for(size_t i = 0; i < trees.size(); i++) {
+                                    // std::cout << "(" << trees[i]->entrance->getID(),
+                                    // std::cout << "," << trees[i]->exit->getID() << ")" << std::endl;
+                                    // if(trees[i]->entrance->getID().size()>0) {
+                                        std::string res = "";
+                                        hierarchy(hierarchy, trees[i], res);
+                                        std::cout << res << std::endl;
+                                    // }
+                                }
+                                std::cout << "done" << std::endl;
+                            }
+
+                            
                             auto &inc = incidencesByCC[ci];
                             inc.reserve(superbubbles.size());
+
+                            std::cout << 121321 << std::endl;
 
                             for (auto &sb : superbubbles) {
                                 int xid = sb.first;

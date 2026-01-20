@@ -11,5 +11,6 @@
 
 std::vector<std::pair<int,int>>
 compute_superbubbles_from_edges(
-    const std::vector<std::pair<int,int>>& edges
+    const std::vector<std::pair<int,int>>& edges,
+    std::vector<supertree*>* out_trees = nullptr
 );

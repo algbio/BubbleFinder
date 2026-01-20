@@ -46,6 +46,7 @@ struct Context
 
     std::string graphPath   = "";
     std::string outputPath  = "";
+    std::string ultrabubbleTreeOutputPath = "";
     bool        gfaInput    = false;  // kept for backward compatibility
     bool        doubleGraph = false;
     LogLevel    logLevel    = LOG_INFO;

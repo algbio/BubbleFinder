@@ -689,11 +689,7 @@ void Config::writeStats(std::vector<Vertex>& vertexList) {
 	}
 }
 
-struct supertree {
-	std::vector<supertree*> childreen;
-	Vertex* entrance;
-	Vertex* exit;
-};
+
 
 void deletetree (supertree* t ) {
 	if (! t->childreen.empty()) {
@@ -704,7 +700,7 @@ void deletetree (supertree* t ) {
 	delete t;
 }
 
-void outputTree(supertree* t, std::ostream& treefile) {
+void Config::outputTree(supertree* t, std::ostream& treefile) {
 	if (! t->childreen.empty()) {
 		treefile << "(";
 		for(long unsigned int i = 0; i < t->childreen.size(); i++) {
@@ -722,10 +718,15 @@ void outputTree(supertree* t, std::ostream& treefile) {
 
 void Config::writeTree() {
 	if (! trees) {
+		std::cout << "No trees to write\n";
 		return;
 	}
 	std::stack<supertree*> trees;
 	std::vector<supertree*> alltrees;
+
+	std::cout << "Start writing trees\n";
+	std::cout << "Number of orders: " << orders.size() << "\n";
+
 	for (orderElement o: orders) {
 		Vertex* start = o.start;
 		bool first = o.cut;
@@ -763,6 +764,7 @@ void Config::writeTree() {
 	if (treespath != "-") {
 		output = new std::ofstream(treespath);
 	}
+
 	for (supertree* t: alltrees) {
 		if (!t->childreen.empty()) {
 			outputTree(t, *output);
@@ -776,6 +778,52 @@ void Config::writeTree() {
 	}
 	printdebug("Tree written");
 }
+
+
+std::vector<supertree*> Config::getTrees() {
+	if (! trees) {
+		return {};
+	}
+	std::stack<supertree*> trees;
+	std::vector<supertree*> alltrees;
+	for (orderElement o: orders) {
+		Vertex* start = o.start;
+		bool first = o.cut;
+		while (true) {
+			if (start-> entrance && !(start == o.end && first)) {
+				trees.top()->entrance = start;
+				if (trees.size()==1) {
+					alltrees.push_back(trees.top());
+				}
+				trees.pop();
+			}
+			if (start-> exit && !(start == o.end && !first)) {
+				supertree* t = new supertree;
+				t->exit = start;
+				if (! trees.empty()) {
+					trees.top()->childreen.push_back(t);
+				}
+				trees.push(t);
+			}
+			
+			if (start == o.end) {
+				if (first) {
+					first = false;
+				}
+				else {
+					break;
+				}
+			}
+			start = start->getNext();
+		}
+	}
+	
+	
+	return alltrees;
+}
+
+
+
 
 void writeHelp() {
 	std::cerr <<  "usage: clsd path [options]\n\n";
