@@ -5,25 +5,49 @@
 
 `BubbleFinder` exploits the [SPQR trees](https://en.wikipedia.org/wiki/SPQR_tree) of the biconnected components of the undirected counterparts of the input bidirected graph, and traverses them efficiently to identify all snarls and superbubbles.
 
-BubbleFinder supports three main modes:
+BubbleFinder supports four commands:
 
 - `snarls`: computes **all** snarls and is supposed to replicate the behavior of [vg snarl](https://github.com/vgteam/vg) (when run with parameters `-a -T`). Note that `vg snarl` prunes some snarls to output only a linear number of snarls; thus `BubbleFinder` finds more snarls than `vg snarl`.
 - `superbubbles`: computes superbubbles in a (virtually) doubled representation of the bidirected graph and is supposed to replicate the behavior of [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun). Since superbubbles are classically defined on **directed** graphs, BubbleFinder first runs the algorithm on this doubled directed representation, then projects the results back to unordered pairs of segment IDs (see [Orientation projection](#orientation-projection)). Notice that BubbleGun also reports weak superbubbles, i.e. for a bubble with entry `s` and exit `t`, it also reports the structures which also have an edge from `t` to `s` (thus the interior of the bubble is not acyclic).
+- `directed-superbubbles`: computes superbubbles on a **directed** input graph (`--graph` or `--gfa-directed`).
 - `ultrabubbles`: computes ultrabubbles by orienting each connected component with a DFS procedure and then running the [clsd](https://github.com/Fabianexe/clsd/tree/c49598fcb149b2c224a4625e0bf4b870f27ec166) superbubble algorithm on the resulting directed skeleton; **requires at least one tip per connected component in the input graph**.
 
+As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble’s parent.
 
 ## Table of Contents
 - [1. Installation](#installation)
+  - [Prebuilt binary (GitHub Releases)](#prebuilt-binary-github-releases)
+  - [Building from source](#building-from-source)
+  - [Conda](#conda)
 - [2. Running](#running)
-  - [Input data](#input)
-  - [Command-line options](#options)
-  - [Output format](#output-format)
+  - [2.1. Input data](#input)
+  - [2.2. Command-line options](#options)
+  - [2.3. Output format](#output-format)
+    - [2.3.1. Snarls (`snarls` command)](#snarls-output)
+    - [2.3.2. Superbubbles (`superbubbles`, `directed-superbubbles`)](#superbubbles-output)
+    - [2.3.3. Ultrabubbles (`ultrabubbles`)](#ultrabubbles-output)
+    - [2.3.4. Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)
 - [3. Development](#development)
   - [GFA format and bidirected graphs](#gfa-format-and-bidirected-graphs)
   - [Orientation projection](#orientation-projection)
   - [Algorithm correctness](#algorithm-correctness)
+- [References](#references)
 
 # <a id="installation"></a>1. Installation
+
+## <a id="prebuilt-binary-github-releases"></a>Prebuilt binary (GitHub Releases)
+
+A precompiled binary for **Linux (x86‑64)** is available directly in the **Assets** section of the latest GitHub release:
+
+https://github.com/algbio/BubbleFinder/releases/latest
+
+After downloading the asset, extract it and run:
+
+```bash
+./BubbleFinder --help
+```
+
+## <a id="building-from-source"></a>Building from source
 
 At the moment, building from source has been tested only on Linux:
 
@@ -39,7 +63,9 @@ Replace `<NUM_THREADS>` with the number of parallel build jobs you want to use (
 
 Now `BubbleFinder` is in the root directory.
 
-`conda` distributions for both Linux and macOS will be supported in the very near future.
+## <a id="conda"></a>Conda
+
+A `conda` distribution is planned. Once a package is available, this section will be updated with the exact channel/package name.
 
 # <a id="running"></a>2. Running BubbleFinder
 
@@ -49,12 +75,11 @@ Command line to run BubbleFinder:
   ./BubbleFinder <command> -g <graphFile> -o <outputFile> [options]
 ```
 
-Available commands are: 
+Available commands are:
   - `superbubbles` - Find bidirected superbubbles (GFA -> bidirected by default)
   - `directed-superbubbles` - Find directed superbubbles (directed graph)
   - `snarls` - Find snarls (typically on bidirected graphs from GFA)
   - `ultrabubbles` - Find ultrabubbles (typically on bidirected graphs from GFA)
-
 
 ## <a id="input"></a>2.1. Input data
 
@@ -64,11 +89,9 @@ BubbleFinder `.graph` text format:
 - first line: two integers n and m
     - n = number of distinct node IDs declared
     - m = number of directed edges
-- next m lines: 'u v' (separated by whitespace),
-    each describing a directed edge from u to v.
-- u and v are arbitrary node identifiers (strings
-    without whitespace).
-
+- next m lines: `u v` (separated by whitespace),
+    each describing a directed edge from `u` to `v`.
+- `u` and `v` are arbitrary node identifiers (strings without whitespace).
 
 You can force the format of the input graph with the following flags:
 
@@ -81,9 +104,9 @@ You can force the format of the input graph with the following flags:
   `--graph`
       BubbleFinder `.graph` text format with one directed edge per line (described above).
 
-  If none of these is given, the format is auto-detected from the file extension (e.g., `.gfa`, `.graph`).
+If none of these is given, the format is auto-detected from the file extension (e.g., `.gfa`, `.graph`).
 
-Input files can be compressed with gzip, bzip2 or xz.  Compression is auto-detected from the file name suffix:
+Input files can be compressed with gzip, bzip2 or xz. Compression is auto-detected from the file name suffix:
 ```
 .gz / .bgz  -> gzip
 .bz2        -> bzip2
@@ -91,6 +114,7 @@ Input files can be compressed with gzip, bzip2 or xz.  Compression is auto-detec
 ```
 
 ## <a id="options"></a>2.2. Command line options
+
 Complete list of options:
 
 `-g <file>`
@@ -111,6 +135,10 @@ Complete list of options:
 `--graph`
   Force .graph text format (see 'Format options' above)
 
+`--clsd-trees`
+  Compute and **print** CLSD superbubble trees (hierarchy) to **stdout**.
+  Currently implemented only for the `ultrabubbles` command.
+
 `--report-json <file>`
   Write JSON metrics report
 
@@ -120,10 +148,9 @@ Complete list of options:
 `-h`, `--help`
   Show the help message and exit
 
-
 ## <a id="output-format"></a>2.3 Output format
 
-All commands write plain text with the same global structure:
+All commands write plain text to the file specified by `-o <outputFile>` with the same global structure (unless stated otherwise by a specific option):
 
 - **First line**: a single integer `N`, the number of *result lines* that follow.
 - **Lines 2..N+1**: one *result line* per line.
@@ -139,7 +166,7 @@ The only difference between commands is:
 - `snarls` may output **cliques** (a line with ≥ 2 endpoints encodes all pairs between them),
 - `superbubbles` and `directed-superbubbles` always output **exactly one pair per line**.
 
-### 2.1.1 Snarls (`snarls` command)
+### <a id="snarls-output"></a>2.3.1 Snarls (`snarls` command)
 
 Used by the `snarls` command.
 
@@ -171,7 +198,7 @@ Interpretation:
 So the snarl output is just a compact way to write many pairs at once:  
 **one line = all pairs between the listed incidences**.
 
-### 2.1.2 Superbubbles (`superbubbles`, `directed-superbubbles`)
+### <a id="superbubbles-output"></a>2.3.2 Superbubbles (`superbubbles`, `directed-superbubbles`)
 
 Used by:
 
@@ -193,6 +220,48 @@ Interpretation:
 - IDs are segment names from GFA `S` records (no `+/-` orientation).
 
 For `superbubbles`, these pairs are obtained after running the superbubble algorithm on the **doubled directed graph** and then applying the **orientation projection** (see [Orientation projection](#orientation-projection)).
+
+### <a id="ultrabubbles-output"></a>2.3.3 Ultrabubbles (`ultrabubbles`)
+
+Default ultrabubble output (written to `-o <outputFile>`) is a **flat list** of endpoint pairs where each endpoint is an **oriented incidence** (`segmentID+` / `segmentID-`):
+
+```text
+N
+a+ d-
+g+ k-
+...
+```
+
+Interpretation:
+
+- each result line contains **exactly two tokens** (two oriented incidences),
+- each line encodes one **unordered pair** of oriented incidences `{u±, v±}`.
+
+### <a id="ultrabubble-hierarchy"></a>2.3.4 Ultrabubble hierarchy (CLSD trees)
+
+To also print the **hierarchical decomposition** (nesting structure) of ultrabubbles, run ultrabubbles with `--clsd-trees`:
+
+```bash
+./BubbleFinder ultrabubbles -g example/tiny1.gfa -o example/tiny1.ultra --gfa --clsd-trees
+```
+
+Behavior:
+
+- the usual ultrabubble result list is still written to `example/tiny1.ultra`,
+- the hierarchy is **printed to stdout** (it is not part of the `-o` output format above).
+
+#### Serialization format (stdout)
+
+Each line corresponds to one rooted tree and follows a parenthesized representation:
+
+- a **leaf** bubble is printed as:
+  - `<X,Y>`
+- an **internal** bubble with children is printed as:
+  - `(child1,child2,...,childk)<X,Y>`
+
+where `X` and `Y` are oriented incidences such as `a+` or `d-`.
+
+Implementation detail (relevant for interpretation): during construction of the directed skeleton, BubbleFinder may introduce auxiliary intermediate vertices. The CLSD decomposition is computed on that skeleton, and the reported ultrabubble decomposition is obtained by removing bubbles whose entrance or exit is such an introduced vertex; their children are promoted/connected upward in the resulting hierarchy.
 
 # <a id="development"></a>3. Development
 
@@ -229,7 +298,7 @@ The final output is a single unordered pair of segment IDs, e.g. `a e`. This pro
 
 In this example, the directed graph on segments has three superbubbles with endpoints `(a, b)`, `(b, e)` and `(e, f)`. After running the superbubble algorithm on the doubled graph and applying the orientation projection, BubbleFinder reports exactly these three pairs in its standard output format (see [Output format](#output-format)).
 
-## <a id="algorithm-correctness"></a>Algorithm correctness 
+## <a id="algorithm-correctness"></a>Algorithm correctness
 
 This repository includes a brute-force implementation and a random test harness to validate both the snarl and superbubble algorithms.
 
@@ -251,7 +320,7 @@ The brute-force program outputs results in a format consumed by `src/bruteforce.
 We also include a generator of random graphs and a driver script that compares the brute-force implementation with BubbleFinder. The script is `src/bruteforce.py`, and it can operate in two modes:
 
 - **Snarls** (default)
-- **Superbubbles** 
+- **Superbubbles**
 - **Ultrabubbles**
 
 #### Snarls
@@ -309,3 +378,22 @@ python3 src/bruteforce.py \
 ```
 
 Any divergence or error is reported, and if you pass `--keep-failing`, the script will save the corresponding GFA and BubbleFinder outputs in `/tmp` for manual inspection.
+
+## References
+
+- <a id="ref-gartner2019direct"></a> Fabian Gärtner, Peter F. Stadler. *Direct superbubble detection*. Algorithms 12(4):81, 2019. DOI: 10.3390/a12040081.
+
+### BibTeX
+
+```bibtex
+@article{gartner2019direct,
+  title={Direct superbubble detection},
+  author={G{\"a}rtner, Fabian and Stadler, Peter F},
+  journal={Algorithms},
+  volume={12},
+  number={4},
+  pages={81},
+  year={2019},
+  publisher={MDPI}
+}
+```
