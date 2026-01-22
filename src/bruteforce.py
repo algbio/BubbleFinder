@@ -85,6 +85,7 @@ def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
             tips += 1
     return tips
 
+
 def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool:
     """
     Returns True iff every connected component contains at least min_tips_per_cc tips.
@@ -175,8 +176,11 @@ def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool
 
     return True
 
+
 def make_canonical_snarl(epts):
-    def flip(s): return "+" if s == "-" else "-"
+    def flip(s):
+        return "+" if s == "-" else "-"
+
     norm = tuple(sorted(epts))
     inv = tuple(sorted((n, flip(s)) for n, s in epts))
     return min(norm, inv)
@@ -344,7 +348,7 @@ def run_bubblefinder(bin_path, gfa_path, out_path, threads, mode="snarls"):
         str(out_path),
         "--gfa",
         "-j",
-        str(threads),
+        str(threads)
     ]
     proc = subprocess.run(cmd, capture_output=True)
 
@@ -379,10 +383,22 @@ def main():
         default="./snarls_bf",
         help="Path to brute-force binary (auto-detects mode if 'ultrabubbles' in name)",
     )
-    parser.add_argument("--bubblefinder-bin", default="./BubbleFinder",
-                        help="Path to BubbleFinder binary")
-    parser.add_argument("--n-graphs", type=int, default=10000,
-                        help="Number of random graphs to test")
+    parser.add_argument(
+        "--bubblefinder-bin",
+        default="./BubbleFinder",
+        help="Path to BubbleFinder binary",
+    )
+    parser.add_argument(
+        "--bubblefinder-only",
+        action="store_true",
+        help="Skip brute-force: only run BubbleFinder on random instances (no comparison vs brute-force).",
+    )
+    parser.add_argument(
+        "--n-graphs",
+        type=int,
+        default=10000,
+        help="Number of random graphs to test",
+    )
     parser.add_argument("--min-nodes", type=int, default=3)
     parser.add_argument("--max-nodes", type=int, default=10)
     parser.add_argument("--min-edges", type=int, default=2)
@@ -393,22 +409,24 @@ def main():
         type=int,
         nargs="+",
         default=[1],
-        help="List of thread counts to test for BubbleFinder (e.g. --threads 1 7)"
+        help="List of thread counts to test for BubbleFinder (e.g. --threads 1 7)",
     )
-    parser.add_argument("--keep-failing", action="store_true",
-                        help="Save failing .gfa files (and BF outputs) in /tmp")
+    parser.add_argument(
+        "--keep-failing",
+        action="store_true",
+        help="Save failing .gfa files (and BF outputs) in /tmp",
+    )
     parser.add_argument(
         "--max-report-graphs",
         type=int,
         default=5,
-        help="Max number of failing graphs whose full GFA is printed at the end"
+        help="Max number of failing graphs whose full GFA is printed at the end",
     )
     parser.add_argument(
         "--superbubbles",
         action="store_true",
         help="Test superbubbles instead of snarls/ultrabubbles",
     )
-
     parser.add_argument(
         "--min-tips-per-cc",
         type=int,
@@ -436,6 +454,8 @@ def main():
 
     Feat = feat.capitalize()
     print(f"Tests on {Feat} (Mode detected: {mode}).")
+    if args.bubblefinder_only:
+        print("BubbleFinder-only mode enabled: brute-force will NOT be executed.")
 
     brute = args.bruteforce_bin
     bf_bin = args.bubblefinder_bin
@@ -476,48 +496,52 @@ def main():
                 bad = False
                 reasons = set()
 
-                try:
-                    if mode == "superbubbles":
-                        bf_snarls = run_superbubbles_bf(brute, gfa_path)
-                    else:
-                        bf_snarls = run_snarls_bf(brute, gfa_path)
-                except subprocess.CalledProcessError as e:
-                    bad = True
-                    reasons.add("bruteforce_error")
-                    print(f"[Graph {idx}] ERROR in brute-force (returncode={e.returncode})")
-                    if e.output:
-                        print("  [bruteforce stdout]:")
-                        print("  <<<")
-                        print(e.output.rstrip())
-                        print("  >>>")
-                    if e.stderr:
-                        print("  [bruteforce stderr]:")
-                        print("  <<<")
-                        print(e.stderr.rstrip())
-                        print("  >>>")
+                bf_snarls = None
+                if not args.bubblefinder_only:
+                    try:
+                        if mode == "superbubbles":
+                            bf_snarls = run_superbubbles_bf(brute, gfa_path)
+                        else:
+                            bf_snarls = run_snarls_bf(brute, gfa_path)
+                    except subprocess.CalledProcessError as e:
+                        bad = True
+                        reasons.add("bruteforce_error")
+                        print(f"[Graph {idx}] ERROR in brute-force (returncode={e.returncode})")
+                        if e.output:
+                            print("  [bruteforce stdout]:")
+                            print("  <<<")
+                            print(e.output.rstrip())
+                            print("  >>>")
+                        if e.stderr:
+                            print("  [bruteforce stderr]:")
+                            print("  <<<")
+                            print(e.stderr.rstrip())
+                            print("  >>>")
 
-                    sample = None
-                    if len(notes) < args.max_report_graphs:
-                        sample = gfa_path.read_text()
-                    if args.keep_failing:
-                        dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
-                        dst.write_text(gfa_path.read_text())
-                        dstout = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stdout.txt"
-                        dsterr = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stderr.txt"
-                        dstout.write_text(e.output or "")
-                        dsterr.write_text(e.stderr or "")
+                        sample = None
+                        if len(notes) < args.max_report_graphs:
+                            sample = gfa_path.read_text()
+                        if args.keep_failing:
+                            dst = Path("/tmp") / f"fail_graph_{idx}.gfa"
+                            dst.write_text(gfa_path.read_text())
+                            dstout = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stdout.txt"
+                            dsterr = Path("/tmp") / f"fail_graph_{idx}_bruteforce.stderr.txt"
+                            dstout.write_text(e.output or "")
+                            dsterr.write_text(e.stderr or "")
 
-                    notes.append({
-                        "index": idx,
-                        "n_nodes": nn,
-                        "n_edges": ne,
-                        "reasons": sorted(reasons),
-                        "threads": tlist,
-                        "gfa": sample,
-                        "has_divergence": _has_divergence_reason(reasons),
-                    })
-                    fails += 1
-                    break
+                        notes.append(
+                            {
+                                "index": idx,
+                                "n_nodes": nn,
+                                "n_edges": ne,
+                                "reasons": sorted(reasons),
+                                "threads": tlist,
+                                "gfa": sample,
+                                "has_divergence": _has_divergence_reason(reasons),
+                            }
+                        )
+                        fails += 1
+                        break
 
                 per_thread = {}
                 bf_err = False
@@ -531,7 +555,9 @@ def main():
                         bad = True
                         bf_err = True
                         reasons.add("bubblefinder_error")
-                        print(f"[Graph {idx}] ERROR in BubbleFinder (threads={th}, returncode={e.returncode})")
+                        print(
+                            f"[Graph {idx}] ERROR in BubbleFinder (threads={th}, returncode={e.returncode})"
+                        )
                         if e.output:
                             print("  [BubbleFinder stdout]:")
                             print("  <<<")
@@ -549,20 +575,28 @@ def main():
                         if args.keep_failing:
                             dstgfa = Path("/tmp") / f"fail_graph_{idx}.gfa"
                             dstgfa.write_text(gfa_path.read_text())
-                            dstout = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stdout.txt"
-                            dsterr = Path("/tmp") / f"fail_graph_{idx}_t{th}.bubblefinder.stderr.txt"
+                            dstout = (
+                                Path("/tmp")
+                                / f"fail_graph_{idx}_t{th}.bubblefinder.stdout.txt"
+                            )
+                            dsterr = (
+                                Path("/tmp")
+                                / f"fail_graph_{idx}_t{th}.bubblefinder.stderr.txt"
+                            )
                             dstout.write_text(e.output or "")
                             dsterr.write_text(e.stderr or "")
 
-                        notes.append({
-                            "index": idx,
-                            "n_nodes": nn,
-                            "n_edges": ne,
-                            "reasons": sorted(reasons),
-                            "threads": tlist,
-                            "gfa": sample,
-                            "has_divergence": _has_divergence_reason(reasons),
-                        })
+                        notes.append(
+                            {
+                                "index": idx,
+                                "n_nodes": nn,
+                                "n_edges": ne,
+                                "reasons": sorted(reasons),
+                                "threads": tlist,
+                                "gfa": sample,
+                                "has_divergence": _has_divergence_reason(reasons),
+                            }
+                        )
                         fails += 1
                         break
 
@@ -570,21 +604,25 @@ def main():
                     break
 
                 divergent = False
-                for th in tlist:
-                    missing, extra = compare_snarls(bf_snarls, per_thread[th])
-                    if missing or extra:
-                        divergent = True
-                        reasons.add("divergence_bruteforce_vs_bubblefinder")
-                        print(f"[Graph {idx}] DIVERGENCE brute-force vs BubbleFinder (threads={th})")
-                        print(f"  nodes={nn}, edges={ne}")
-                        if missing:
-                            print(f"  {Feat} missing in BubbleFinder:")
-                            for sn in sorted(missing):
-                                print("    ", sn)
-                        if extra:
-                            print(f"  Extra {feat} in BubbleFinder:")
-                            for sn in sorted(extra):
-                                print("    ", sn)
+
+                if not args.bubblefinder_only:
+                    for th in tlist:
+                        missing, extra = compare_snarls(bf_snarls, per_thread[th])
+                        if missing or extra:
+                            divergent = True
+                            reasons.add("divergence_bruteforce_vs_bubblefinder")
+                            print(
+                                f"[Graph {idx}] DIVERGENCE brute-force vs BubbleFinder (threads={th})"
+                            )
+                            print(f"  nodes={nn}, edges={ne}")
+                            if missing:
+                                print(f"  {Feat} missing in BubbleFinder:")
+                                for sn in sorted(missing):
+                                    print("    ", sn)
+                            if extra:
+                                print(f"  Extra {feat} in BubbleFinder:")
+                                for sn in sorted(extra):
+                                    print("    ", sn)
 
                 if len(tlist) > 1:
                     ref = tlist[0]
@@ -594,16 +632,15 @@ def main():
                         if missing or extra:
                             divergent = True
                             reasons.add("divergence_between_threads")
-                            print(f"[Graph {idx}] DIVERGENCE between threads={ref} and threads={th}")
+                            print(
+                                f"[Graph {idx}] DIVERGENCE between threads={ref} and threads={th}"
+                            )
                             if missing:
                                 print(f"  {Feat} missing in threads={th} vs {ref}:")
                                 for sn in sorted(missing):
                                     print("    ", sn)
                             if extra:
                                 print(f"  Extra {feat} in threads={th} vs {ref}:")
-                                    # NOTE: unchanged
-                                    # (kept exactly as in your original logic/structure)
-                                    # If this line was working for you before, it remains so.
                                 for sn in sorted(extra):
                                     print("    ", sn)
 
@@ -619,26 +656,30 @@ def main():
                         dst.write_text(gfa_path.read_text())
                         print(f"  GFA saved to {dst}")
 
-                    notes.append({
-                        "index": idx,
-                        "n_nodes": nn,
-                        "n_edges": ne,
-                        "reasons": sorted(reasons),
-                        "threads": tlist,
-                        "gfa": sample,
-                        "has_divergence": _has_divergence_reason(reasons),
-                    })
+                    notes.append(
+                        {
+                            "index": idx,
+                            "n_nodes": nn,
+                            "n_edges": ne,
+                            "reasons": sorted(reasons),
+                            "threads": tlist,
+                            "gfa": sample,
+                            "has_divergence": _has_divergence_reason(reasons),
+                        }
+                    )
                     fails += 1
                 else:
                     print(f"[Graph {idx}] OK (nodes={nn}, edges={ne}, threads={tlist})")
 
-                break  # done with this graph index (idx): exit resampling loop
+                break  
 
     print(f"Total number of graphs tested: {args.n_graphs}")
     print(f"Number of graphs with divergence or errors: {fails}")
 
     if fails == 0:
-        print(f"\nAll {args.n_graphs} graphs passed: no logical divergences and no runtime errors detected.")
+        print(
+            f"\nAll {args.n_graphs} graphs passed: no logical divergences and no runtime errors detected."
+        )
         return 0
 
     rc = {}
@@ -655,7 +696,7 @@ def main():
     print("\nIndices of failing graphs:")
     print("  ", ", ".join(str(i) for i in fail_idxs))
 
-    sample = notes[:args.max_report_graphs]
+    sample = notes[: args.max_report_graphs]
     print(f"\nDetails for {len(sample)} failing graph(s):")
     for rec in sample:
         print("\n------------------------------")

@@ -12,7 +12,8 @@ BubbleFinder supports four commands:
 - `directed-superbubbles`: computes superbubbles on a **directed** input graph (`--graph` or `--gfa-directed`).
 - `ultrabubbles`: computes ultrabubbles by orienting each connected component with a DFS procedure and then running the [clsd](https://github.com/Fabianexe/clsd/tree/c49598fcb149b2c224a4625e0bf4b870f27ec166) superbubble algorithm on the resulting directed skeleton; **requires at least one tip per connected component in the input graph**.
 
-As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble’s parent.
+As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees <file>` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble’s parent.
+
 
 ## Table of Contents
 - [1. Installation](#installation)
@@ -135,9 +136,9 @@ Complete list of options:
 `--graph`
   Force .graph text format (see 'Format options' above)
 
-`--clsd-trees`
-  Compute and **print** CLSD superbubble trees (hierarchy) to **stdout**.
-  Currently implemented only for the `ultrabubbles` command.
+`--clsd-trees <file>`
+  Compute CLSD superbubble trees (hierarchy) and write them to `<file>`.
+  Only supported for the `ultrabubbles` command.
 
 `--report-json <file>`
   Write JSON metrics report
@@ -239,18 +240,9 @@ Interpretation:
 
 ### <a id="ultrabubble-hierarchy"></a>2.3.4 Ultrabubble hierarchy (CLSD trees)
 
-To also print the **hierarchical decomposition** (nesting structure) of ultrabubbles, run ultrabubbles with `--clsd-trees`:
+To also output the **hierarchical decomposition** (nesting structure) of ultrabubbles, run `ultrabubbles` with `--clsd-trees <file>`.
 
-```bash
-./BubbleFinder ultrabubbles -g example/tiny1.gfa -o example/tiny1.ultra --gfa --clsd-trees
-```
-
-Behavior:
-
-- the usual ultrabubble result list is still written to `example/tiny1.ultra`,
-- the hierarchy is **printed to stdout** (it is not part of the `-o` output format above).
-
-#### Serialization format (stdout)
+#### Serialization format (`--clsd-trees` output file)
 
 Each line corresponds to one rooted tree and follows a parenthesized representation:
 
@@ -261,7 +253,7 @@ Each line corresponds to one rooted tree and follows a parenthesized representat
 
 where `X` and `Y` are oriented incidences such as `a+` or `d-`.
 
-Implementation detail (relevant for interpretation): during construction of the directed skeleton, BubbleFinder may introduce auxiliary intermediate vertices. The CLSD decomposition is computed on that skeleton, and the reported ultrabubble decomposition is obtained by removing bubbles whose entrance or exit is such an introduced vertex; their children are promoted/connected upward in the resulting hierarchy.
+Implementation detail (relevant for interpretation): during construction of the directed skeleton, BubbleFinder may introduce auxiliary intermediate vertices. The CLSD decomposition is computed on that skeleton, and the reported ultrabubble decomposition is obtained by removing bubbles whose entrance or exit is such an introduced vertex. Their children are connected upward in the resulting hierarchy.
 
 # <a id="development"></a>3. Development
 
@@ -382,18 +374,3 @@ Any divergence or error is reported, and if you pass `--keep-failing`, the scrip
 ## References
 
 - <a id="ref-gartner2019direct"></a> Fabian Gärtner, Peter F. Stadler. *Direct superbubble detection*. Algorithms 12(4):81, 2019. DOI: 10.3390/a12040081.
-
-### BibTeX
-
-```bibtex
-@article{gartner2019direct,
-  title={Direct superbubble detection},
-  author={G{\"a}rtner, Fabian and Stadler, Peter F},
-  journal={Algorithms},
-  volume={12},
-  number={4},
-  pages={81},
-  year={2019},
-  publisher={MDPI}
-}
-```

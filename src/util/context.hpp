@@ -70,6 +70,7 @@ struct Context
     Compression compression = Compression::None;
 
     bool clsdTrees = false; 
+    std::string clsdTreesPath;
 
     ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> _edge2types; 
     ogdf::EdgeArray<std::pair<int, int>>                   _edge2cnt;   

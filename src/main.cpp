@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -201,22 +202,24 @@ static void usage(const char* prog, int exitCode) {
         { "snarls",
           "Snarls (typically on bidirected graphs from GFA)" },
         { "ultrabubbles",
-        "Ultrabubbles (requires: each connected component has at least one tip; bidirected -> oriented directed graph -> superbubbles)" }
+          "Ultrabubbles (requires: each connected component has at least one tip; bidirected -> oriented directed graph -> superbubbles)" }
     };
 
     static const OptionHelp options[] = {
-        { "-g", "<file>",  "Input graph file (possibly compressed)" },
-        { "-o", "<file>",  "Output file" },
-        { "-j", "<threads>","Number of threads" },
+        { "-g", "<file>",    "Input graph file (possibly compressed)" },
+        { "-o", "<file>",    "Output file" },
+        { "-j", "<threads>", "Number of threads" },
         { "--gfa", nullptr,          "Force GFA input (bidirected)" },
         { "--gfa-directed", nullptr, "Force GFA input interpreted as directed graph" },
         { "--graph", nullptr,
           "Force .graph text format (see 'Format options' above)" },
-        { "--clsd-trees", nullptr, "Compute CLSD superbubble trees" },
+
+        { "--clsd-trees", "<file>",
+          "Write CLSD superbubble trees (ultrabubble hierarchy) to <file> (ultrabubbles command only)" },
+
         { "--report-json", "<file>", "Write JSON metrics report" },
         { "-m", "<bytes>",           "Stack size in bytes" },
         { "-h, --help", nullptr,     "Show this help message and exit" }
-        // -sanity is intentionally undocumented (internal/debug)
     };
 
     std::cerr << "Usage:\n"
@@ -414,7 +417,7 @@ void readArgs(int argc, char** argv) {
         C.directedSuperbubbles = false;
     } else {
         std::cerr << "Error: unknown command '" << cmd
-                << "'. Expected one of: superbubbles, directed-superbubbles, snarls, ultrabubbles.\n\n";
+                  << "'. Expected one of: superbubbles, directed-superbubbles, snarls, ultrabubbles.\n\n";
         usage(args[0].c_str(), 1);
     }
 
@@ -459,8 +462,20 @@ void readArgs(int argc, char** argv) {
 
         } else if (s == "--report-json") {
             g_report_json_path = nextArgOrDie(args, i, "--report-json");
+
         } else if (s == "--clsd-trees") {
+            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE) {
+                std::cerr << "Error: option '--clsd-trees' is only supported with the "
+                             "'ultrabubbles' command.\n";
+                std::exit(1);
+            }
             C.clsdTrees = true;
+            C.clsdTreesPath = nextArgOrDie(args, i, "--clsd-trees");
+            if (C.clsdTreesPath.empty() || C.clsdTreesPath == "-") {
+                std::cerr << "Error: --clsd-trees requires a real output file path (not '-').\n";
+                std::exit(1);
+            }
+
         } else if (s == "-j") {
             const std::string v = nextArgOrDie(args, i, "-j");
             try {
@@ -512,6 +527,13 @@ void readArgs(int argc, char** argv) {
         usage(args[0].c_str(), 1);
     }
 
+    // Extra safety
+    if (C.clsdTrees && C.bubbleType != Context::BubbleType::ULTRABUBBLE) {
+        std::cerr << "Error: option '--clsd-trees' is only supported with the "
+                     "'ultrabubbles' command.\n";
+        std::exit(1);
+    }
+
     // 4) Auto-detect compression and input format (if still Auto)
     std::string coreExt;
     C.compression = detectCompressionAndCoreExt(C.graphPath, coreExt);
@@ -536,7 +558,6 @@ void readArgs(int argc, char** argv) {
     C.gfaInput = (C.inputFormat == Context::InputFormat::Gfa ||
                   C.inputFormat == Context::InputFormat::GfaDirected);
 }
-
 
 // -----------------------------------------------------------------------------
 // Global counters / OGDF accounting
@@ -5238,7 +5259,6 @@ namespace solver {
 
     namespace ultrabubble {
 
-
         static inline EdgePartType getNodeEdgeTypeCached(
             ogdf::node v,
             ogdf::edge e,
@@ -5508,6 +5528,9 @@ namespace solver {
             using PackedInc = std::pair<std::uint32_t, std::uint32_t>;
             std::vector<std::vector<PackedInc>> incidencesByCC(comps.size());
 
+            std::vector<std::string> clsdTextByCC;
+            if (C.clsdTrees) clsdTextByCC.resize(comps.size());
+
             std::atomic<size_t> next{0};
             std::atomic<bool> abort{false};
             std::exception_ptr eptr = nullptr;
@@ -5566,51 +5589,70 @@ namespace solver {
                             std::vector<ClsdTree> trees;
                             std::vector<ClsdTree>* trees_ptr = (C.clsdTrees ? &trees : nullptr);
                             superbubbles = compute_superbubbles_from_edges(out.nextId, directed_edges, trees_ptr);
+
+                            std::ostringstream clsd_buf;
+
                             if (C.clsdTrees && !trees.empty()) {
-                                auto hierarchy = [&](auto&& self, const ClsdTree& t, std::string &res) -> void {
+
+                                auto hierarchy = [&](auto&& self, const ClsdTree& t) -> std::vector<std::string> {
                                     int xid = t.entrance;
                                     int yid = t.exit;
 
-                                    bool valid = (xid >= 0 && xid < k) && (yid >= 0 && yid < k);
+                                    const bool valid = (xid >= 0 && xid < k) && (yid >= 0 && yid < k);
 
-                                    std::string X="", Y="";
-                                    if (valid) {
-                                        ogdf::node x = cc[xid];
-                                        ogdf::node y = cc[yid];
+                                    std::vector<std::string> children_serialized;
+                                    children_serialized.reserve(t.children.size());
 
-                                        std::string xname = C.node2name[x];
-                                        std::string yname = C.node2name[y];
-
-                                        char xsign = "-+"[ plus_dir[x] == 1 ];
-                                        char ysign = "+-"[ plus_dir[y] == 1 ];
-
-                                        X = xname + xsign;
-                                        Y = yname + ysign;
+                                    for (const auto& ch : t.children) {
+                                        std::vector<std::string> sub = self(self, ch);
+                                        for (auto &s : sub) children_serialized.emplace_back(std::move(s));
                                     }
 
-                                    if (valid && !t.children.empty()) res += "(";
-
-                                    for (size_t i = 0; i < t.children.size(); ++i) {
-                                        self(self, t.children[i], res);
-                                        if (i + 1 < t.children.size() && valid) res += ",";
+                                    if (!valid) {
+                                        return children_serialized;
                                     }
 
-                                    if (valid && !t.children.empty()) res += ")";
+                                    ogdf::node x = cc[xid];
+                                    ogdf::node y = cc[yid];
 
-                                    if (valid) res += "<" + X + "," + Y + ">";
+                                    std::string xname = C.node2name[x];
+                                    std::string yname = C.node2name[y];
+
+                                    char xsign = "-+"[ plus_dir[x] == 1 ];
+                                    char ysign = "+-"[ plus_dir[y] == 1 ];
+
+                                    std::string X = xname + xsign;
+                                    std::string Y = yname + ysign;
+
+                                    std::string res;
+                                    if (!children_serialized.empty()) {
+                                        res += "(";
+                                        for (size_t i = 0; i < children_serialized.size(); ++i) {
+                                            res += children_serialized[i];
+                                            if (i + 1 < children_serialized.size()) res += ",";
+                                        }
+                                        res += ")";
+                                    }
+
+                                    res += "<" + X + "," + Y + ">";
+
+                                    return std::vector<std::string>{ std::move(res) };
                                 };
 
                                 for (const auto& tr : trees) {
-                                    std::string res;
-                                    hierarchy(hierarchy, tr, res);
-                                    std::cout << res << "\n";
+                                    std::vector<std::string> lines = hierarchy(hierarchy, tr);
+                                    for (const auto& s : lines) {
+                                        clsd_buf << s << "\n";
+                                    }
                                 }
+                            }
+
+                            if (C.clsdTrees) {
+                                clsdTextByCC[ci] = clsd_buf.str();
                             }
 
                             auto &inc = incidencesByCC[ci];
                             inc.reserve(superbubbles.size());
-
-                            std::cout << 121321 << std::endl;
 
                             for (auto &sb : superbubbles) {
                                 int xid = sb.first;
@@ -5646,6 +5688,16 @@ namespace solver {
             for (auto &th : threads) th.join();
             if (eptr) std::rethrow_exception(eptr);
 
+            if (C.clsdTrees) {
+                std::ofstream outFile(C.clsdTreesPath);
+                if (!outFile) {
+                    throw std::runtime_error("Cannot open CLSD trees output file: " + C.clsdTreesPath);
+                }
+                for (size_t ci = 0; ci < clsdTextByCC.size(); ++ci) {
+                    outFile << clsdTextByCC[ci];
+                }
+            }
+
             C.ultrabubbleIncPacked.clear();
             size_t total = 0;
             for (auto &v : incidencesByCC) total += v.size();
@@ -5659,9 +5711,9 @@ namespace solver {
 
             std::cout << "ULTRABUBBLES found: " << C.ultrabubbleIncPacked.size() << "\n";
         }
+
     }
 }
-
 
 
 
@@ -5695,7 +5747,16 @@ int main(int argc, char** argv) {
                       << err << "\n";
             return 1;
         }
-    }    
+
+        if (ctx().clsdTrees) {
+            if (!outputParentDirWritable(ctx().clsdTreesPath, err)) {
+                std::cerr << "Error: cannot write CLSD trees file '"
+                          << ctx().clsdTreesPath << "': "
+                          << err << "\n";
+                return 1;
+            }
+        }
+    }
 
     {
         MARK_SCOPE_MEM("io/read_graph");
@@ -5713,9 +5774,7 @@ int main(int argc, char** argv) {
              << ctx().snarls.size() << std::endl;
     } else if (ctx().bubbleType == Context::BubbleType::ULTRABUBBLE) {
         solver::ultrabubble::solve();
-        // VLOG << "[main] Ultrabubble solve finished. Ultrabubbles: "
-        //      << ctx().ultrabubbles.size() << std::endl;
-    } 
+    }
 
     {
         MARK_SCOPE_MEM("io/write_output");
