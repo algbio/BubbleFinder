@@ -1,6 +1,10 @@
 # BubbleFinder
 
-## About
+[![CI](https://github.com/algbio/BubbleFinder/actions/workflows/bruteforce.yml/badge.svg)](https://github.com/algbio/BubbleFinder/actions/workflows/bruteforce.yml)
+[![Bioconda](https://img.shields.io/conda/vn/bioconda/bubblefinder)](https://anaconda.org/bioconda/bubblefinder)
+[![GitHub release](https://img.shields.io/github/v/release/algbio/BubbleFinder.svg?style=flat-square)](https://github.com/algbio/BubbleFinder/releases/latest)
+[![GPLv3 License](https://img.shields.io/badge/License-GPL%20v3-yellow.svg)](https://opensource.org/licenses/)
+[![Open Source](https://badges.frapsoft.com/os/v1/open-source.svg?v=103)](https://opensource.org/)
 
 `BubbleFinder` computes **all snarls**, **superbubbles**, and **ultrabubbles** in genomic and pangenomic **GFA graphs** (i.e. bidirected graphs).
 
@@ -38,25 +42,26 @@ Ultrabubbles are computed using a different approach (not SPQR-based): BubbleFin
 
 ### Prebuilt Linux binary
 
-Download from GitHub Releases and run:
+Download the latest release:
+
+https://github.com/algbio/BubbleFinder/releases/latest
 
 ```bash
 ./BubbleFinder --help
 ./BubbleFinder snarls -g example/tiny1.gfa -o tiny1.snarls
 ```
 
-### From source (Linux)
+### Conda / Bioconda
 
 ```bash
-git clone https://github.com/algbio/BubbleFinder && \
-cd BubbleFinder && \
-cmake -S . -B build && \
-cmake --build build -j <NUM_THREADS> && \
-mv build/BubbleFinder .
+conda create -n bubblefinder_env -c conda-forge -c bioconda bubblefinder
+conda activate bubblefinder_env
+./BubbleFinder --help
 ```
 
-> [!TIP]
-> Replace `<NUM_THREADS>` with e.g. `8` for faster builds (`-j 8`).
+### Build from source (Linux)
+
+See: [Building from source](#building-from-source)
 
 ---
 
@@ -74,50 +79,54 @@ mv build/BubbleFinder .
 
 ```mermaid
 flowchart TD
-  A["Start: ./BubbleFinder COMMAND -g GRAPH -o OUT"] --> B["Read input file (option -g)<br>Auto-detect compression: .gz / .bz2 / .xz"]
+  %% POINT D'ENTRÉE GÉNÉRAL
+  A["Start: ./BubbleFinder COMMAND -g GRAPH -o OUT"] --> B["Read input file (option -g).<br>Auto-detect compression: .gz / .bz2 / .xz"]
   B --> C{"Input format?"}
   C -->|"--gfa or *.gfa"| D["Parse GFA as bidirected graph"]
   C -->|"--gfa-directed"| E["Parse GFA as directed graph"]
   C -->|"--graph or *.graph"| F["Parse .graph as directed graph"]
 
-  %% Command selection
+  %% SÉLECTION DE COMMANDE
   D --> G{"Command"}
   E --> G
   F --> G
 
   %% SNARLS
-  G -->|snarls| S1["Build undirected counterpart"]
-  S1 --> S2["Compute CCs + BC-tree<br>SPQR trees for each biconnected block"]
-  S2 --> S3["Traverse SPQR trees<br>Enumerate ALL snarls (linear-time)"]
-  S3 --> S4["Output (-o): oriented incidences (a+/d-)<br>May use clique-lines (compact representation)"]
+  G -->|snarls| S0["Build undirected counterpart<br>of bidirected GFA graph"]
+  S0 -->|"For each connected component"| S1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
+  S1 --> S2["Traverse SPQR trees.<br>Enumerate ALL snarls (linear-time)"]
+  S2 --> S3["Output (-o): oriented incidences (a+/d-).<br>May use clique-lines (compact representation)"]
 
-  %% SUPERBUBBLES (bidirected)
-  G -->|superbubbles| B1["Convert bidirected -> doubled directed graph<br>(v+ and v- copies)"]
-  B1 --> B2["Run directed superbubble algorithm"]
-  B2 --> B3["Orientation projection:<br>Merge mirror bubbles, drop +/- , sort endpoints"]
-  B3 --> B4["Output (-o): segment ID pairs (a e)<br>Exactly one pair per line"]
+  %% SUPERBUBBLES (bidirected GFA -> doubled directed)
+  G -->|superbubbles| SB0["Build doubled directed graph<br>with oriented copies v+ / v- for each segment v"]
+  SB0 -->|"For each connected component"| SB1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
+  SB1 --> SB2["Traverse SPQR trees with DP on skeletons.<br>Enumerate ALL superbubbles<br>on the doubled graph"]
+  SB2 --> SB3["Orientation projection (see §“Orientation projection”).<br>Merge mirror bubbles, drop +/- , sort endpoints"]
+  SB3 --> SB4["Output (-o): segment ID pairs (a e).<br>Exactly one pair per line"]
 
-  %% DIRECTED SUPERBUBBLES
-  G -->|directed-superbubbles| D1["Run directed superbubble algorithm<br>On directed input"]
-  D1 --> D2["Output (-o): segment ID pairs<br>Exactly one pair per line"]
+  %% DIRECTED SUPERBUBBLES (même algo, graphe déjà dirigé)
+  G -->|directed-superbubbles| DSB0["Use directed input as-is<br>(--graph or --gfa-directed)"]
+  DSB0 -->|"For each connected component"| DSB1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
+  DSB1 --> DSB2["Traverse SPQR trees with DP on skeletons.<br>Enumerate ALL directed superbubbles"]
+  DSB2 --> DSB3["Output (-o): segment ID pairs.<br>Exactly one pair per line"]
 
-  %% ULTRABUBBLES
+  %% ULTRABUBBLES (orientation + superbubbles dirigés)
   G -->|ultrabubbles| U0{"At least 1 tip per connected component?"}
-  U0 -->|no| Ufail["Fail (current limitation)<br>Need at least 1 tip per CC"]
-  U0 -->|yes| U1["Orient each CC via DFS starting from a tip"]
+  U0 -->|no| Ufail["Fail (current limitation).<br>Need at least 1 tip per component"]
+  U0 -->|yes| U1["Orient each component via DFS starting from a tip"]
   U1 --> U2["Resolve same-sign conflicts by adding auxiliary tips<br>(keeps linear size)"]
   U2 --> U3["Obtain directed skeleton"]
   U3 --> U4["Run CLSD directed superbubble decomposition"]
-  U4 --> U5["Map superbubbles back to ultrabubbles<br>Discard bubbles with auxiliary endpoints"]
+  U4 --> U5["Map superbubbles back to ultrabubbles.<br>Discard bubbles with auxiliary endpoints"]
   U5 --> U6["Output (-o): oriented incidence pairs (a+ d-)"]
   U5 --> U7{"Option --clsd-trees FILE?"}
-  U7 -->|yes| U8["Also output ultrabubble hierarchy<br>(filtered/reconnected CLSD trees)"]
+  U7 -->|yes| U8["Also output ultrabubble hierarchy<br>(reconnected CLSD trees)"]
   U7 -->|no| End1["Done"]
 
   %% SPQR-TREE OUTPUT
   G -->|spqr-tree| P0{"GFA input?"}
   P0 -->|no| Pfail["Fail: spqr-tree requires GFA input"]
-  P0 -->|yes| P1["Compute CCs + BC-tree + SPQR decomposition"]
+  P0 -->|yes| P1["Compute components + BC-tree + SPQR decomposition"]
   P1 --> P2["Output: .spqr v0.1 file"]
 ```
 
@@ -143,7 +152,7 @@ BubbleFinder supports five commands:
 As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees <file>` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble’s parent.
 
 > [!WARNING]
-> `ultrabubbles` currently requires **at least one tip per connected component** in the input graph (otherwise it will fail).
+> `ultrabubbles` currently requires **at least one tip per connected component** in the input graph (otherwise it might fail).
 
 ---
 
@@ -202,7 +211,13 @@ Now `BubbleFinder` is in the root directory.
 
 ## <a id="conda"></a>Conda
 
-A `conda` distribution is planned. Once a package is available, this section will be updated with the exact channel/package name.
+If you use conda, you can install BubbleFinder from Bioconda:
+
+```bash
+conda create -n bubblefinder_env -c conda-forge -c bioconda bubblefinder
+conda activate bubblefinder_env
+./BubbleFinder --help
+```
 
 ---
 
@@ -472,7 +487,7 @@ The brute-force program outputs results in a format consumed by `src/bruteforce.
 
 We also include a generator of random graphs and a driver script that compares the brute-force implementation with BubbleFinder. The script is `src/bruteforce.py`, and it can operate in two modes:
 
-- **Snarls** (default)
+- **Snarls**
 - **Superbubbles**
 - **Ultrabubbles**
 
