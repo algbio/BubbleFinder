@@ -5852,7 +5852,6 @@ namespace solver
 
         void output_spqr_tree_only()
         {
-            // WARNING: this function is mostly AI generated.
 
             // Progress logging goes to stderr to avoid corrupting the .spqr output
             // when writing to stdout.
@@ -5862,6 +5861,8 @@ namespace solver
             std::ostream *out_ptr = nullptr;
             std::ofstream out_file;
 
+            std::vector<char> outBuffer;
+
             if (C.outputPath.empty())
             {
                 out_ptr = &std::cout;
@@ -5869,47 +5870,112 @@ namespace solver
             }
             else
             {
-                out_file.open(C.outputPath);
+                out_file.open(C.outputPath, std::ios::out | std::ios::binary);
                 if (!out_file)
                 {
                     throw std::runtime_error("Failed to open output file '" +
                                             C.outputPath + "' for writing");
                 }
+
+                outBuffer.resize(64ull * 1024ull * 1024ull);
+                out_file.rdbuf()->pubsetbuf(outBuffer.data(),
+                                            static_cast<std::streamsize>(outBuffer.size()));
+
                 out_ptr = &out_file;
                 std::cerr << "[spqr-tree] Output: " << C.outputPath << "\n";
             }
 
             std::ostream &out = *out_ptr;
 
-            // Write header
+            // Write header (v0.4)
             out << "H v0.4 https://github.com/sebschmi/SPQR-tree-file-format\n";
 
-            // Identifiers must be globally unique (required by the .spqr specification).
-            std::unordered_set<std::string> usedIDs;
-            usedIDs.reserve(C.G.numberOfNodes() * 2 + 1024);
-            for (ogdf::node v : C.G.nodes)
-            {
-                usedIDs.insert(C.node2name[v]);
-            }
 
-            auto makeUnique = [&](const std::string &base) -> std::string
+            std::string prefix = "__BF__";
+            auto startsWith = [](const std::string &s, const std::string &p) -> bool
             {
-                std::string name = base;
-                int i = 0;
-                while (usedIDs.find(name) != usedIDs.end())
-                {
-                    name = base + "_" + std::to_string(i++);
-                }
-                usedIDs.insert(name);
-                return name;
+                return s.size() >= p.size() && std::memcmp(s.data(), p.data(), p.size()) == 0;
             };
 
-            // Compute connected components
+            bool conflict = true;
+            while (conflict)
+            {
+                conflict = false;
+                for (ogdf::node v : C.G.nodes)
+                {
+                    const std::string &name = C.node2name[v];
+                    if (startsWith(name, prefix))
+                    {
+                        conflict = true;
+                        break;
+                    }
+                }
+                if (conflict)
+                {
+                    prefix.push_back('_');
+                }
+            }
+
+            auto makeId = [&](const char *tag, uint64_t x) -> std::string
+            {
+                return prefix + tag + std::to_string(x);
+            };
+
+            uint64_t compCtr = 0;
+            uint64_t blockCtr = 0;
+            uint64_t spqrNodeCtr = 0;
+            uint64_t virtEdgeCtr = 0;
+            uint64_t edgeCtr = 0;
+
+            std::string line;
+            line.reserve(256);
+
+            auto writeE = [&](const std::string &edgeName,
+                            const std::string &container,
+                            const std::string &uName,
+                            const std::string &vName)
+            {
+                // E <edge> <container> <u> <v>\n
+                line.clear();
+                line.append("E ");
+                line.append(edgeName);
+                line.push_back(' ');
+                line.append(container);
+                line.push_back(' ');
+                line.append(uName);
+                line.push_back(' ');
+                line.append(vName);
+                line.push_back('\n');
+                out.write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
+            auto writeV = [&](const std::string &vName,
+                            const std::string &a,
+                            const std::string &b,
+                            const std::string &uName,
+                            const std::string &vName2)
+            {
+                // V <virtEdge> <spqrNode> <spqrNode> <u> <v>\n
+                line.clear();
+                line.append("V ");
+                line.append(vName);
+                line.push_back(' ');
+                line.append(a);
+                line.push_back(' ');
+                line.append(b);
+                line.push_back(' ');
+                line.append(uName);
+                line.push_back(' ');
+                line.append(vName2);
+                line.push_back('\n');
+                out.write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
             ogdf::NodeArray<int> component(C.G, -1);
             int numCC = ogdf::connectedComponents(C.G, component);
             std::cerr << "[spqr-tree] Graph has " << numCC << " connected components.\n";
 
-            // Group nodes by component
+            // Group original nodes by component
             std::vector<std::vector<ogdf::node>> ccNodes(numCC);
             for (ogdf::node v : C.G.nodes)
             {
@@ -5917,15 +5983,16 @@ namespace solver
             }
 
             // Tunables for coarse progress (avoid too many prints)
-            const int kBlockProgressStep = 256;          // print every N blocks if there are many
-            const int kLogEachBlockIfLeq = 50;           // if a CC has few blocks, log each SPQR block
-            const int kLargeBlockNodes = 20000;          // also log SPQR for very large blocks
-            const int kLargeBlockEdges = 50000;
+            const int kBlockProgressStep = 256;
+            const int kLogEachBlockIfLeq = 50;
+            const int kLargeBlockNodes = 200000; 
+            const int kLargeBlockEdges = 500000;
 
             // Process each connected component
             for (int ccIdx = 0; ccIdx < numCC; ++ccIdx)
             {
-                std::string compName = makeUnique("G" + std::to_string(ccIdx));
+                std::string compName = makeId("G", compCtr++);
+
                 std::cerr << "[spqr-tree] CC " << (ccIdx + 1) << "/" << numCC
                         << " (" << compName << "), nodes=" << ccNodes[ccIdx].size()
                         << " ...\n";
@@ -5938,42 +6005,33 @@ namespace solver
                 }
                 out << "\n";
 
-                // Create subgraph for this component
                 ogdf::Graph ccGraph;
                 ogdf::NodeArray<ogdf::node> ccToOrig(ccGraph);
-                // A node array allocates space for all nodes in the original graph, even if there is just one node in the component.
-                std::unordered_map<ogdf::node, ogdf::node> origToCc;
-                origToCc.reserve(ccNodes[ccIdx].size());
+                ogdf::NodeArray<ogdf::node> origToCc(C.G, nullptr);
 
-                for (ogdf::node v : ccNodes[ccIdx])
+                for (ogdf::node vOrig : ccNodes[ccIdx])
                 {
                     ogdf::node vCc = ccGraph.newNode();
-                    ccToOrig[vCc] = v;
-                    origToCc[v] = vCc;
+                    ccToOrig[vCc] = vOrig;
+                    origToCc[vOrig] = vCc;
                 }
 
-                // Copy edges - only once per edge
-                for (ogdf::node v : ccNodes[ccIdx])
+                for (ogdf::node vOrig : ccNodes[ccIdx])
                 {
-                    for (ogdf::adjEntry adj : v->adjEntries)
+                    for (ogdf::adjEntry adj : vOrig->adjEntries)
                     {
                         ogdf::edge e = adj->theEdge();
-
-                        // Process each edge only once (linear), instead of using a std::set.
                         if (adj != e->adjSource())
-                        {
                             continue;
-                        }
 
                         ogdf::node src = e->source();
                         ogdf::node tgt = e->target();
 
-                        // Only add edge if both endpoints are in this component
-                        auto itSrc = origToCc.find(src);
-                        auto itTgt = origToCc.find(tgt);
-                        if (itSrc != origToCc.end() && itTgt != origToCc.end())
+                        ogdf::node srcCc = origToCc[src];
+                        ogdf::node tgtCc = origToCc[tgt];
+                        if (srcCc && tgtCc)
                         {
-                            ccGraph.newEdge(itSrc->second, itTgt->second);
+                            ccGraph.newEdge(srcCc, tgtCc);
                         }
                         else
                         {
@@ -5987,59 +6045,71 @@ namespace solver
 
                 if (ccGraph.numberOfNodes() == 1)
                 {
-                    // Handle components with single node separately.
-                    // In the .spqr v0.4 specification, such components contain no blocks or cut nodes,
-                    // and edges are assigned to the component.
-
-                    int eIdx = 0;
+                    // In v0.4: components with a single node have no blocks/cut nodes
+                    // Edges are assigned to the component.
+                    int localE = 0;
                     for (ogdf::edge eCc : ccGraph.edges)
                     {
-                        ogdf::node v1Orig = ccToOrig[eCc->source()];
-                        ogdf::node v2Orig = ccToOrig[eCc->target()];
+                        ogdf::node uOrig = ccToOrig[eCc->source()];
+                        ogdf::node vOrig = ccToOrig[eCc->target()];
+                        (void)localE;
 
-                        std::string eName = makeUnique("E" + std::to_string(ccIdx) + "_CC_" + std::to_string(eIdx++));
-                        out << "E " << eName << " " << compName << " "
-                            << C.node2name[v1Orig] << " " << C.node2name[v2Orig] << "\n";
+                        std::string eName = makeId("E", edgeCtr++);
+                        writeE(eName, compName, C.node2name[uOrig], C.node2name[vOrig]);
                     }
 
-                    // The SPQR tree is not defined on components with a single node.
                     std::cerr << "[spqr-tree]   CC done (single-node component)\n";
                     continue;
                 }
 
                 std::cerr << "[spqr-tree]   computing BC-tree...\n";
-
-                // Compute biconnected components (blocks)
                 ogdf::BCTree bc(ccGraph);
+
                 std::map<ogdf::node, std::string> bcNodeToBlockName;
 
-                // Write B-lines and collect block info
+                ogdf::NodeArray<int> markCc(ccGraph, 0);
+                int stampCc = 1;
+                std::vector<ogdf::node> tmpNodes;
+                tmpNodes.reserve(1024);
+
                 for (ogdf::node bNode : bc.bcTree().nodes)
                 {
                     if (bc.typeOfBNode(bNode) != ogdf::BCTree::BNodeType::BComp)
-                    {
                         continue;
-                    }
 
-                    std::string blockName = makeUnique("B" + std::to_string(ccIdx) + "_" + std::to_string(bNode->index()));
+                    std::string blockName = makeId("B", blockCtr++);
                     bcNodeToBlockName[bNode] = blockName;
 
                     out << "B " << blockName << " " << compName;
 
-                    // Get nodes in this block
-                    std::unordered_set<ogdf::node> blockNodes;
-                    for (ogdf::edge e : bc.hEdges(bNode))
+                    tmpNodes.clear();
+                    ++stampCc;
+
+                    for (ogdf::edge hEdge : bc.hEdges(bNode))
                     {
-                        ogdf::edge origEdge = bc.original(e);
-                        if (!origEdge) continue;
-                        blockNodes.insert(origEdge->source());
-                        blockNodes.insert(origEdge->target());
+                        ogdf::edge eCc = bc.original(hEdge);
+                        if (!eCc)
+                            continue;
+
+                        ogdf::node a = eCc->source();
+                        ogdf::node b = eCc->target();
+
+                        if (markCc[a] != stampCc)
+                        {
+                            markCc[a] = stampCc;
+                            tmpNodes.push_back(a);
+                        }
+                        if (markCc[b] != stampCc)
+                        {
+                            markCc[b] = stampCc;
+                            tmpNodes.push_back(b);
+                        }
                     }
 
-                    for (ogdf::node v : blockNodes)
+                    for (ogdf::node vCc : tmpNodes)
                     {
-                        ogdf::node origNode = ccToOrig[v];
-                        out << " " << C.node2name[origNode];
+                        ogdf::node vOrig = ccToOrig[vCc];
+                        out << " " << C.node2name[vOrig];
                     }
                     out << "\n";
                 }
@@ -6047,14 +6117,14 @@ namespace solver
                 std::cerr << "[spqr-tree]   blocks: " << bcNodeToBlockName.size() << "\n";
 
                 // Write C-lines (cut nodes)
-                for (ogdf::node v : ccGraph.nodes)
+                for (ogdf::node vCc : ccGraph.nodes)
                 {
-                    if (bc.typeOfGNode(v) == ogdf::BCTree::GNodeType::CutVertex)
+                    if (bc.typeOfGNode(vCc) == ogdf::BCTree::GNodeType::CutVertex)
                     {
-                        ogdf::node origNode = ccToOrig[v];
-                        out << "C " << C.node2name[origNode];
+                        ogdf::node vOrig = ccToOrig[vCc];
+                        out << "C " << C.node2name[vOrig];
 
-                        ogdf::node vBC = bc.bcproper(v);
+                        ogdf::node vBC = bc.bcproper(vCc);
                         for (ogdf::adjEntry adj : vBC->adjEntries)
                         {
                             ogdf::node bNode = adj->twinNode();
@@ -6072,9 +6142,7 @@ namespace solver
                 for (ogdf::node bNode : bc.bcTree().nodes)
                 {
                     if (bc.typeOfBNode(bNode) != ogdf::BCTree::BNodeType::BComp)
-                    {
                         continue;
-                    }
 
                     ++processedBlocks;
                     if (totalBlocks >= kBlockProgressStep &&
@@ -6083,69 +6151,88 @@ namespace solver
                         std::cerr << "[spqr-tree]   processed blocks " << processedBlocks << "/" << totalBlocks << "\n";
                     }
 
-                    std::string blockName = bcNodeToBlockName[bNode];
+                    const std::string &blockName = bcNodeToBlockName[bNode];
 
+                    tmpNodes.clear();
+                    ++stampCc;
+
+                    size_t edgeCountApprox = 0;
+                    for (ogdf::edge hEdge : bc.hEdges(bNode))
+                    {
+                        ++edgeCountApprox;
+                        ogdf::edge eCc = bc.original(hEdge);
+                        if (!eCc)
+                            continue;
+
+                        ogdf::node a = eCc->source();
+                        ogdf::node b = eCc->target();
+
+                        if (markCc[a] != stampCc)
+                        {
+                            markCc[a] = stampCc;
+                            tmpNodes.push_back(a);
+                        }
+                        if (markCc[b] != stampCc)
+                        {
+                            markCc[b] = stampCc;
+                            tmpNodes.push_back(b);
+                        }
+                    }
+
+                    if (edgeCountApprox < 1)
+                        continue;
+
+                    // Blocks with <=2 nodes: no SPQR nodes/virtual edges in v0.4 edges assigned to the block
+                    if (tmpNodes.size() < 3)
+                    {
+                        for (ogdf::edge hEdge : bc.hEdges(bNode))
+                        {
+                            ogdf::edge eCc = bc.original(hEdge);
+                            if (!eCc)
+                                continue;
+
+                            ogdf::node uOrig = ccToOrig[eCc->source()];
+                            ogdf::node vOrig = ccToOrig[eCc->target()];
+
+                            std::string eName = makeId("E", edgeCtr++);
+                            writeE(eName, blockName, C.node2name[uOrig], C.node2name[vOrig]);
+                        }
+                        continue;
+                    }
+
+                    // Build block graph
                     ogdf::Graph blockGraph;
                     ogdf::NodeArray<ogdf::node> blockToCC(blockGraph);
                     ogdf::EdgeArray<ogdf::edge> blockEdgeToCC(blockGraph);
-                    std::map<ogdf::node, ogdf::node> ccToBlock;
 
-                    std::unordered_set<ogdf::node> blockNodesSet;
-                    std::vector<ogdf::edge> blockEdges;
+                    // Map cc node -> block node using an unordered_map sized to block
+                    // (ccGraph is huge; we cannot use NodeArray per block)
+                    std::unordered_map<ogdf::node, ogdf::node> ccToBlock;
+                    ccToBlock.reserve(tmpNodes.size() * 2);
 
+                    for (ogdf::node vCc : tmpNodes)
+                    {
+                        ogdf::node vB = blockGraph.newNode();
+                        blockToCC[vB] = vCc;
+                        ccToBlock.emplace(vCc, vB);
+                    }
+
+                    // Second pass: add edges
                     for (ogdf::edge hEdge : bc.hEdges(bNode))
                     {
-                        ogdf::edge origEdge = bc.original(hEdge);
-                        if (!origEdge) continue;
-                        blockEdges.push_back(origEdge);
-                        blockNodesSet.insert(origEdge->source());
-                        blockNodesSet.insert(origEdge->target());
+                        ogdf::edge eCc = bc.original(hEdge);
+                        if (!eCc)
+                            continue;
+
+                        auto itS = ccToBlock.find(eCc->source());
+                        auto itT = ccToBlock.find(eCc->target());
+                        if (itS == ccToBlock.end() || itT == ccToBlock.end())
+                            continue;
+
+                        ogdf::edge eB = blockGraph.newEdge(itS->second, itT->second);
+                        blockEdgeToCC[eB] = eCc;
                     }
 
-                    for (ogdf::node v : blockNodesSet)
-                    {
-                        ogdf::node vBlock = blockGraph.newNode();
-                        blockToCC[vBlock] = v;
-                        ccToBlock[v] = vBlock;
-                    }
-
-                    for (ogdf::edge e : blockEdges)
-                    {
-                        ogdf::node src = ccToBlock[e->source()];
-                        ogdf::node tgt = ccToBlock[e->target()];
-                        ogdf::edge eBlock = blockGraph.newEdge(src, tgt);
-                        blockEdgeToCC[eBlock] = e;
-                    }
-
-                    if (blockGraph.numberOfEdges() < 1)
-                    {
-                        continue;
-                    }
-
-                    if (blockGraph.numberOfNodes() < 3)
-                    {
-                        // Blocks with at most two nodes contain no SPQR nodes or virtual edges in .spqr v0.4.
-                        // Edges in such blocks are assigned to their block.
-
-                        int eIdx = 0;
-                        for (ogdf::edge eCC : blockEdges)
-                        {
-                            ogdf::node v1Orig = ccToOrig[eCC->source()];
-                            ogdf::node v2Orig = ccToOrig[eCC->target()];
-
-                            std::string eName =
-                                makeUnique("E" + std::to_string(ccIdx) + "_" +
-                                        std::to_string(bNode->index()) + "_" +
-                                        std::to_string(eIdx++));
-
-                            out << "E " << eName << " " << blockName << " "
-                                << C.node2name[v1Orig] << " " << C.node2name[v2Orig] << "\n";
-                        }
-
-                        continue;
-                    }
-
-                    // Coarse per-block logging (only when useful)
                     const bool logThisBlock =
                         (totalBlocks <= kLogEachBlockIfLeq) ||
                         (blockGraph.numberOfNodes() >= kLargeBlockNodes) ||
@@ -6164,7 +6251,9 @@ namespace solver
                         ogdf::StaticSPQRTree spqr(blockGraph);
 
                         std::map<ogdf::node, std::string> spqrNodeNames;
-                        int spqrIdx = 0;
+
+                        ogdf::NodeArray<int> markBlk(blockGraph, 0);
+                        int stampBlk = 1;
 
                         // Write S/P/R-lines
                         for (ogdf::node treeNode : spqr.tree().nodes)
@@ -6186,48 +6275,71 @@ namespace solver
                                 break;
                             }
 
-                            std::string spqrName =
-                                makeUnique(std::string(1, typeChar) + std::to_string(ccIdx) + "_" +
-                                        std::to_string(bNode->index()) + "_" + std::to_string(spqrIdx++));
+                            std::string spqrName = prefix + std::string(1, typeChar) + std::to_string(spqrNodeCtr++);
                             spqrNodeNames[treeNode] = spqrName;
 
                             out << typeChar << " " << spqrName << " " << blockName;
 
-                            // Get nodes in skeleton
-                            const ogdf::Graph &skel = spqr.skeleton(treeNode).getGraph();
-                            std::unordered_set<ogdf::node> skelNodesInOrig;
+                            ++stampBlk;
 
-                            for (ogdf::node skelNode : skel.nodes)
-                            {
-                                ogdf::node blockNode = spqr.skeleton(treeNode).original(skelNode);
-                                if (blockNode)
-                                {
-                                    ogdf::node ccNode = blockToCC[blockNode];
-                                    ogdf::node origNode = ccToOrig[ccNode];
-                                    skelNodesInOrig.insert(origNode);
-                                }
-                            }
+                            const ogdf::Graph &skelG = spqr.skeleton(treeNode).getGraph();
+                            const ogdf::Skeleton &skel = spqr.skeleton(treeNode);
 
-                            for (ogdf::node origNode : skelNodesInOrig)
+                            for (ogdf::node h : skelG.nodes)
                             {
-                                out << " " << C.node2name[origNode];
+                                ogdf::node vB = skel.original(h);
+                                if (!vB)
+                                    continue;
+
+                                if (markBlk[vB] == stampBlk)
+                                    continue;
+                                markBlk[vB] = stampBlk;
+
+                                ogdf::node vCc = blockToCC[vB];
+                                ogdf::node vOrig = ccToOrig[vCc];
+                                out << " " << C.node2name[vOrig];
                             }
                             out << "\n";
                         }
 
                         // Write V-lines (virtual edges in SPQR tree)
-                        int vIdx = 0;
-                        for (ogdf::edge treeEdge : spqr.tree().edges)
+                        for (ogdf::edge te : spqr.tree().edges)
                         {
-                            ogdf::node src = treeEdge->source();
-                            ogdf::node tgt = treeEdge->target();
+                            ogdf::node src = te->source();
+                            ogdf::node tgt = te->target();
 
-                            std::string vName =
-                                makeUnique("V" + std::to_string(ccIdx) + "_" +
-                                        std::to_string(bNode->index()) + "_" + std::to_string(vIdx++));
+                            std::string vName = makeId("V", virtEdgeCtr++);
 
+                            ogdf::edge eSrc = spqr.skeletonEdgeSrc(te);
+
+                            if (eSrc)
+                            {
+                                const ogdf::Skeleton &skelSrc = spqr.skeleton(src);
+
+                                ogdf::node uSk = eSrc->source();
+                                ogdf::node vSk = eSrc->target();
+
+                                ogdf::node uB = skelSrc.original(uSk);
+                                ogdf::node vB = skelSrc.original(vSk);
+
+                                if (uB && vB)
+                                {
+                                    ogdf::node uCc = blockToCC[uB];
+                                    ogdf::node vCc = blockToCC[vB];
+                                    ogdf::node uOrig = ccToOrig[uCc];
+                                    ogdf::node vOrig = ccToOrig[vCc];
+
+                                    writeV(vName,
+                                        spqrNodeNames[src],
+                                        spqrNodeNames[tgt],
+                                        C.node2name[uOrig],
+                                        C.node2name[vOrig]);
+                                }
+                                continue;
+                            }
+
+                            // Fallback (should be rare): scan src skeleton for the virtual edge to tgt
                             const ogdf::Skeleton &skelSrc = spqr.skeleton(src);
-
                             ogdf::edge virtualEdge = nullptr;
                             for (ogdf::edge e : skelSrc.getGraph().edges)
                             {
@@ -6237,53 +6349,51 @@ namespace solver
                                     break;
                                 }
                             }
+                            if (!virtualEdge)
+                                continue;
 
-                            if (virtualEdge)
-                            {
-                                ogdf::node v1Skel = virtualEdge->source();
-                                ogdf::node v2Skel = virtualEdge->target();
+                            ogdf::node uB = skelSrc.original(virtualEdge->source());
+                            ogdf::node vB = skelSrc.original(virtualEdge->target());
+                            if (!uB || !vB)
+                                continue;
 
-                                ogdf::node v1Block = skelSrc.original(v1Skel);
-                                ogdf::node v2Block = skelSrc.original(v2Skel);
+                            ogdf::node uCc = blockToCC[uB];
+                            ogdf::node vCc = blockToCC[vB];
+                            ogdf::node uOrig = ccToOrig[uCc];
+                            ogdf::node vOrig = ccToOrig[vCc];
 
-                                if (v1Block && v2Block)
-                                {
-                                    ogdf::node v1CC = blockToCC[v1Block];
-                                    ogdf::node v2CC = blockToCC[v2Block];
-                                    ogdf::node v1Orig = ccToOrig[v1CC];
-                                    ogdf::node v2Orig = ccToOrig[v2CC];
-
-                                    out << "V " << vName << " " << spqrNodeNames[src] << " "
-                                        << spqrNodeNames[tgt] << " " << C.node2name[v1Orig]
-                                        << " " << C.node2name[v2Orig] << "\n";
-                                }
-                            }
+                            writeV(vName,
+                                spqrNodeNames[src],
+                                spqrNodeNames[tgt],
+                                C.node2name[uOrig],
+                                C.node2name[vOrig]);
                         }
 
-                        // Write E-lines (real edges)
-                        int eIdx = 0;
+                        // Write E-lines (real edges), assigned to their containing SPQR node
                         for (ogdf::node treeNode : spqr.tree().nodes)
                         {
                             const ogdf::Skeleton &skel = spqr.skeleton(treeNode);
-
                             for (ogdf::edge skelEdge : skel.getGraph().edges)
                             {
-                                if (!skel.isVirtual(skelEdge))
-                                {
-                                    ogdf::edge blockEdge = skel.realEdge(skelEdge);
-                                    ogdf::edge ccEdge = blockEdgeToCC[blockEdge];
-                                    ogdf::node v1CC = ccEdge->source();
-                                    ogdf::node v2CC = ccEdge->target();
-                                    ogdf::node v1Orig = ccToOrig[v1CC];
-                                    ogdf::node v2Orig = ccToOrig[v2CC];
+                                if (skel.isVirtual(skelEdge))
+                                    continue;
 
-                                    std::string eName =
-                                        makeUnique("E" + std::to_string(ccIdx) + "_" +
-                                                std::to_string(bNode->index()) + "_" + std::to_string(eIdx++));
+                                ogdf::edge eB = skel.realEdge(skelEdge);
+                                if (!eB)
+                                    continue;
 
-                                    out << "E " << eName << " " << spqrNodeNames[treeNode] << " "
-                                        << C.node2name[v1Orig] << " " << C.node2name[v2Orig] << "\n";
-                                }
+                                ogdf::edge eCc = blockEdgeToCC[eB];
+                                if (!eCc)
+                                    continue;
+
+                                ogdf::node uOrig = ccToOrig[eCc->source()];
+                                ogdf::node vOrig = ccToOrig[eCc->target()];
+
+                                std::string eName = makeId("E", edgeCtr++);
+                                writeE(eName,
+                                    spqrNodeNames[treeNode],
+                                    C.node2name[uOrig],
+                                    C.node2name[vOrig]);
                             }
                         }
 
@@ -6294,8 +6404,6 @@ namespace solver
                     }
                     catch (...)
                     {
-                        // If SPQR tree computation fails (e.g., graph not biconnected),
-                        // just skip this block.
                         if (logThisBlock)
                         {
                             std::cerr << "[spqr-tree]   block " << blockName << " SPQR failed, skipping\n";
