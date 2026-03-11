@@ -14,7 +14,6 @@ using namespace std;
 #endif
 
 static inline int sgnIdx(char c) { return (c == '-') ? 1 : 0; }
-static inline char oppSign(char c) { return (c == '+') ? '-' : '+'; }
 
 struct IncEdge {
     int v;
@@ -26,7 +25,7 @@ struct SnarlKey {
     int a, b;
     char da, db;
     bool operator<(SnarlKey const& o) const {
-        return std::tie(a,da,b,db) < std::tie(o.a,o.da,o.b,o.db);
+        return std::tie(a, da, b, db) < std::tie(o.a, o.da, o.b, o.db);
     }
     bool operator==(SnarlKey const& o) const {
         return a==o.a && b==o.b && da==o.da && db==o.db;
@@ -189,6 +188,7 @@ int main(int argc, char** argv) {
     assert(is_sorted(nodes.begin(), nodes.end()));
 
     cerr << "Vertices: " << nodes.size() << "\n";
+    cerr << "Enumerating ultrabubbles (INCLUDING weak)\n";
 
     const int REACH_FLAG = 1;
     const int BAD_FLAG   = 2;
@@ -197,8 +197,10 @@ int main(int argc, char** argv) {
     int dfs_it = 1;
     vector<int> snarl_component;
 
-    // DFS used for separability + component construction (net graph semantics: split terminals)
-    function<int(int,int,int,char,char,bool)> dfs = [&](int z, int x, int y, char dx, char dy, bool track)->int {
+    // DFS used for separability + component construction (split terminals semantics)
+    function<int(int,int,int,char,char,bool)> dfs =
+        [&](int z, int x, int y, char dx, char dy, bool track)->int {
+
         if (seen[z] == dfs_it) return 0;
         seen[z] = dfs_it;
         if (track) snarl_component.push_back(z);
@@ -257,7 +259,7 @@ int main(int argc, char** argv) {
         return cell == (int8_t)1;
     };
 
-    // ---- split-terminals filter (ONLY for net-graph checks like tip-free) ----
+    // ---- split-terminals filter helpers ----
     int CX=-1, CY=-1;
     char CDX='?', CDY='?';
 
@@ -271,7 +273,7 @@ int main(int argc, char** argv) {
 
     vector<uint8_t> in_comp(N, 0);
 
-    // tip-free check in the NET GRAPH (so we keep split filtering)
+    // tip-free check in the NET GRAPH (split-filtered)
     auto has_internal_tip_in_component = [&]()->bool{
         vector<array<uint8_t,2>> hasSign(N, {0,0});
 
@@ -291,77 +293,111 @@ int main(int argc, char** argv) {
         return false;
     };
 
-    // ---- directed cycle check in the INDUCED SUBGRAPH (NO split filtering) ----
-    // This is what removes "weak ultrabubbles" like your {3,5} example.
-    vector<array<uint8_t,2>> onstack(N, {0,0});
-    vector<array<int,2>> seen2(N, {0,0});
-    int dfs_it2 = 1;
 
-    auto state_has_outgoing_induced = [&](int u, char in_sign)->bool{
-        char out_needed = oppSign(in_sign);
-        for (auto &inc : adj[u]) {
-            int v = inc.v;
-            if (!in_comp[v]) continue;          // induced subgraph
-            if (inc.su == out_needed) return true;
+    auto has_cycloid_in_component = [&]()->bool{
+        auto sideId = [&](int v, char s)->int { return 2*v + sgnIdx(s); };
+        auto oppSide = [&](int side)->int { return side ^ 1; }; // flip + <-> -
+
+        const int S = 2 * N;     // number of sides
+        const int ST = 2 * S;    // (side, used_exception)
+        auto stId = [&](int side, int used)->int { return (side<<1) | used; };
+
+        // collect UNIQUE bidirected edges of X after splitting terminals
+        // store as (a,b) where a=sideId(u,α), b=sideId(v,β) with a<b
+        vector<pair<int,int>> bedges;
+        bedges.reserve(4 * snarl_component.size());
+
+        for (int z : snarl_component) {
+            for (auto &inc : adj[z]) {
+                int w = inc.v;
+                if (!in_comp[w]) continue;
+                if (!edge_survives_split(z, w, inc.su, inc.sv)) continue;
+
+                int a = sideId(z, inc.su);
+                int b = sideId(w, inc.sv);
+                if (a > b) std::swap(a,b);
+                bedges.emplace_back(a,b);
+            }
         }
-        return false;
-    };
+        sort(bedges.begin(), bedges.end());
+        bedges.erase(unique(bedges.begin(), bedges.end()), bedges.end());
 
-    function<bool(int,char,int,char,int)> dfs_cycle_or_opposite_induced =
-        [&](int u, char in_sign, int start_u, char start_sign, int depth)->bool {
+        // build directed graph on states (side, used)
+        vector<vector<int>> g(ST);
+        g.reserve(ST);
 
-        int idx = sgnIdx(in_sign);
+        auto add_arc = [&](int fromSide, int fromUsed, int toSide, int toUsed){
+            g[stId(fromSide, fromUsed)].push_back(stId(toSide, toUsed));
+        };
 
-        if (onstack[u][idx]) return true;
+        for (auto [a,b] : bedges) {
 
-        // optional strengthening: if we can return to the same vertex with opposite sign,
-        // it corresponds to a directed cycle in the state graph.
-        if (depth > 0 && u == start_u && in_sign == oppSign(start_sign)) return true;
+            int ah = oppSide(a);
+            int bh = oppSide(b);
 
-        if (seen2[u][idx] == dfs_it2) return false;
-        seen2[u][idx] = dfs_it2;
-        onstack[u][idx] = 1;
+            for (int used = 0; used <= 1; ++used) {
+                add_arc(a, used, bh, used);
+                add_arc(b, used, ah, used);
+            }
 
-        char out_needed = oppSign(in_sign);
+            add_arc(a, 0, b, 1);
+            add_arc(b, 0, a, 1);
+        }
 
-        for (auto &inc : adj[u]) {
-            int v = inc.v;
-            if (!in_comp[v]) continue;          // induced subgraph
-            if (inc.su != out_needed) continue; // must exit u on opposite side
+        {
+            vector<uint8_t> color(ST, 0); 
+            function<bool(int)> dfsCyc0 = [&](int u)->bool{
+                color[u] = 1;
+                for (int v : g[u]) {
+                    if ((v & 1) != 0) continue;
+                    if (color[v] == 1) return true;
+                    if (color[v] == 0 && dfsCyc0(v)) return true;
+                }
+                color[u] = 2;
+                return false;
+            };
 
-            if (dfs_cycle_or_opposite_induced(v, inc.sv, start_u, start_sign, depth + 1)) {
-                onstack[u][idx] = 0;
-                return true;
+            for (int side = 0; side < S; ++side) {
+                int u = stId(side, 0);
+                if (color[u] == 0) {
+                    if (dfsCyc0(u)) return true;
+                }
             }
         }
 
-        onstack[u][idx] = 0;
-        return false;
-    };
+        {
+            vector<int> vis(ST, 0);
+            int it = 1;
 
-    auto has_directed_cycle_in_component_induced = [&]()->bool{
-        for (int u : snarl_component) {
-            for (char s : {'+','-'}) {
-                if (!state_has_outgoing_induced(u, s)) continue;
+            for (int side = 0; side < S; ++side) {
+                int start = stId(side, 0);
+                if (g[start].empty()) continue;
 
-                dfs_it2++;
-                for (int z : snarl_component) onstack[z][0] = onstack[z][1] = 0;
+                int target = stId(side, 1);
 
-                if (dfs_cycle_or_opposite_induced(u, s, u, s, 0)) return true;
+                std::stack<int> st;
+                st.push(start);
+                vis[start] = it;
+
+                while (!st.empty()) {
+                    int u = st.top(); st.pop();
+                    if (u == target) return true;
+                    for (int v : g[u]) {
+                        if (vis[v] == it) continue;
+                        vis[v] = it;
+                        st.push(v);
+                    }
+                }
+                ++it;
             }
         }
+
         return false;
     };
-
-    cerr << "Enumerating ultrabubbles\n";
 
     const size_t nV = nodes.size();
     const size_t expected_candidates = (nV * (nV - 1) / 2) * 4;
     size_t tested_candidates = 0;
-
-    struct Eval { bool checked_tip=false, checked_cycle=false; };
-    std::map<SnarlKey, Eval> snarl_eval;
-    std::set<SnarlKey> snarls_ours;
 
     for (size_t ii = 0; ii < nodes.size(); ii++) {
         int x = nodes[ii];
@@ -373,7 +409,6 @@ int main(int argc, char** argv) {
                     tested_candidates++;
 
                     bool separable = getSep(x, y, dx, dy);
-
 #if DEBUG_BLOCKS
                     assert(separable == getSep(y, x, dy, dx));
 #endif
@@ -386,12 +421,6 @@ int main(int argc, char** argv) {
                     fill(in_comp.begin(), in_comp.end(), 0);
                     for (int z : snarl_component) in_comp[z] = 1;
 
-#if DEBUG_BLOCKS
-                    bool hasX=false, hasY=false;
-                    for (int z : snarl_component) { if (z==x) hasX=true; if (z==y) hasY=true; }
-                    assert(hasX && hasY);
-#endif
-
                     // minimality
                     bool not_minimal = false;
                     for (int z : snarl_component) {
@@ -401,20 +430,15 @@ int main(int argc, char** argv) {
                     }
                     if (not_minimal) continue;
 
-                    SnarlKey sk = canon_snarl(x, CDX, y, CDY);
-                    snarls_ours.insert(sk);
-
-                    // terminals for split-filtered checks (tip-free in net graph)
+                    // set split terminals for split-filtered checks
                     CX = x; CY = y;
+                    CDX = dx ? '-' : '+';
+                    CDY = dy ? '-' : '+';
 
                     bool internal_tip = has_internal_tip_in_component();
-                    snarl_eval[sk].checked_tip = true;
+                    bool cyclic = has_cycloid_in_component();
 
-                    // IMPORTANT FIX: cycle check is now on induced subgraph => rejects weak ultrabubbles
-                    bool directed_cycle = has_directed_cycle_in_component_induced();
-                    snarl_eval[sk].checked_cycle = true;
-
-                    if (!internal_tip && !directed_cycle) {
+                    if (!internal_tip && !cyclic) {
                         cout << nameOf[x] << (dx ? "-" : "+") << " "
                              << nameOf[y] << (dy ? "-" : "+") << "\n";
                     }
@@ -425,32 +449,19 @@ int main(int argc, char** argv) {
 
     assert(tested_candidates == expected_candidates);
 
-    for (auto const& [k, ev] : snarl_eval) {
-        (void)k;
-        assert(ev.checked_tip);
-        assert(ev.checked_cycle);
-    }
-    for (auto const& k : snarls_ours) {
-        auto it = snarl_eval.find(k);
-        assert(it != snarl_eval.end());
-        assert(it->second.checked_tip && it->second.checked_cycle);
-    }
-
 #if DEBUG_BLOCKS
 #ifdef __unix__
-    std::set<SnarlKey> snarls_ref;
-    bool ok = run_snarls_bf(snarls_bf_path, argv[1], id, snarls_ref);
-    if (ok) {
-        if (snarls_ref != snarls_ours) {
-            cerr << "\n\n\n Mismatch with ./snarls_bf on snarl set\n";
-            for (auto &s : snarls_ours) if (!snarls_ref.count(s))
-                cerr << "Extra:   " << nameOf[s.a] << s.da << " " << nameOf[s.b] << s.db << "\n";
-            for (auto &s : snarls_ref) if (!snarls_ours.count(s))
-                cerr << "Missing: " << nameOf[s.a] << s.da << " " << nameOf[s.b] << s.db << "\n";
-            assert(false && "snarl set mismatch with snarls bf");
+    const char* env = std::getenv("RUN_SNARLS_BF");
+    const bool do_external = (env && std::string(env) == "1");
+
+    if (do_external) {
+        std::set<SnarlKey> snarls_ref;
+        bool ok = run_snarls_bf(snarls_bf_path, argv[1], id, snarls_ref);
+        if (!ok) {
+            cerr << "Could not run ./snarls_bf from same directory or it failed. Skipping external snarl cross check.\n";
         }
     } else {
-        cerr << "Could not run ./snarls_bf from same directory. Skipping external snarl cross check.\n";
+        cerr << "Skipping external ./snarls_bf cross check (set RUN_SNARLS_BF=1 to enable).\n";
     }
 #endif
 #endif

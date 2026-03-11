@@ -80,10 +80,8 @@ void detect(Vertex* start , Vertex* end, Config& conf ) {
 						break;
 					}
 				} 
-				if (!weak) {
-					//report
+				if (!weak || conf.includeWeak) {
 					conf.addSuperbubble(start, endstack.top());
-//					std::cout << "<" << start->getID() << "," << endstack.top()->getID() << ">\n";
 				}
 				endstack.pop();
 			}
@@ -210,7 +208,7 @@ void detect(Vertex* start , Vertex* end, long unsigned int altPos, Config& conf 
 								break;	
 							}
 						} 
-						if (!weak) {
+						if (!weak || conf.includeWeak) {
 							//report
 							conf.addSuperbubble(start, endstack.top());
 //							std::cout << "<" << start->getID() << "," << endstack.top()->getID() << ">\n";

@@ -6755,7 +6755,7 @@ namespace solver
 
                             std::vector<ClsdTree> trees;
                             std::vector<ClsdTree>* trees_ptr = (C.clsdTrees ? &trees : nullptr);
-                            superbubbles = compute_superbubbles_from_edges(out.nextId, directed_edges, trees_ptr);
+                            superbubbles = compute_weak_superbubbles_from_edges(out.nextId, directed_edges, trees_ptr);
 
                             std::ostringstream clsd_buf;
 

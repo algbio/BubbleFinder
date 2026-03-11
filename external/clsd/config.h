@@ -70,7 +70,7 @@ public:
     void parseParameter(int, char*[]);
     void printdebug(std::string);
     std::string getPath();
-
+    bool includeWeak = false;
     const std::vector<superbubble>& getSuperbubbles() const { return bublles; }
 };
 

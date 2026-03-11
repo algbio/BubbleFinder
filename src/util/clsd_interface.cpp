@@ -27,17 +27,17 @@ static ClsdTree clone_tree(const supertree* t) {
 }
 
 std::vector<std::pair<int,int>>
-compute_superbubbles_from_edges(
+compute_weak_superbubbles_from_edges(
     const std::vector<std::pair<int,int>>& edges,
     std::vector<ClsdTree>* out_trees
 ) {
     if (out_trees) out_trees->clear();
     if (edges.empty()) return {};
-    return compute_superbubbles_from_edges(infer_n_from_edges(edges), edges, out_trees);
+    return compute_weak_superbubbles_from_edges(infer_n_from_edges(edges), edges, out_trees);
 }
 
 std::vector<std::pair<int,int>>
-compute_superbubbles_from_edges(
+compute_weak_superbubbles_from_edges(
     int n,
     const std::vector<std::pair<int,int>>& edges,
     std::vector<ClsdTree>* out_trees
@@ -94,6 +94,7 @@ compute_superbubbles_from_edges(
     conf.setEdges((U)edges.size());
     conf.setMultiedges(0);
     conf.trees = (out_trees != nullptr);
+    conf.includeWeak = true;
 
     conf.startClock();
 

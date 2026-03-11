@@ -16,14 +16,14 @@ struct ClsdTree {
 };
 
 std::vector<std::pair<int,int>>
-compute_superbubbles_from_edges(
+compute_weak_superbubbles_from_edges(
     int n,
     const std::vector<std::pair<int,int>>& edges,
     std::vector<ClsdTree>* out_trees = nullptr
 );
 
 std::vector<std::pair<int,int>>
-compute_superbubbles_from_edges(
+compute_weak_superbubbles_from_edges(
     const std::vector<std::pair<int,int>>& edges,
     std::vector<ClsdTree>* out_trees = nullptr
 );
