@@ -16,6 +16,11 @@ enum class EdgePartType
     MINUS,
     NONE
 };
+struct UBEdge {
+    uint32_t neighbor; // index of the neighbor node
+    uint8_t  type_self; // EdgePartType at this node  (0=PLUS, 1=MINUS)
+    uint8_t  type_neigh; // EdgePartType at the neighbor (0 = PLUS, 1=MINUS)
+};
 
 struct Context
 {
@@ -36,16 +41,14 @@ struct Context
         SPQR_TREE_ONLY
     };
 
-    // Input file format (graph representation)
     enum class InputFormat
     {
-        Auto,        // autodetect from extension
-        Gfa,         // GFA (bidirected interpretation)
-        GfaDirected, // GFA interpreted as directed graph
-        Graph        // internal .graph format (directed)
+        Auto,        
+        Gfa,         
+        GfaDirected, 
+        Graph       
     };
 
-    // Input file compression (autodetected from file suffix)
     enum class Compression
     {
         None,
@@ -68,11 +71,9 @@ struct Context
     ogdf::NodeArray<bool> isEntry;
     ogdf::NodeArray<bool> isExit;
 
-    // Paths / options
     std::string graphPath = "";
     std::string outputPath = "";
 
-    // HEAD-only (conservé)
     std::string ultrabubbleTreeOutputPath = "";
 
     bool gfaInput = false; // kept for backward compatibility
@@ -82,7 +83,7 @@ struct Context
     unsigned threads = 1;
     std::size_t stackSize = 1ULL * 1024ULL * 1024ULL * 1024ULL;
 
-    // HEAD-only (conservé)
+
     std::vector<std::pair<std::string, std::string>> ultrabubbleIncidences;
     std::vector<std::string> gfaSegmentIds;
     std::vector<std::string> gfaLinkLines;
@@ -92,9 +93,10 @@ struct Context
     InputFormat inputFormat = InputFormat::Auto;
     Compression compression = Compression::None;
 
-    // HEAD-only (conservé) : CLSD trees output
     bool clsdTrees = false;
     std::string clsdTreesPath;
+
+    bool includeTrivial = false;
 
     ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> _edge2types;
     ogdf::EdgeArray<std::pair<int, int>> _edge2cnt;
@@ -131,11 +133,19 @@ struct Context
 
     std::unordered_set<std::vector<std::string>, VectorStringHash, VectorStringEqual> snarls;
 
-    // Utilisé par ultrabubbles (nouveau code) : mapping ID global -> node
     std::vector<ogdf::node> nodeByGlobalId;
 
-    // Utilisé par ultrabubbles (nouveau code) : (packed endpoint, packed endpoint)
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ultrabubbleIncPacked;
+
+    uint32_t ubNumNodes = 0;
+    std::vector<std::string> ubNodeNames;
+    std::vector<uint32_t> ubOffset;   
+    std::vector<UBEdge> ubEdges;    
+    std::vector<std::string> ubClsdText;
+
+    inline const UBEdge* adjBegin(uint32_t v) const { return ubEdges.data() + ubOffset[v]; }
+    inline const UBEdge* adjEnd(uint32_t v)   const { return ubEdges.data() + ubOffset[v+1]; }
+    inline uint32_t adjDeg(uint32_t v)   const { return ubOffset[v+1] - ubOffset[v]; }
 
     Context();
     Context(const Context &) = delete;

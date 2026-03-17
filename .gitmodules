@@ -1,0 +1,12 @@
+[submodule "external/gbz/sdsl-lite"]
+	path = external/gbz/sdsl-lite
+	url = https://github.com/vgteam/sdsl-lite.git
+[submodule "external/gbz/libhandlegraph"]
+	path = external/gbz/libhandlegraph
+	url = https://github.com/vgteam/libhandlegraph.git
+[submodule "external/gbz/gbwt"]
+	path = external/gbz/gbwt
+	url = https://github.com/jltsiren/gbwt.git
+[submodule "external/gbz/gbwtgraph"]
+	path = external/gbz/gbwtgraph
+	url = https://github.com/jltsiren/gbwtgraph.git

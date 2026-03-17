@@ -58,6 +58,11 @@
 #include "util/phase_accum.hpp"
 
 #include "util/clsd_interface.hpp"
+#include "io/gfa_parser.hpp"
+
+#ifdef BUBBLEFINDER_HAS_GBZ
+#include "io/gbz_parser.hpp"
+#endif
 
 bool VERBOSE = false;
 #define VLOG     \
@@ -247,10 +252,12 @@ static void usage(const char *prog, int exitCode)
         { "--clsd-trees", "<file>",
           "Write CLSD superbubble trees (ultrabubble hierarchy) to <file> (ultrabubbles command only)" },
 
+        { "-T, --include-trivial", nullptr,
+          "Include trivial ultrabubbles in output (default: excluded; ultrabubbles command only)" },
+
         { "--report-json", "<file>", "Write JSON metrics report" },
         { "-m", "<bytes>",           "Stack size in bytes" },
         { "-h, --help", nullptr,     "Show this help message and exit" }
-        // -sanity is intentionally undocumented (internal/debug)
     };
 
     std::cerr << "Usage:\n"
@@ -568,6 +575,16 @@ void readArgs(int argc, char **argv)
                 std::exit(1);
             }
         }
+        else if (s == "-T" || s == "--include-trivial")
+        {
+            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE)
+            {
+                std::cerr << "Error: option '-T' / '--include-trivial' is only supported with the "
+                             "'ultrabubbles' command.\n";
+                std::exit(1);
+            }
+            C.includeTrivial = true;
+        }
         else if (s == "-j")
         {
             const std::string v = nextArgOrDie(args, i, "-j");
@@ -648,7 +665,7 @@ void readArgs(int argc, char **argv)
 
     if (C.inputFormat == Context::InputFormat::Auto)
     {
-        if (coreExt == "gfa" || coreExt == "gfa1" || coreExt == "gfa2")
+        if (coreExt == "gfa" || coreExt == "gfa1" || coreExt == "gfa2" || coreExt == "gbz")
         {
             if (C.directedSuperbubbles)
             {
@@ -701,9 +718,6 @@ static inline void __phase_rss_update(std::atomic<size_t> &dst)
 #define PHASE_RSS_UPDATE_BUILD_LEGACY() __phase_rss_update(g_phase_build_max_rss)
 #define PHASE_RSS_UPDATE_LOGIC_LEGACY() __phase_rss_update(g_phase_logic_max_rss)
 
-// -----------------------------------------------------------------------------
-// OGDF accounting helpers
-// -----------------------------------------------------------------------------
 struct OgdfAcc
 {
     std::chrono::high_resolution_clock::time_point t0;
@@ -6426,22 +6440,84 @@ namespace solver
     }
 
     namespace ultrabubble {
-        static inline EdgePartType getNodeEdgeTypeCached(
-            ogdf::node v,
-            ogdf::edge e,
-            const ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> &etype
-        ) {
-            OGDF_ASSERT(v != nullptr && e != nullptr);
 
-            if (e->source() == v) return etype[e].first;
-            if (e->target() == v) return etype[e].second;
+        static constexpr uint8_t UB_PLUS  = (uint8_t)EdgePartType::PLUS;
+        static constexpr uint8_t UB_MINUS = (uint8_t)EdgePartType::MINUS;
+        static void computeCutVertices(
+            const Context &C,
+            uint32_t N,
+            std::vector<bool> &is_cut)
+        {
+            is_cut.assign(N, false);
+            std::vector<int> disc(N, -1);
+            std::vector<int> low(N, -1);
 
-            OGDF_ASSERT(false);
-            return EdgePartType::NONE;
+            int timer = 0;
+
+            struct Frame {
+                uint32_t v;
+                uint32_t parent;      
+                uint32_t edge_pos;     
+                int child_count;  
+            };
+
+            std::vector<Frame> stk;
+            stk.reserve(1024);
+
+            for (uint32_t start = 0; start < N; start++) {
+                if (disc[start] >= 0) continue;
+
+                if (C.ubOffset[start] == C.ubOffset[start + 1]) {
+                    disc[start] = timer++;
+                    low[start] = disc[start];
+                    continue;
+                }
+
+                stk.clear();
+                disc[start] = low[start] = timer++;
+                stk.push_back({start, UINT32_MAX, C.ubOffset[start], 0});
+
+                while (!stk.empty()) {
+                    Frame &f = stk.back();
+                    uint32_t v = f.v;
+                    uint32_t adj_end = C.ubOffset[v + 1];
+
+                    if (f.edge_pos < adj_end) {
+                        uint32_t u = C.ubEdges[f.edge_pos].neighbor;
+                        f.edge_pos++;
+
+                        if (disc[u] < 0) {
+                            disc[u] = low[u] = timer++;
+                            f.child_count++;
+                            stk.push_back({u, v, C.ubOffset[u], 0});
+                        } else if (u != f.parent) {
+                            if (disc[u] < low[v])
+                                low[v] = disc[u];
+                        }
+                    } else {
+                        stk.pop_back();
+
+                        if (!stk.empty()) {
+                            Frame &pf = stk.back();
+                            uint32_t pv = pf.v;
+
+                            if (low[v] < low[pv])
+                                low[pv] = low[v];
+                            if (pf.parent == UINT32_MAX) {
+                                if (pf.child_count >= 2)
+                                    is_cut[pv] = true;
+                            } else {
+                                if (low[v] >= disc[pv])
+                                    is_cut[pv] = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         struct DirectedEdgeBuilder {
-            int nextId; 
+            int nextId;
             std::vector<std::pair<int,int>> edges;
 
             explicit DirectedEdgeBuilder(int original_n, size_t reserve_edges = 0)
@@ -6458,141 +6534,83 @@ namespace solver
         };
 
         static inline void emit_oriented_edge_once_local(
-            ogdf::node v,
-            ogdf::node u,
-            ogdf::edge e,
-            EdgePartType sign_at_v,
-            EdgePartType sign_at_u,
-            const ogdf::NodeArray<int> &plus_dir,
-            const ogdf::NodeArray<int> &nodeIdGlobal, 
-            const ogdf::NodeArray<int> &localId,    
+            uint32_t v,
+            uint32_t u,
+            uint8_t sign_at_v,
+            uint8_t sign_at_u,
+            const std::vector<int> &plus_dir,
+            const std::vector<int> &localId,
             DirectedEdgeBuilder &out
         ) {
-            const int vg = nodeIdGlobal[v];
-            const int ug = nodeIdGlobal[u];
-
-            if (vg >= ug) return;
+            if (v >= u) return;
 
             const int vl = localId[v];
             const int ul = localId[u];
-            OGDF_ASSERT(vl >= 0 && ul >= 0);
 
-            const bool inconsistent = ((sign_at_u == sign_at_v) == (plus_dir[u] == plus_dir[v]));
+            const bool inconsistent =
+                ((sign_at_u == sign_at_v) == (plus_dir[u] == plus_dir[v]));
 
             if (inconsistent) {
-                int x = out.newIntermediate(); 
-
-                if ((plus_dir[v] == 1) == (sign_at_v == EdgePartType::PLUS)) {
-                    // v -> x <- u
+                int x = out.newIntermediate();
+                if ((plus_dir[v] == 1) == (sign_at_v == UB_PLUS)) {
                     out.addEdge(vl, x);
                     out.addEdge(ul, x);
                 } else {
-                    // v <- x -> u
                     out.addEdge(x, vl);
                     out.addEdge(x, ul);
                 }
-            } else if ((plus_dir[v] == 1) == (sign_at_v == EdgePartType::PLUS)) {
-                // orientation consistent: v -> u
+            } else if ((plus_dir[v] == 1) == (sign_at_v == UB_PLUS)) {
                 out.addEdge(vl, ul);
             } else {
-                // orientation consistent: u -> v
                 out.addEdge(ul, vl);
             }
         }
 
-        static void computeConnectedComponents(
-            ogdf::Graph &G,
-            ogdf::NodeArray<int> &localId, 
-            std::vector<std::vector<ogdf::node>> &comps 
-        ) {
-            ogdf::NodeArray<bool> seen(G, false);
-            localId.init(G, -1);
-            comps.clear();
-
-            std::vector<ogdf::node> st;
-            st.reserve(1024);
-
-            for (ogdf::node s : G.nodes) {
-                if (seen[s]) continue;
-
-                comps.emplace_back();
-                auto &cc = comps.back();
-                cc.reserve(256);
-
-                st.clear();
-                st.push_back(s);
-                seen[s] = true;
-
-                while (!st.empty()) {
-                    ogdf::node v = st.back();
-                    st.pop_back();
-
-                    localId[v] = (int)cc.size();
-                    cc.push_back(v);
-
-                    for (auto ae : v->adjEntries) {
-                        ogdf::node u = ae->twinNode();
-                        if (!seen[u]) {
-                            seen[u] = true;
-                            st.push_back(u);
-                        }
-                    }
-                }
-            }
-        }
-
         static void orient_emit_iterative_cc(
-            ogdf::node start,
+            uint32_t start,
             bool plus_enter,
-            ogdf::NodeArray<int> &plus_dir,
-            const ogdf::NodeArray<int> &nodeIdGlobal,
-            const ogdf::NodeArray<int> &localId,
-            const ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> &etype,
+            std::vector<int> &plus_dir,
+            const std::vector<int> &localId,
+            const Context &C,
             DirectedEdgeBuilder &out
         ) {
-            OGDF_ASSERT(start != nullptr);
-            OGDF_ASSERT(plus_dir[start] != 0);
-
             struct Frame {
-                ogdf::node v{nullptr};
+                uint32_t v;
+                uint8_t  order[2];
+                int      order_idx;
+                uint32_t edge_pos;  
 
-                EdgePartType order[2]{EdgePartType::PLUS, EdgePartType::MINUS};
-                int order_idx{0};
-
-                ogdf::adjEntry it{nullptr};
-
-                bool pending{false};
-                ogdf::node pending_u{nullptr};
-                ogdf::edge pending_e{nullptr};
-                EdgePartType pending_sign_v{EdgePartType::NONE};
-                EdgePartType pending_sign_u{EdgePartType::NONE};
+                bool     pending;
+                uint32_t pending_u;
+                uint8_t  pending_sign_v;
+                uint8_t  pending_sign_u;
             };
 
-            auto make_frame = [&](ogdf::node v, bool plus_enter_local) -> Frame {
-                Frame f;
+            auto make_frame = [](uint32_t v, bool pe, uint32_t adj_start) -> Frame {
+                Frame f{};
                 f.v = v;
-                f.order[0] = EdgePartType::PLUS;
-                f.order[1] = EdgePartType::MINUS;
-                if (plus_enter_local) std::swap(f.order[0], f.order[1]);
+                f.order[0] = UB_PLUS;
+                f.order[1] = UB_MINUS;
+                if (pe) std::swap(f.order[0], f.order[1]);
                 f.order_idx = 0;
-                f.it = v->firstAdj();
-                f.pending = false;
+                f.edge_pos  = adj_start;
+                f.pending   = false;
                 return f;
             };
 
             std::vector<Frame> st;
             st.reserve(1024);
-            st.push_back(make_frame(start, plus_enter));
+            st.push_back(make_frame(start, plus_enter, C.ubOffset[start]));
 
             while (!st.empty()) {
                 Frame &f = st.back();
-                ogdf::node v = f.v;
+                uint32_t v = f.v;
 
                 if (f.pending) {
                     emit_oriented_edge_once_local(
-                        v, f.pending_u, f.pending_e,
+                        v, f.pending_u,
                         f.pending_sign_v, f.pending_sign_u,
-                        plus_dir, nodeIdGlobal, localId, out
+                        plus_dir, localId, out
                     );
                     f.pending = false;
                     continue;
@@ -6603,46 +6621,42 @@ namespace solver
                     continue;
                 }
 
-                const EdgePartType wanted_sign = f.order[f.order_idx];
+                const uint8_t wanted_sign = f.order[f.order_idx];
+                const uint32_t adj_end = C.ubOffset[v + 1];
 
-                while (f.it != nullptr) {
-                    ogdf::adjEntry ae = f.it;
-                    f.it = ae->succ();
+                while (f.edge_pos < adj_end) {
+                    const UBEdge &ae = C.ubEdges[f.edge_pos];
+                    f.edge_pos++;
 
-                    ogdf::edge e = ae->theEdge();
-                    ogdf::node u = ae->twinNode();
+                    if (ae.type_self != wanted_sign) continue;
 
-                    EdgePartType sign_v = getNodeEdgeTypeCached(v, e, etype);
-                    if (sign_v != wanted_sign) continue;
-
-                    EdgePartType sign_u = getNodeEdgeTypeCached(u, e, etype);
+                    uint32_t u = ae.neighbor;
+                    uint8_t sign_u = ae.type_neigh;
 
                     if (!plus_dir[u]) {
                         if (plus_dir[v] == 1) {
-                            plus_dir[u] = 1 + (sign_v == sign_u);
+                            plus_dir[u] = 1 + (int)(ae.type_self == sign_u);
                         } else {
-                            plus_dir[u] = 1 + (sign_v != sign_u);
+                            plus_dir[u] = 1 + (int)(ae.type_self != sign_u);
                         }
 
-                        f.pending = true;
-                        f.pending_u = u;
-                        f.pending_e = e;
-                        f.pending_sign_v = sign_v;
+                        f.pending        = true;
+                        f.pending_u      = u;
+                        f.pending_sign_v = ae.type_self;
                         f.pending_sign_u = sign_u;
 
-                        const bool child_plus_enter = (sign_u == EdgePartType::PLUS);
-                        st.push_back(make_frame(u, child_plus_enter));
-                        goto next_iteration; 
+                        st.push_back(make_frame(u, sign_u == UB_PLUS, C.ubOffset[u]));
+                        goto next_iteration;
                     } else {
                         emit_oriented_edge_once_local(
-                            v, u, e, sign_v, sign_u,
-                            plus_dir, nodeIdGlobal, localId, out
+                            v, u, ae.type_self, sign_u,
+                            plus_dir, localId, out
                         );
                     }
                 }
 
                 f.order_idx++;
-                f.it = v->firstAdj();
+                f.edge_pos = C.ubOffset[v];
 
             next_iteration:
                 continue;
@@ -6654,43 +6668,82 @@ namespace solver
             PROFILE_FUNCTION();
 
             auto &C = ctx();
-            ogdf::Graph &G = C.G;
 
-            const ogdf::EdgeArray<std::pair<EdgePartType,EdgePartType>> &etype = C._edge2types;
+            const uint32_t N  = C.ubNumNodes;
+            const auto &names = C.ubNodeNames;
 
-            const int original_n = G.numberOfNodes();
-            ogdf::NodeArray<int> nodeId(G, -1);
-
-            C.nodeByGlobalId.clear();
-            C.nodeByGlobalId.resize((size_t)original_n, nullptr);
-
+            std::vector<bool> is_tip(N, false);
             {
-                int id = 0;
-                for (ogdf::node v : G.nodes) {
-                    nodeId[v] = id;
-                    C.nodeByGlobalId[(size_t)id] = v;
-                    ++id;
+                size_t tip_count = 0;
+                for (uint32_t v = 0; v < N; v++) {
+                    bool saw_plus = false, saw_minus = false;
+                    for (const UBEdge *it = C.adjBegin(v), *end = C.adjEnd(v);
+                         it != end; ++it) {
+                        if (it->type_self == UB_PLUS)  saw_plus  = true;
+                        if (it->type_self == UB_MINUS) saw_minus = true;
+                        if (saw_plus && saw_minus) break;
+                    }
+                    is_tip[v] = !(saw_plus && saw_minus);
+                    if (is_tip[v]) tip_count++;
                 }
-                OGDF_ASSERT(id == original_n);
+                std::cout << "  Tips: " << tip_count << "\n";
             }
 
-            ogdf::NodeArray<bool> is_tip(G, false);
-            for (ogdf::node v : G.nodes) {
-                bool saw_plus=false, saw_minus=false;
-                for (auto ae : v->adjEntries) {
-                    EdgePartType t = getNodeEdgeTypeCached(v, ae->theEdge(), etype);
-                    if (t == EdgePartType::PLUS)  saw_plus = true;
-                    if (t == EdgePartType::MINUS) saw_minus = true;
-                    if (saw_plus && saw_minus) break;
-                }
-                is_tip[v] = !(saw_plus && saw_minus);
+            std::vector<bool> is_cut;
+            {
+                computeCutVertices(C, N, is_cut);
+                size_t cut_count = 0;
+                for (uint32_t v = 0; v < N; v++)
+                    if (is_cut[v]) cut_count++;
+                std::cout << "  Cut vertices: " << cut_count << "\n";
             }
 
-            ogdf::NodeArray<int> localId(G, -1);
-            std::vector<std::vector<ogdf::node>> comps;
-            computeConnectedComponents(G, localId, comps);
+            std::vector<bool> &can_start = is_tip;  
+            {
+                size_t start_count = 0;
+                for (uint32_t v = 0; v < N; v++) {
+                    can_start[v] = is_tip[v] || is_cut[v];
+                    if (can_start[v]) start_count++;
+                }
+                std::cout << "  orientation start candidates : " << start_count
+                          << " / " << N << "\n";
+            }
 
-            ogdf::NodeArray<int> plus_dir(G, 0);
+            // Free is_cut early (can_start absorbed it)
+            { std::vector<bool>().swap(is_cut); }
+
+
+            std::vector<int> localId(N, -1);
+            std::vector<std::vector<uint32_t>> comps;
+            {
+                std::vector<bool> seen(N, false);
+                std::vector<uint32_t> stk;
+                stk.reserve(1024);
+                for (uint32_t s = 0; s < N; s++) {
+                    if (seen[s]) continue;
+                    comps.emplace_back();
+                    auto &cc = comps.back();
+                    cc.reserve(256);
+                    stk.clear();
+                    stk.push_back(s);
+                    seen[s] = true;
+                    while (!stk.empty()) {
+                        uint32_t v = stk.back(); stk.pop_back();
+                        localId[v] = (int)cc.size();
+                        cc.push_back(v);
+                        for (const UBEdge *it = C.adjBegin(v),
+                                          *end = C.adjEnd(v);
+                             it != end; ++it) {
+                            if (!seen[it->neighbor]) {
+                                seen[it->neighbor] = true;
+                                stk.push_back(it->neighbor);
+                            }
+                        }
+                    }
+                }
+            }
+
+            std::vector<int> plus_dir(N, 0);
 
             using PackedInc = std::pair<std::uint32_t, std::uint32_t>;
             std::vector<std::vector<PackedInc>> incidencesByCC(comps.size());
@@ -6699,125 +6752,172 @@ namespace solver
             if (C.clsdTrees) clsdTextByCC.resize(comps.size());
 
             std::atomic<size_t> next{0};
-            std::atomic<bool> abort{false};
+            std::atomic<bool> abort_flag{false};
             std::exception_ptr eptr = nullptr;
             std::mutex ep_mtx;
 
             int T = std::min<int>(C.threads, (int)comps.size());
             if (T <= 0) T = 1;
 
+            const bool keep_trivial = C.includeTrivial;
+
             std::vector<std::thread> threads;
             threads.reserve(T);
 
             for (int t = 0; t < T; ++t) {
-                threads.emplace_back([&]() {
+                threads.emplace_back([&, keep_trivial]() {
                     try {
-                        while (!abort.load(std::memory_order_relaxed)) {
+                        while (!abort_flag.load(std::memory_order_relaxed)) {
                             size_t ci = next.fetch_add(1);
                             if (ci >= comps.size()) break;
 
                             auto &cc = comps[ci];
                             const int k = (int)cc.size();
 
-                            DirectedEdgeBuilder out(k, /*reserve_edges=*/0);
+                            DirectedEdgeBuilder out(k);
 
-                            for (ogdf::node v : cc) {
-                                if (!plus_dir[v] && is_tip[v]) {
+                            for (uint32_t v : cc) {
+                                if (!plus_dir[v] && can_start[v]) {
                                     plus_dir[v] = 1;
                                     orient_emit_iterative_cc(
                                         v, true,
-                                        plus_dir,
-                                        nodeId,
-                                        localId,
-                                        etype,
-                                        out
+                                        plus_dir, localId, C, out
                                     );
                                 }
                             }
 
-                            for (ogdf::node v : cc) {
+                            for (uint32_t v : cc) {
                                 if (!plus_dir[v]) {
                                     throw std::runtime_error(
-                                        "Ultrabubble: orientation failed (unoriented node: " + C.node2name[v] + "). "
-                                        "Veuillez vérifier que chaque CC contient au moins un tip."
+                                        "Ultrabubble: orientation failed "
+                                        "(unoriented node: " + names[v] + "). "
+                                        "Each connected component must contain "
+                                        "at least one tip or cut vertex."
                                     );
                                 }
                             }
 
-                            // dedup edges
                             auto &directed_edges = out.edges;
-                            std::sort(directed_edges.begin(), directed_edges.end());
-                            directed_edges.erase(std::unique(directed_edges.begin(), directed_edges.end()),
-                                                directed_edges.end());
+                            std::sort(directed_edges.begin(),
+                                      directed_edges.end());
+                            directed_edges.erase(
+                                std::unique(directed_edges.begin(),
+                                            directed_edges.end()),
+                                directed_edges.end());
 
                             // CLSD
-                            std::vector<std::pair<int,int>> superbubbles;
-
                             std::vector<ClsdTree> trees;
-                            std::vector<ClsdTree>* trees_ptr = (C.clsdTrees ? &trees : nullptr);
-                            superbubbles = compute_weak_superbubbles_from_edges(out.nextId, directed_edges, trees_ptr);
+                            std::vector<ClsdTree>* trees_ptr =
+                                (C.clsdTrees ? &trees : nullptr);
+                            auto superbubbles =
+                                compute_weak_superbubbles_from_edges(
+                                    out.nextId, directed_edges, trees_ptr);
+
+                            // if (!keep_trivial && !superbubbles.empty()) {
+                            //     std::vector<int> odeg(out.nextId, 0);
+                            //     for (const auto &de : directed_edges)
+                            //         odeg[de.first]++;
+
+                            //     superbubbles.erase(
+                            //         std::remove_if(superbubbles.begin(),
+                            //                        superbubbles.end(),
+                            //             [&](const std::pair<int,int> &sb) {
+                            //                 return sb.first >= 0 &&
+                            //                        sb.first < (int)odeg.size() &&
+                            //                        odeg[sb.first] == 1;
+                            //             }),
+                            //         superbubbles.end());
+                            // }
+                            if (!keep_trivial && !superbubbles.empty()) {
+                                std::vector<int> odeg(out.nextId, 0);
+                                for (const auto &de : directed_edges)
+                                    odeg[de.first]++;
+
+                                superbubbles.erase(
+                                    std::remove_if(superbubbles.begin(),
+                                                   superbubbles.end(),
+                                        [&](const std::pair<int,int> &sb) {
+                                            return sb.first >= 0 &&
+                                                   sb.first < (int)odeg.size() &&
+                                                   odeg[sb.first] == 1 &&
+                                                   std::binary_search(
+                                                       directed_edges.begin(),
+                                                       directed_edges.end(),
+                                                       std::make_pair(sb.first, sb.second));
+                                        }),
+                                    superbubbles.end());
+                            }
 
                             std::ostringstream clsd_buf;
 
                             if (C.clsdTrees && !trees.empty()) {
+                                auto hierarchy = [&](auto&& self,
+                                                     const ClsdTree& tr)
+                                    -> std::vector<std::string>
+                                {
+                                    int xid = tr.entrance;
+                                    int yid = tr.exit;
 
-                                auto hierarchy = [&](auto&& self, const ClsdTree& t) -> std::vector<std::string> {
-                                    int xid = t.entrance;
-                                    int yid = t.exit;
+                                    const bool valid =
+                                        (xid >= 0 && xid < k) &&
+                                        (yid >= 0 && yid < k);
 
-                                    const bool valid = (xid >= 0 && xid < k) && (yid >= 0 && yid < k);
-
-                                    std::vector<std::string> children_serialized;
-                                    children_serialized.reserve(t.children.size());
-
-                                    for (const auto& ch : t.children) {
-                                        std::vector<std::string> sub = self(self, ch);
-                                        for (auto &s : sub) children_serialized.emplace_back(std::move(s));
+                                    std::vector<std::string> children_ser;
+                                    children_ser.reserve(tr.children.size());
+                                    for (const auto& ch : tr.children) {
+                                        auto sub = self(self, ch);
+                                        for (auto &s : sub)
+                                            children_ser.emplace_back(
+                                                std::move(s));
                                     }
 
-                                    if (!valid) {
-                                        return children_serialized;
-                                    }
+                                    if (!valid) return children_ser;
 
-                                    ogdf::node x = cc[xid];
-                                    ogdf::node y = cc[yid];
+                                    uint32_t x = cc[xid];
+                                    uint32_t y = cc[yid];
 
-                                    std::string xname = C.node2name[x];
-                                    std::string yname = C.node2name[y];
+                                    const std::string &xname = names[x];
+                                    const std::string &yname = names[y];
 
-                                    char xsign = "-+"[ plus_dir[x] == 1 ];
-                                    char ysign = "+-"[ plus_dir[y] == 1 ];
+                                    if (xname == "_trash" ||
+                                        yname == "_trash")
+                                        return children_ser;
+
+                                    char xsign =
+                                        "-+"[ plus_dir[x] == 1 ];
+                                    char ysign =
+                                        "+-"[ plus_dir[y] == 1 ];
 
                                     std::string X = xname + xsign;
                                     std::string Y = yname + ysign;
 
                                     std::string res;
-                                    if (!children_serialized.empty()) {
+                                    if (!children_ser.empty()) {
                                         res += "(";
-                                        for (size_t i = 0; i < children_serialized.size(); ++i) {
-                                            res += children_serialized[i];
-                                            if (i + 1 < children_serialized.size()) res += ",";
+                                        for (size_t i = 0;
+                                             i < children_ser.size(); ++i) {
+                                            res += children_ser[i];
+                                            if (i + 1 < children_ser.size())
+                                                res += ",";
                                         }
                                         res += ")";
                                     }
-
                                     res += "<" + X + "," + Y + ">";
-
-                                    return std::vector<std::string>{ std::move(res) };
+                                    return std::vector<std::string>{
+                                        std::move(res)};
                                 };
 
                                 for (const auto& tr : trees) {
-                                    std::vector<std::string> lines = hierarchy(hierarchy, tr);
-                                    for (const auto& s : lines) {
+                                    auto lines = hierarchy(hierarchy, tr);
+                                    for (const auto& s : lines)
                                         clsd_buf << s << "\n";
-                                    }
                                 }
                             }
 
-                            if (C.clsdTrees) {
+                            if (C.clsdTrees)
                                 clsdTextByCC[ci] = clsd_buf.str();
-                            }
 
+                            // ── Collect results ──
                             auto &inc = incidencesByCC[ci];
                             inc.reserve(superbubbles.size());
 
@@ -6828,24 +6928,33 @@ namespace solver
                                 if (xid < 0 || yid < 0) continue;
                                 if (xid >= k || yid >= k) continue;
 
-                                ogdf::node x = cc[xid];
-                                ogdf::node y = cc[yid];
+                                uint32_t x = cc[xid];
+                                uint32_t y = cc[yid];
 
-                                const int xg = nodeId[x];
-                                const int yg = nodeId[y];
+                                if (names[x] == "_trash" ||
+                                    names[y] == "_trash")
+                                    continue;
 
-                                const bool xplus = (plus_dir[x] == 1);
-                                const bool yplus = (plus_dir[y] != 1);
+                                const bool xplus =
+                                    (plus_dir[x] == 1);
+                                const bool yplus =
+                                    (plus_dir[y] != 1);
 
-                                const std::uint32_t xpack = (std::uint32_t(xg) << 1) | (xplus ? 1u : 0u);
-                                const std::uint32_t ypack = (std::uint32_t(yg) << 1) | (yplus ? 1u : 0u);
+                                const std::uint32_t xpack =
+                                    (std::uint32_t(x) << 1) |
+                                    (xplus ? 1u : 0u);
+                                const std::uint32_t ypack =
+                                    (std::uint32_t(y) << 1) |
+                                    (yplus ? 1u : 0u);
 
-                                if (xg > yg) inc.emplace_back(ypack, xpack);
-                                else         inc.emplace_back(xpack, ypack);
+                                if (x > y)
+                                    inc.emplace_back(ypack, xpack);
+                                else
+                                    inc.emplace_back(xpack, ypack);
                             }
                         }
                     } catch (...) {
-                        abort.store(true);
+                        abort_flag.store(true);
                         std::lock_guard<std::mutex> lk(ep_mtx);
                         if (!eptr) eptr = std::current_exception();
                     }
@@ -6857,12 +6966,12 @@ namespace solver
 
             if (C.clsdTrees) {
                 std::ofstream outFile(C.clsdTreesPath);
-                if (!outFile) {
-                    throw std::runtime_error("Cannot open CLSD trees output file: " + C.clsdTreesPath);
-                }
-                for (size_t ci = 0; ci < clsdTextByCC.size(); ++ci) {
+                if (!outFile)
+                    throw std::runtime_error(
+                        "Cannot open CLSD trees output file: " +
+                        C.clsdTreesPath);
+                for (size_t ci = 0; ci < clsdTextByCC.size(); ++ci)
                     outFile << clsdTextByCC[ci];
-                }
             }
 
             C.ultrabubbleIncPacked.clear();
@@ -6870,16 +6979,18 @@ namespace solver
             for (auto &v : incidencesByCC) total += v.size();
             C.ultrabubbleIncPacked.reserve(total);
 
-            for (size_t ci = 0; ci < incidencesByCC.size(); ++ci) {
-                for (auto &p : incidencesByCC[ci]) {
+            for (size_t ci = 0; ci < incidencesByCC.size(); ++ci)
+                for (auto &p : incidencesByCC[ci])
                     C.ultrabubbleIncPacked.emplace_back(p);
-                }
-            }
 
-            std::cout << "ULTRABUBBLES found: " << C.ultrabubbleIncPacked.size() << "\n";
+            std::cout << "ULTRABUBBLES found: "
+                      << C.ultrabubbleIncPacked.size()
+                      << (keep_trivial ? " (trivial included)" : " (trivial excluded)")
+                      << "\n";
         }
 
-    }
+    } 
+
 }
 
 

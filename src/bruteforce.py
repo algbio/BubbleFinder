@@ -14,7 +14,7 @@ def generate_random_gfa(gfa, nn, ne, seed=None):
 
     with open(gfa, "w") as of:
         for n in nodes:
-            of.write(f"S {n} x\n")
+            of.write(f"S\t{n}\tx\n")
 
         while len(links) < ne:
             a = rng.choice(nodes)
@@ -29,11 +29,10 @@ def generate_random_gfa(gfa, nn, ne, seed=None):
             links.add(link)
 
         for (a, sa, b, sb) in sorted(links):
-            of.write(f"L {a} {sa} {b} {sb} x\n")
+            of.write(f"L\t{a}\t{sa}\t{b}\t{sb}\tx\n")
 
 
 def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
-    # On interprète "+" comme l'extrémité "droite" et "-" comme l'extrémité "gauche".
     used_plus = [False] * (nn + 1)
     used_minus = [False] * (nn + 1)
     deg = [0] * (nn + 1)
@@ -54,13 +53,12 @@ def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
 
             try:
                 a = int(parts[1])
-                sa = parts[2]  # orientation du "from"
+                sa = parts[2]  
                 b = int(parts[3])
-                sb = parts[4]  # orientation du "to"
+                sb = parts[4]  
             except ValueError:
                 continue
 
-            # Le "from" touche la FIN du segment dans l'orientation sa => extrémité = sa
             if 1 <= a <= nn:
                 deg[a] += 1
                 if sa == "+":
@@ -68,7 +66,7 @@ def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
                 elif sa == "-":
                     used_minus[a] = True
 
-            # Le "to" touche le DÉBUT du segment dans l'orientation sb => extrémité = flip(sb)
+           
             if 1 <= b <= nn:
                 deg[b] += 1
                 end_b = flip(sb)
@@ -80,24 +78,17 @@ def count_tips_in_gfa(gfa_path: Path, nn: int) -> int:
     tips = 0
     for n in range(1, nn + 1):
         if deg[n] == 0:
-            continue  # tu peux garder ce filtre si tu ne veux pas que les isolés comptent
+            continue  
         if not (used_plus[n] and used_minus[n]):
             tips += 1
     return tips
 
 
 def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool:
-    """
-    Returns True iff every connected component contains at least min_tips_per_cc tips.
-    CCs are computed on the undirected graph between segment ids (orientations ignored).
-    Tips are computed with the same semantics as count_tips_in_gfa() (isolated nodes are NOT tips).
-    """
-    # Tip computation (same logic as count_tips_in_gfa, but keep per-node result)
     used_plus = [False] * (nn + 1)
     used_minus = [False] * (nn + 1)
     deg = [0] * (nn + 1)
 
-    # Undirected adjacency for CCs
     adj = [[] for _ in range(nn + 1)]
 
     def flip(s: str) -> str:
@@ -122,12 +113,10 @@ def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool
             except ValueError:
                 continue
 
-            # adjacency (ignore orientations)
             if 1 <= a <= nn and 1 <= b <= nn and a != b:
                 adj[a].append(b)
                 adj[b].append(a)
 
-            # "from" touches END in orientation sa => endpoint = sa
             if 1 <= a <= nn:
                 deg[a] += 1
                 if sa == "+":
@@ -135,7 +124,6 @@ def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool
                 elif sa == "-":
                     used_minus[a] = True
 
-            # "to" touches BEGIN in orientation sb => endpoint = flip(sb)
             if 1 <= b <= nn:
                 deg[b] += 1
                 end_b = flip(sb)
@@ -147,17 +135,15 @@ def cc_min_tips_ok_in_gfa(gfa_path: Path, nn: int, min_tips_per_cc: int) -> bool
     is_tip = [False] * (nn + 1)
     for n in range(1, nn + 1):
         if deg[n] == 0:
-            continue  # isolated nodes are NOT tips
+            continue 
         if not (used_plus[n] and used_minus[n]):
             is_tip[n] = True
 
-    # CC check: every CC must contain >= min_tips_per_cc tips
     seen = [False] * (nn + 1)
     for start in range(1, nn + 1):
         if seen[start]:
             continue
 
-        # BFS/DFS to gather component nodes
         stack = [start]
         seen[start] = True
         comp = []
@@ -431,13 +417,13 @@ def main():
         "--min-tips-per-cc",
         type=int,
         default=0,
-        help="Require at least this many tips IN EACH connected component (0 disables filtering).",
+        help="Require at least this many tips IN EACH connected component (0 disables filtering)",
     )
     parser.add_argument(
         "--max-gen-attempts",
         type=int,
         default=1000,
-        help="Max attempts to generate a graph satisfying --min-tips-per-cc (avoid infinite loops).",
+        help="Max attempts to generate a graph satisfying --min-tips-per-cc",
     )
 
     args = parser.parse_args()
@@ -453,9 +439,9 @@ def main():
         feat = "snarls"
 
     Feat = feat.capitalize()
-    print(f"Tests on {Feat} (Mode detected: {mode}).")
+    print(f"Tests on {Feat} (Mode: {mode})")
     if args.bubblefinder_only:
-        print("BubbleFinder-only mode enabled: brute-force will NOT be executed.")
+        print("BubbleFinder only mode enabled : bruteforce will NOT be executed!")
 
     brute = args.bruteforce_bin
     bf_bin = args.bubblefinder_bin

@@ -2,6 +2,11 @@
 #include "util/context.hpp"
 #include "util/timer.hpp"
 #include "util/logger.hpp"
+#include "gfa_parser.hpp"
+
+#ifdef BUBBLEFINDER_HAS_GBZ
+#include "gbz_parser.hpp"
+#endif
 
 #include <fstream>
 #include <regex>
@@ -17,6 +22,8 @@
 using namespace ogdf;
 
 namespace GraphIO {
+
+
 
 void readStandard()
 {
@@ -133,307 +140,235 @@ void readStandard()
     }
 }
 
+namespace {
+
+inline char flipSign(char c) { return c == '+' ? '-' : '+'; }
+inline EdgePartType charToType(char c) { return c == '+' ? EdgePartType::PLUS : EdgePartType::MINUS; }
+
+std::vector<ogdf::node> createNodes(BiGraph& bg) {
+    auto &C = ctx();
+    std::vector<ogdf::node> id2node(bg.n_nodes);
+    C.name2node.reserve(bg.n_nodes);
+    for (uint32_t i = 0; i < bg.n_nodes; ++i) {
+        ogdf::node v = C.G.newNode();
+        id2node[i] = v;
+        C.node2name[v] = bg.node_names[i];
+        C.name2node[bg.node_names[i]] = v;
+    }
+    C.gfaSegmentIds = std::move(bg.node_names);
+    return id2node;
+}
+
+void buildSnarlGraph(BiGraph& bg) {
+    auto &C = ctx();
+    auto id2node = createNodes(bg);
+    C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+
+    struct PairKey {
+        uint32_t u, v;
+        bool operator<(const PairKey& o) const { return u!=o.u ? u<o.u : v<o.v; }
+        bool operator==(const PairKey& o) const { return u==o.u && v==o.v; }
+    };
+    std::vector<PairKey> pkeys;
+    pkeys.reserve(bg.links.size());
+    for (auto& lk : bg.links) {
+        uint32_t a = std::min(lk.src, lk.dst), b = std::max(lk.src, lk.dst);
+        pkeys.push_back({a, b});
+    }
+    std::sort(pkeys.begin(), pkeys.end());
+
+    auto is_multi = [&](uint32_t a, uint32_t b) -> bool {
+        PairKey key{std::min(a,b), std::max(a,b)};
+        auto lo = std::lower_bound(pkeys.begin(), pkeys.end(), key);
+        auto hi = std::upper_bound(lo, pkeys.end(), key);
+        return (hi - lo) > 1;
+    };
+
+    for (auto& lk : bg.links) {
+        EdgePartType t1 = charToType(lk.orient_src);
+        EdgePartType t2 = charToType(flipSign(lk.orient_dst));
+        uint32_t u = lk.src, v = lk.dst;
+        if (u > v) { std::swap(u, v); std::swap(t1, t2); }
+
+        if (!is_multi(u, v)) {
+            ogdf::edge e = C.G.newEdge(id2node[u], id2node[v]);
+            C._edge2types[e] = {t1, t2};
+        } else {
+            ogdf::node mid = C.G.newNode();
+            C.node2name[mid] = "_trash";
+            ogdf::edge e1 = C.G.newEdge(id2node[u], mid);
+            C._edge2types[e1] = {t1, EdgePartType::PLUS};
+            ogdf::edge e2 = C.G.newEdge(mid, id2node[v]);
+            C._edge2types[e2] = {EdgePartType::PLUS, t2};
+        }
+    }
+}
+
+void buildUltrabubbleLightGraph(BiGraph& bg) {
+    auto &C = ctx();
+    const uint32_t N = bg.n_nodes;
+    C.ubNumNodes  = N;
+    C.ubNodeNames = std::move(bg.node_names);
+
+    struct CanonEdge {
+        uint32_t u, v;
+        uint8_t  tu, tv; 
+
+        bool operator<(const CanonEdge &o) const {
+            if (u != o.u) return u < o.u;
+            if (v != o.v) return v < o.v;
+            if (tu != o.tu) return tu < o.tu;
+            return tv < o.tv;
+        }
+        bool operator==(const CanonEdge &o) const {
+            return u == o.u && v == o.v && tu == o.tu && tv == o.tv;
+        }
+    };
+
+    std::vector<CanonEdge> edges;
+    edges.reserve(bg.links.size());
+
+    for (auto& lk : bg.links) {
+        uint8_t t1 = (uint8_t)charToType(lk.orient_src);
+        uint8_t t2 = (uint8_t)charToType(flipSign(lk.orient_dst));
+        uint32_t u = lk.src, v = lk.dst;
+        if (u > v) { std::swap(u, v); std::swap(t1, t2); }
+        edges.push_back({u, v, t1, t2});
+    }
+
+    { std::vector<BiLink>().swap(bg.links); }
+
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    const size_t E = edges.size();
+
+    C.ubOffset.assign(N + 1, 0);
+    for (const auto &e : edges) {
+        C.ubOffset[e.u + 1]++;
+        C.ubOffset[e.v + 1]++;
+    }
+    for (uint32_t i = 1; i <= N; i++) {
+        C.ubOffset[i] += C.ubOffset[i - 1];
+    }
+
+    C.ubEdges.resize(C.ubOffset[N]);  // = 2 * E
+
+    std::vector<uint32_t> cursor(C.ubOffset.begin(), C.ubOffset.end());
+
+    for (const auto &e : edges) {
+        C.ubEdges[cursor[e.u]++] = {e.v, e.tu, e.tv};
+        C.ubEdges[cursor[e.v]++] = {e.u, e.tv, e.tu};
+    }
+
+    logger::info("graph built: {} nodes, {} edges (CSR: {} adj entries)",
+                 N, E, C.ubEdges.size());
+}
+
+void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
+    auto &C = ctx();
+    C.name2node.reserve(bg.n_nodes * 2);
+    std::vector<ogdf::node> id2plus(bg.n_nodes), id2minus(bg.n_nodes);
+
+    for (uint32_t i = 0; i < bg.n_nodes; ++i) {
+        std::string pn = bg.node_names[i] + "+", mn = bg.node_names[i] + "-";
+        ogdf::node vp = C.G.newNode(), vm = C.G.newNode();
+        id2plus[i] = vp; id2minus[i] = vm;
+        C.node2name[vp] = pn; C.node2name[vm] = mn;
+        C.name2node[pn] = vp; C.name2node[mn] = vm;
+    }
+    C.gfaSegmentIds = std::move(bg.node_names);
+
+    auto getNode = [&](uint32_t id, char o) -> ogdf::node {
+        return (o == '+') ? id2plus[id] : id2minus[id];
+    };
+
+    struct DE { int u, v; bool operator<(const DE& o) const { return u!=o.u ? u<o.u : v<o.v; }
+                          bool operator==(const DE& o) const { return u==o.u && v==o.v; } };
+    std::vector<DE> des;
+    des.reserve(directed_only ? bg.links.size() : bg.links.size() * 2);
+
+    for (auto& lk : bg.links) {
+        des.push_back({getNode(lk.src, lk.orient_src)->index(),
+                       getNode(lk.dst, lk.orient_dst)->index()});
+        if (!directed_only)
+            des.push_back({getNode(lk.dst, flipSign(lk.orient_dst))->index(),
+                           getNode(lk.src, flipSign(lk.orient_src))->index()});
+    }
+    std::sort(des.begin(), des.end());
+    des.erase(std::unique(des.begin(), des.end()), des.end());
+
+    std::unordered_map<int, ogdf::node> idx2n;
+    for (ogdf::node v : C.G.nodes) idx2n[v->index()] = v;
+    for (auto& d : des) C.G.newEdge(idx2n[d.u], idx2n[d.v]);
+}
+
+void buildSpqrGraph(BiGraph& bg) {
+    auto &C = ctx();
+    auto id2node = createNodes(bg);
+    for (auto& lk : bg.links) C.G.newEdge(id2node[lk.src], id2node[lk.dst]);
+}
+
+} 
+
+
+
+namespace {
+
+inline bool ends_with(const std::string& s, const std::string& suffix) {
+    return s.size() >= suffix.size() &&
+           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+BiGraph parse_graph_input(const std::string& path, int threads) {
+    if (ends_with(path, ".gbz")) {
+#ifdef BUBBLEFINDER_HAS_GBZ
+        logger::info("GBZ parser: reading '{}'", path);
+        auto bg = GBZParser::parse_file(path);
+        logger::info("GBZ parser: {} segments, {} links", bg.n_nodes, bg.links.size());
+        return bg;
+#else
+        throw std::runtime_error(
+            "GBZ support not compiled. Rebuild with -DBUBBLEFINDER_HAS_GBZ=ON "
+            "or convert: vg convert -f -H " + path + " | gzip > output.gfa.gz");
+#endif
+    }
+
+    logger::info("GFA parser: reading '{}'", path);
+    auto bg = GFAParser::parse_file(path, threads);
+    logger::info("GFA parser: {} segments, {} links", bg.n_nodes, bg.links.size());
+    return bg;
+}
+
+} 
 
 void readGFA()
 {
     auto &C = ctx();
-
     if (C.graphPath.empty())
         throw std::runtime_error("GFA input needs -g <file>");
 
-    C.gfaSegmentIds.clear();
-    C.gfaLinkLines.clear();
+    auto bg = parse_graph_input(C.graphPath, (int)C.threads);
+    if (bg.n_nodes == 0) { logger::info("Empty graph"); return; }
 
-    if (C.bubbleType == Context::BubbleType::SNARL ||
-        C.bubbleType == Context::BubbleType::ULTRABUBBLE ||
-        C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
-    {
-        C._edge2types.init(C.G,
-                           std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+    switch (C.bubbleType) {
+        case Context::BubbleType::ULTRABUBBLE:
+            buildUltrabubbleLightGraph(bg);
+            return; 
+        case Context::BubbleType::SNARL:
+            C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+            buildSnarlGraph(bg);
+            break;
+        case Context::BubbleType::SUPERBUBBLE:
+            buildSuperbubbleGraph(bg, C.inputFormat == Context::InputFormat::GfaDirected);
+            break;
+        case Context::BubbleType::SPQR_TREE_ONLY:
+            buildSpqrGraph(bg);
+            break;
+        default:
+            break;
     }
 
-    auto flip = [](char c) { return c == '+' ? '-' : '+'; };
-
-    auto parse_L = [&](const std::string &line,
-                       std::string &from, char &o1,
-                       std::string &to, char &o2) -> bool
-    {
-        if (line.empty() || line[0] != 'L')
-            return false;
-        std::istringstream iss(line);
-        std::string tok, ovl_str;
-        if (!(iss >> tok >> from >> o1 >> to >> o2 >> ovl_str))
-            return false;
-        if (tok != "L")
-            return false;
-        return true;
-    };
-
-    auto ensure = [&](const std::string &name)
-    {
-        if (!C.name2node.count(name))
-        {
-            auto id = C.G.newNode();
-            C.name2node[name] = id;
-            C.node2name[id] = name;
-        }
-    };
-
-    std::unordered_set<std::string> have_segment;
-    {
-        std::ifstream in(C.graphPath);
-        if (!in)
-            throw std::runtime_error("Cannot open " + C.graphPath);
-
-        std::string line;
-        while (std::getline(in, line))
-        {
-            if (line.empty() || line[0] == '#')
-                continue;
-            if (line[0] != 'S')
-                continue;
-
-            std::istringstream iss(line);
-            std::string tok, id, seq;
-            if (!(iss >> tok >> id >> seq))
-                continue;
-            if (tok != "S")
-                continue;
-            if (id.empty())
-                continue;
-
-            if (have_segment.insert(id).second)
-            {
-                C.gfaSegmentIds.push_back(id);
-
-                if (C.bubbleType == Context::BubbleType::SNARL ||
-                    C.bubbleType == Context::BubbleType::ULTRABUBBLE ||
-                    C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
-                {
-                    ensure(id);
-                }
-                else
-                {
-                    ensure(id + "+");
-                    ensure(id + "-");
-                }
-            }
-        }
-    }
-
-    struct PairHash
-    {
-        std::size_t operator()(const std::pair<std::string, std::string> &p) const noexcept
-        {
-            std::size_t h1 = std::hash<std::string>{}(p.first);
-            std::size_t h2 = std::hash<std::string>{}(p.second);
-            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-        }
-    };
-    std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pair_count_snarl;
-
-    if (C.bubbleType == Context::BubbleType::SNARL)
-    {
-        std::ifstream in(C.graphPath);
-        if (!in)
-            throw std::runtime_error("Cannot open " + C.graphPath);
-
-        std::string line, from, to;
-        char o1 = 0, o2 = 0;
-        while (std::getline(in, line))
-        {
-            if (!parse_L(line, from, o1, to, o2))
-                continue;
-
-            if (have_segment.count(from) && have_segment.count(to))
-            {
-                auto key = (from < to) ? std::make_pair(from, to) : std::make_pair(to, from);
-                pair_count_snarl[key]++;
-            }
-        }
-    }
-
-    struct EdgeKey
-    {
-        std::string u, v;
-        bool operator==(const EdgeKey &o) const { return u == o.u && v == o.v; }
-    };
-    struct EdgeKeyHash
-    {
-        std::size_t operator()(EdgeKey const &k) const
-        {
-            std::size_t h1 = std::hash<std::string>{}(k.u);
-            std::size_t h2 = std::hash<std::string>{}(k.v);
-            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-        }
-    };
-    std::unordered_set<EdgeKey, EdgeKeyHash> seen_doubled;
-
-    auto add_edge_double = [&](const std::string &u, const std::string &v)
-    {
-        EdgeKey key{u, v};
-        if (seen_doubled.insert(key).second)
-        {
-            ensure(u);
-            ensure(v);
-            C.G.newEdge(C.name2node[u], C.name2node[v]);
-        }
-    };
-
-    // SNARL (bidirected via types)
-    auto add_edge_snarl = [&](std::string u, std::string v,
-                              EdgePartType t1, EdgePartType t2)
-    {
-        ensure(u);
-        ensure(v);
-
-        if (u > v)
-        {
-            std::swap(u, v);
-            std::swap(t1, t2);
-        }
-        auto key = std::make_pair(u, v);
-        bool multi = pair_count_snarl[key] > 1;
-
-        if (!multi)
-        {
-            ogdf::edge e = C.G.newEdge(C.name2node[u], C.name2node[v]);
-            C._edge2types[e] = std::make_pair(t1, t2);
-            return;
-        }
-
-        // HEAD behavior: split multi-edge by inserting _trash
-        auto mid_node = C.G.newNode();
-        C.node2name[mid_node] = "_trash";
-
-        {
-            ogdf::edge e1 = C.G.newEdge(C.name2node[u], mid_node);
-            C._edge2types[e1] = std::make_pair(t1, EdgePartType::PLUS);
-        }
-        {
-            ogdf::edge e2 = C.G.newEdge(mid_node, C.name2node[v]);
-            C._edge2types[e2] = std::make_pair(EdgePartType::PLUS, t2);
-        }
-    };
-
-    struct BiEdgeKey
-    {
-        std::string u;
-        EdgePartType su;
-        std::string v;
-        EdgePartType sv;
-        bool operator==(BiEdgeKey const &o) const noexcept
-        {
-            return u == o.u && su == o.su && v == o.v && sv == o.sv;
-        }
-    };
-    struct BiEdgeKeyHash
-    {
-        std::size_t operator()(BiEdgeKey const &k) const noexcept
-        {
-            auto hs = [](EdgePartType t) -> std::size_t
-            {
-                return t == EdgePartType::PLUS ? 0x9e3779b9u : t == EdgePartType::MINUS ? 0x85ebca6bu
-                                                                                         : 0u;
-            };
-            std::size_t h1 = std::hash<std::string>{}(k.u) ^ (hs(k.su) + 0x9e3779b97f4a7c15ULL);
-            std::size_t h2 = std::hash<std::string>{}(k.v) ^ (hs(k.sv) + 0x9e3779b97f4a7c15ULL);
-            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-        }
-    };
-    std::unordered_set<BiEdgeKey, BiEdgeKeyHash> seen_bidir_ultrabubble;
-
-    auto add_edge_ultrabubble = [&](const std::string &u_in,
-                                    const std::string &v_in,
-                                    EdgePartType t1_in,
-                                    EdgePartType t2_in)
-    {
-        ensure(u_in);
-        ensure(v_in);
-
-        ogdf::node u = C.name2node[u_in];
-        ogdf::node v = C.name2node[v_in];
-        EdgePartType su = t1_in;
-        EdgePartType sv = t2_in;
-
-        if (u->index() > v->index())
-        {
-            std::swap(u, v);
-            std::swap(su, sv);
-        }
-
-        const std::string &u_name = C.node2name[u];
-        const std::string &v_name = C.node2name[v];
-
-        BiEdgeKey key{u_name, su, v_name, sv};
-        if (!seen_bidir_ultrabubble.insert(key).second)
-            return;
-
-        ogdf::edge e = C.G.newEdge(u, v);
-        C._edge2types[e] = std::make_pair(su, sv);
-    };
-
-    {
-        std::ifstream in(C.graphPath);
-        if (!in)
-            throw std::runtime_error("Cannot open " + C.graphPath);
-
-        std::string line, from, to;
-        char o1 = 0, o2 = 0;
-
-        while (std::getline(in, line))
-        {
-            if (!parse_L(line, from, o1, to, o2))
-                continue;
-
-            if (C.bubbleType == Context::BubbleType::SUPERBUBBLE)
-            {
-                ensure(from + "+");
-                ensure(from + "-");
-                ensure(to + "+");
-                ensure(to + "-");
-
-                if (C.inputFormat == Context::InputFormat::Gfa)
-                {
-                    const std::string u1 = from + std::string(1, o1);
-                    const std::string v1 = to + std::string(1, o2);
-                    add_edge_double(u1, v1);
-
-                    const std::string u2 = to + std::string(1, flip(o2));
-                    const std::string v2 = from + std::string(1, flip(o1));
-                    add_edge_double(u2, v2);
-                }
-                else if (C.inputFormat == Context::InputFormat::GfaDirected)
-                {
-                    const std::string u = from + std::string(1, o1);
-                    const std::string v = to + std::string(1, o2);
-                    add_edge_double(u, v);
-                }
-                else
-                {
-                    throw std::logic_error("Unexpected inputFormat in readGFA() for SUPERBUBBLE");
-                }
-            }
-            else if (C.bubbleType == Context::BubbleType::SNARL)
-            {
-                auto t1 = (o1 == '+' ? EdgePartType::PLUS : EdgePartType::MINUS);
-                auto t2 = (o2 == '+' ? EdgePartType::MINUS : EdgePartType::PLUS);
-                add_edge_snarl(from, to, t1, t2);
-            }
-            else if (C.bubbleType == Context::BubbleType::ULTRABUBBLE)
-            {
-                auto t1 = (o1 == '+' ? EdgePartType::PLUS : EdgePartType::MINUS);
-                auto t2 = (o2 == '+' ? EdgePartType::MINUS : EdgePartType::PLUS);
-                add_edge_ultrabubble(from, to, t1, t2);
-            }
-            else if (C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
-            {
-                ensure(from);
-                ensure(to);
-                C.G.newEdge(C.name2node[from], C.name2node[to]);
-            }
-        }
-    }
+    logger::info("OGDF graph built: {} nodes, {} edges", C.G.numberOfNodes(), C.G.numberOfEdges());
 }
 
 namespace {
@@ -510,7 +445,6 @@ namespace {
                 throw std::runtime_error("Error reading from decompression pipe");
             }
             if (n == 0) {
-                // EOF
                 break;
             }
         }
@@ -534,67 +468,64 @@ void readGraph() {
 
     logger::info("Starting to read graph");
 
+    if (C.inputFormat == Context::InputFormat::Gfa ||
+        C.inputFormat == Context::InputFormat::GfaDirected)
+    {
+        readGFA();
+
+        if (C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+            logger::info("Graph read");
+            return;
+        }
+
+        C.isEntry = NodeArray<bool>(C.G, false);
+        C.isExit  = NodeArray<bool>(C.G, false);
+        C.inDeg   = NodeArray<int>(C.G, 0);
+        C.outDeg  = NodeArray<int>(C.G, 0);
+        for (edge e : C.G.edges) {
+            C.outDeg(e->source())++;
+            C.inDeg (e->target())++;
+        }
+        logger::info("Graph read");
+        return;
+    }
+
     std::string originalPath = C.graphPath;
     std::string tempPath;
     bool usingTempFile = false;
 
     if (C.compression != Context::Compression::None) {
         logger::info("Detected compressed input; starting decompression");
-
         tempPath = decompressToTempFile(C.graphPath, C.compression);
         usingTempFile = true;
         C.graphPath = tempPath;
-
         logger::info("Decompressed '{}' to temporary file '{}'",
                      originalPath, tempPath);
     }
 
     try {
-        switch (C.inputFormat) {
-            case Context::InputFormat::Gfa:
-            case Context::InputFormat::GfaDirected:
-                readGFA();
-                break;
-
-            case Context::InputFormat::Graph:
-                if (C.bubbleType == Context::BubbleType::SNARL) {
-                    throw std::runtime_error(
-                        "Standard .graph input is not supported for snarls, use GFA input");
-                }
-                if (C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY) {
-                    throw std::runtime_error(
-                        "Standard .graph input is not supported for spqr-tree-only, use GFA input");
-                }
-                readStandard();
-                break;
-
-            case Context::InputFormat::Auto:
-                throw std::runtime_error(
-                    "InputFormat::Auto should have been resolved in readArgs()");
+        if (C.bubbleType == Context::BubbleType::SNARL) {
+            throw std::runtime_error("Standard .graph input is not supported for snarls, use GFA");
         }
+        if (C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY) {
+            throw std::runtime_error("Standard .graph input is not supported for spqr-tree, use GFA");
+        }
+        readStandard();
     } catch (...) {
-        if (usingTempFile) {
-            C.graphPath = originalPath;
-            std::remove(tempPath.c_str());
-        }
+        if (usingTempFile) { C.graphPath = originalPath; std::remove(tempPath.c_str()); }
         throw;
     }
 
-    if (usingTempFile) {
-        C.graphPath = originalPath;
-        std::remove(tempPath.c_str());
-    }
+    if (usingTempFile) { C.graphPath = originalPath; std::remove(tempPath.c_str()); }
 
     C.isEntry = NodeArray<bool>(C.G, false);
     C.isExit  = NodeArray<bool>(C.G, false);
     C.inDeg   = NodeArray<int>(C.G, 0);
     C.outDeg  = NodeArray<int>(C.G, 0);
-
     for (edge e : C.G.edges) {
         C.outDeg(e->source())++;
         C.inDeg (e->target())++;
     }
-
     logger::info("Graph read");
 }
 
@@ -704,8 +635,8 @@ void drawGraph(const ogdf::Graph &G, const std::string &file)
 
 std::vector<std::pair<std::string, std::string>>
 project_bubblegun_pairs_from_doubled() {
-    auto& sb    = ctx().superbubbles; // vector<pair<NodeId, NodeId>> on the doubled graph
-    auto& names = ctx().node2name;    // NodeId -> "SEGID+" or "SEGID-"
+    auto& sb    = ctx().superbubbles; 
+    auto& names = ctx().node2name;    
 
     auto is_oriented = [](const std::string& s) -> bool {
         return !s.empty() && (s.back() == '+' || s.back() == '-');
@@ -809,8 +740,7 @@ void writeSuperbubbles()
         auto write_one = [&](std::ostream &os, std::uint32_t packed)
         {
             auto [gid, plus] = unpack(packed);
-            ogdf::node v = C.nodeByGlobalId.at((size_t)gid);
-            const std::string &name = C.node2name[v];
+            const std::string &name = C.ubNodeNames.at((size_t)gid);
             os << name << (plus ? '+' : '-');
         };
 

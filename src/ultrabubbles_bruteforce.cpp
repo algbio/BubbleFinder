@@ -9,17 +9,7 @@
 
 using namespace std;
 
-#ifndef DEBUG_BLOCKS
-#define DEBUG_BLOCKS 1
-#endif
-
 static inline int sgnIdx(char c) { return (c == '-') ? 1 : 0; }
-
-struct IncEdge {
-    int v;
-    char su; // side at u
-    char sv; // side at v
-};
 
 struct SnarlKey {
     int a, b;
@@ -33,9 +23,16 @@ struct SnarlKey {
 };
 
 static inline SnarlKey canon_snarl(int x, char dx, int y, char dy) {
-    if (x < y) return {x,y,dx,dy};
-    return {y,x,dy,dx};
+    if (x < y) return {x, y, dx, dy};
+    if (x > y) return {y, x, dy, dx};
+    if (dx <= dy) return {x, y, dx, dy};
+    return {y, x, dy, dx};
 }
+
+static inline string fmt_key(const SnarlKey& k, const vector<string>& nameOf) {
+    return nameOf[k.a] + string(1, k.da) + " " + nameOf[k.b] + string(1, k.db);
+}
+
 
 #ifdef __unix__
 static std::string get_self_dir() {
@@ -50,8 +47,8 @@ static std::string get_self_dir() {
 }
 
 static bool parse_side_token(const std::string& t,
-                            const std::unordered_map<std::string,int>& id,
-                            int &v, char &s) {
+                             const std::unordered_map<std::string,int>& id,
+                             int &v, char &s) {
     if (t.size() < 2) return false;
     char c = t.back();
     if (c != '+' && c != '-') return false;
@@ -63,28 +60,25 @@ static bool parse_side_token(const std::string& t,
     return true;
 }
 
-static bool run_snarls_bf(const std::string& snarls_bf_path,
-                          const std::string& gfa_path,
-                          const std::unordered_map<std::string,int>& id,
-                          std::set<SnarlKey>& out) {
+static bool run_external_tool(const std::string& cmd,
+                              const std::unordered_map<std::string,int>& id,
+                              std::set<SnarlKey>& out) {
     out.clear();
-
-    if (snarls_bf_path.empty()) return false;
-    if (access(snarls_bf_path.c_str(), X_OK) != 0) return false;
-
-    std::string cmd = "'" + snarls_bf_path + "' '" + gfa_path + "'";
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) return false;
 
     char buf[1<<15];
     while (fgets(buf, sizeof(buf), pipe)) {
         std::string line(buf);
+        if (line.find_first_not_of("0123456789 \t\r\n") == std::string::npos)
+            continue;
+
         std::stringstream ss(line);
         std::string t1, t2;
         ss >> t1 >> t2;
         if (!ss) continue;
 
-        int x,y; char dx,dy;
+        int x, y; char dx, dy;
         if (!parse_side_token(t1, id, x, dx)) continue;
         if (!parse_side_token(t2, id, y, dy)) continue;
 
@@ -94,17 +88,70 @@ static bool run_snarls_bf(const std::string& snarls_bf_path,
     int status = pclose(pipe);
     if (status == -1) return false;
     if (!WIFEXITED(status)) return false;
-    if (WEXITSTATUS(status) != 0) return false;
-    return true;
+    return WEXITSTATUS(status) == 0;
 }
 #endif
+
+
+static bool parse_bf_output(const std::string& path,
+                            const std::unordered_map<std::string,int>& id,
+                            std::set<SnarlKey>& out) {
+    out.clear();
+    ifstream f(path);
+    if (!f) return false;
+
+    string line;
+    if (!getline(f, line)) return false;
+
+    while (getline(f, line)) {
+        if (line.empty()) continue;
+        stringstream ss(line);
+        vector<pair<int,char>> endpoints;
+        string tok;
+        while (ss >> tok) {
+            int v; char s;
+            if (parse_side_token(tok, id, v, s))
+                endpoints.push_back({v, s});
+        }
+        for (size_t i = 0; i < endpoints.size(); i++)
+            for (size_t j = i+1; j < endpoints.size(); j++)
+                out.insert(canon_snarl(endpoints[i].first, endpoints[i].second,
+                                       endpoints[j].first, endpoints[j].second));
+    }
+    return true;
+}
+
+
+struct IncEdge {
+    int v;
+    char su; 
+    char sv; 
+};
 
 int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    if (argc != 2) {
-        cerr << "Usage: ./ultrabubbles_bf input.gfa\n";
+    string bf_ub_file, bf_snarls_file;
+    string gfa_path;
+
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i];
+        if (arg == "--bf-ub" && i+1 < argc) {
+            bf_ub_file = argv[++i];
+        } else if (arg == "--bf-snarls" && i+1 < argc) {
+            bf_snarls_file = argv[++i];
+        } else if (gfa_path.empty()) {
+            gfa_path = arg;
+        } else {
+            cerr << "Unknown argument: " << arg << "\n";
+            return 1;
+        }
+    }
+
+    if (gfa_path.empty()) {
+        cerr << "Usage: ./ultrabubbles_bf_consolidated input.gfa "
+                "[--bf-ub BF_UB_OUTPUT] [--bf-snarls BF_SNARLS_OUTPUT]\n";
         return 1;
     }
 
@@ -117,11 +164,8 @@ int main(int argc, char** argv) {
     const std::string snarls_bf_path;
 #endif
 
-    ifstream fin(argv[1]);
-    if (!fin) {
-        cerr << "Cannot open input.\n";
-        return 1;
-    }
+    ifstream fin(gfa_path);
+    if (!fin) { cerr << "Cannot open " << gfa_path << "\n"; return 1; }
 
     unordered_map<string,int> id;
     vector<string> nameOf;
@@ -168,14 +212,13 @@ int main(int argc, char** argv) {
             ensureN(max(u,v)+1);
             seenSegment[u] = seenSegment[v] = 1;
 
-            // bidirected incidence convention:
-            // at u we store oa, at v we store flip(ob)
             char su = oa;
             char sv = (ob == '-') ? '+' : '-';
             adj[u].push_back({v, su, sv});
             adj[v].push_back({u, sv, su});
         }
     }
+    fin.close();
 
     int N = (int)nameOf.size();
     ensureN(N);
@@ -183,12 +226,9 @@ int main(int argc, char** argv) {
     vector<int> nodes;
     nodes.reserve(N);
     for (int v = 0; v < N; v++) if (seenSegment[v]) nodes.push_back(v);
-
     sort(nodes.begin(), nodes.end());
-    assert(is_sorted(nodes.begin(), nodes.end()));
 
     cerr << "Vertices: " << nodes.size() << "\n";
-    cerr << "Enumerating ultrabubbles (INCLUDING weak)\n";
 
     const int REACH_FLAG = 1;
     const int BAD_FLAG   = 2;
@@ -197,7 +237,6 @@ int main(int argc, char** argv) {
     int dfs_it = 1;
     vector<int> snarl_component;
 
-    // DFS used for separability + component construction (split terminals semantics)
     function<int(int,int,int,char,char,bool)> dfs =
         [&](int z, int x, int y, char dx, char dy, bool track)->int {
 
@@ -242,7 +281,6 @@ int main(int argc, char** argv) {
         dfs_it++;
     };
 
-    // separability memo: N*N*4 (dx,dy in {0,1})
     vector<int8_t> sep((size_t)N * (size_t)N * 4, (int8_t)-1);
 
     auto sepIndex = [&](int x, int y, int dx, int dy)->size_t{
@@ -259,7 +297,6 @@ int main(int argc, char** argv) {
         return cell == (int8_t)1;
     };
 
-    // ---- split-terminals filter helpers ----
     int CX=-1, CY=-1;
     char CDX='?', CDY='?';
 
@@ -273,10 +310,8 @@ int main(int argc, char** argv) {
 
     vector<uint8_t> in_comp(N, 0);
 
-    // tip-free check in the NET GRAPH (split-filtered)
     auto has_internal_tip_in_component = [&]()->bool{
         vector<array<uint8_t,2>> hasSign(N, {0,0});
-
         for (int z : snarl_component) {
             for (auto &inc : adj[z]) {
                 int w = inc.v;
@@ -285,7 +320,6 @@ int main(int argc, char** argv) {
                 hasSign[z][sgnIdx(inc.su)] = 1;
             }
         }
-
         for (int z : snarl_component) {
             if (z == CX || z == CY) continue;
             if (!hasSign[z][0] || !hasSign[z][1]) return true;
@@ -293,17 +327,14 @@ int main(int argc, char** argv) {
         return false;
     };
 
-
     auto has_cycloid_in_component = [&]()->bool{
         auto sideId = [&](int v, char s)->int { return 2*v + sgnIdx(s); };
-        auto oppSide = [&](int side)->int { return side ^ 1; }; // flip + <-> -
+        auto oppSide = [&](int side)->int { return side ^ 1; };
 
-        const int S = 2 * N;     // number of sides
-        const int ST = 2 * S;    // (side, used_exception)
+        const int S = 2 * N;
+        const int ST = 2 * S;
         auto stId = [&](int side, int used)->int { return (side<<1) | used; };
 
-        // collect UNIQUE bidirected edges of X after splitting terminals
-        // store as (a,b) where a=sideId(u,α), b=sideId(v,β) with a<b
         vector<pair<int,int>> bedges;
         bedges.reserve(4 * snarl_component.size());
 
@@ -312,7 +343,6 @@ int main(int argc, char** argv) {
                 int w = inc.v;
                 if (!in_comp[w]) continue;
                 if (!edge_survives_split(z, w, inc.su, inc.sv)) continue;
-
                 int a = sideId(z, inc.su);
                 int b = sideId(w, inc.sv);
                 if (a > b) std::swap(a,b);
@@ -322,30 +352,25 @@ int main(int argc, char** argv) {
         sort(bedges.begin(), bedges.end());
         bedges.erase(unique(bedges.begin(), bedges.end()), bedges.end());
 
-        // build directed graph on states (side, used)
         vector<vector<int>> g(ST);
-        g.reserve(ST);
 
         auto add_arc = [&](int fromSide, int fromUsed, int toSide, int toUsed){
             g[stId(fromSide, fromUsed)].push_back(stId(toSide, toUsed));
         };
 
         for (auto [a,b] : bedges) {
-
             int ah = oppSide(a);
             int bh = oppSide(b);
-
             for (int used = 0; used <= 1; ++used) {
                 add_arc(a, used, bh, used);
                 add_arc(b, used, ah, used);
             }
-
             add_arc(a, 0, b, 1);
             add_arc(b, 0, a, 1);
         }
 
         {
-            vector<uint8_t> color(ST, 0); 
+            vector<uint8_t> color(ST, 0);
             function<bool(int)> dfsCyc0 = [&](int u)->bool{
                 color[u] = 1;
                 for (int v : g[u]) {
@@ -356,38 +381,35 @@ int main(int argc, char** argv) {
                 color[u] = 2;
                 return false;
             };
-
             for (int side = 0; side < S; ++side) {
                 int u = stId(side, 0);
-                if (color[u] == 0) {
-                    if (dfsCyc0(u)) return true;
-                }
+                if (color[u] == 0 && dfsCyc0(u)) return true;
             }
         }
 
         {
             vector<int> vis(ST, 0);
             int it = 1;
-
             for (int side = 0; side < S; ++side) {
                 int start = stId(side, 0);
                 if (g[start].empty()) continue;
-
                 int target = stId(side, 1);
 
                 std::stack<int> st;
                 st.push(start);
                 vis[start] = it;
+                bool found = false;
 
                 while (!st.empty()) {
                     int u = st.top(); st.pop();
-                    if (u == target) return true;
+                    if (u == target) { found = true; break; }
                     for (int v : g[u]) {
                         if (vis[v] == it) continue;
                         vis[v] = it;
                         st.push(v);
                     }
                 }
+                if (found) return true;
                 ++it;
             }
         }
@@ -395,23 +417,28 @@ int main(int argc, char** argv) {
         return false;
     };
 
+
+    set<SnarlKey> bf_snarls_set;    
+    set<SnarlKey> bf_ub_set;        
+
+    set<SnarlKey> snarls_with_tips;  
+    set<SnarlKey> snarls_with_cycle; 
+
     const size_t nV = nodes.size();
-    const size_t expected_candidates = (nV * (nV - 1) / 2) * 4;
-    size_t tested_candidates = 0;
+    size_t tested = 0;
+
+    cerr << "Enumerating all snarls and ultrabubbles...\n";
 
     for (size_t ii = 0; ii < nodes.size(); ii++) {
         int x = nodes[ii];
         for (size_t jj = ii + 1; jj < nodes.size(); jj++) {
             int y = nodes[jj];
-
             for (int dx = 0; dx < 2; dx++) {
                 for (int dy = 0; dy < 2; dy++) {
-                    tested_candidates++;
+                    tested++;
 
                     bool separable = getSep(x, y, dx, dy);
-#if DEBUG_BLOCKS
                     assert(separable == getSep(y, x, dy, dx));
-#endif
                     if (!separable) continue;
 
                     CDX = dx ? '-' : '+';
@@ -421,7 +448,6 @@ int main(int argc, char** argv) {
                     fill(in_comp.begin(), in_comp.end(), 0);
                     for (int z : snarl_component) in_comp[z] = 1;
 
-                    // minimality
                     bool not_minimal = false;
                     for (int z : snarl_component) {
                         if (z == x || z == y) continue;
@@ -430,41 +456,215 @@ int main(int argc, char** argv) {
                     }
                     if (not_minimal) continue;
 
-                    // set split terminals for split-filtered checks
+                    SnarlKey key = canon_snarl(x, dx ? '-' : '+', y, dy ? '-' : '+');
+                    bf_snarls_set.insert(key);
+
                     CX = x; CY = y;
                     CDX = dx ? '-' : '+';
                     CDY = dy ? '-' : '+';
 
-                    bool internal_tip = has_internal_tip_in_component();
-                    bool cyclic = has_cycloid_in_component();
+                    bool has_tip = has_internal_tip_in_component();
+                    bool has_cycle = has_cycloid_in_component();
 
-                    if (!internal_tip && !cyclic) {
-                        cout << nameOf[x] << (dx ? "-" : "+") << " "
-                             << nameOf[y] << (dy ? "-" : "+") << "\n";
+                    if (has_tip)   snarls_with_tips.insert(key);
+                    if (has_cycle) snarls_with_cycle.insert(key);
+
+                    if (!has_tip && !has_cycle) {
+                        bf_ub_set.insert(key);
+                        cout << nameOf[key.a] << key.da << " "
+                             << nameOf[key.b] << key.db << "\n";
                     }
                 }
             }
         }
     }
 
-    assert(tested_candidates == expected_candidates);
+    assert(tested == (nV * (nV - 1) / 2) * 4);
 
-#if DEBUG_BLOCKS
-#ifdef __unix__
-    const char* env = std::getenv("RUN_SNARLS_BF");
-    const bool do_external = (env && std::string(env) == "1");
+    int internal_failures = 0;
 
-    if (do_external) {
-        std::set<SnarlKey> snarls_ref;
-        bool ok = run_snarls_bf(snarls_bf_path, argv[1], id, snarls_ref);
-        if (!ok) {
-            cerr << "Could not run ./snarls_bf from same directory or it failed. Skipping external snarl cross check.\n";
+    cerr << "\n";
+    cerr << "=== Brute-force summary ===\n";
+    cerr << "  Snarls found:        " << bf_snarls_set.size() << "\n";
+    cerr << "  Ultrabubbles found:  " << bf_ub_set.size() << "\n";
+    cerr << "  Snarls with tips:    " << snarls_with_tips.size() << "\n";
+    cerr << "  Snarls with cycles:  " << snarls_with_cycle.size() << "\n";
+
+    {
+        int violations = 0;
+        for (auto& k : bf_ub_set) {
+            if (bf_snarls_set.find(k) == bf_snarls_set.end()) {
+                cerr << "  BUG: ultrabubble " << fmt_key(k, nameOf)
+                     << " is NOT in snarls set!\n";
+                violations++;
+            }
         }
-    } else {
-        cerr << "Skipping external ./snarls_bf cross check (set RUN_SNARLS_BF=1 to enable).\n";
+        if (violations == 0)
+            cerr << "  CHECK OK: all ultrabubbles are snarls\n";
+        else {
+            cerr << "  CHECK FAILED: " << violations
+                 << " ultrabubbles missing from snarls!\n";
+            internal_failures += violations;
+        }
+    }
+
+    {
+        int uncategorized = 0;
+        for (auto& k : bf_snarls_set) {
+            bool is_ub = bf_ub_set.count(k);
+            bool has_t = snarls_with_tips.count(k);
+            bool has_c = snarls_with_cycle.count(k);
+            if (!is_ub && !has_t && !has_c) {
+                cerr << "  BUG: snarl " << fmt_key(k, nameOf)
+                     << " is neither UB nor has tip/cycle!\n";
+                uncategorized++;
+            }
+        }
+        if (uncategorized == 0)
+            cerr << "  CHECK OK: all snarls categorized (UB / tip / cycle)\n";
+        else {
+            cerr << "  CHECK FAILED: " << uncategorized
+                 << " snarls uncategorized!\n";
+            internal_failures += uncategorized;
+        }
+    }
+
+#ifdef __unix__
+    if (!snarls_bf_path.empty() && access(snarls_bf_path.c_str(), X_OK) == 0) {
+        cerr << "\n=== Cross-check with snarls_bf ===\n";
+
+        set<SnarlKey> ext_snarls;
+        string cmd = "'" + snarls_bf_path + "' '" + gfa_path + "'";
+        bool ok = run_external_tool(cmd, id, ext_snarls);
+
+        if (ok) {
+            cerr << "  snarls_bf found: " << ext_snarls.size() << " snarls\n";
+
+            int missing_from_ext = 0, extra_in_ext = 0;
+            for (auto& k : bf_snarls_set) {
+                if (!ext_snarls.count(k)) {
+                    if (missing_from_ext < 10)
+                        cerr << "    BF-only snarl: " << fmt_key(k, nameOf) << "\n";
+                    missing_from_ext++;
+                }
+            }
+            for (auto& k : ext_snarls) {
+                if (!bf_snarls_set.count(k)) {
+                    if (extra_in_ext < 10)
+                        cerr << "    snarls_bf-only snarl: " << fmt_key(k, nameOf) << "\n";
+                    extra_in_ext++;
+                }
+            }
+            cerr << "  In brute-force but not snarls_bf: " << missing_from_ext << "\n";
+            cerr << "  In snarls_bf but not brute-force:  " << extra_in_ext << "\n";
+
+            if (missing_from_ext == 0 && extra_in_ext == 0)
+                cerr << "  CHECK OK: snarl sets match perfectly\n";
+            else {
+                cerr << "  CHECK FAILED: snarl sets differ\n";
+                internal_failures += missing_from_ext + extra_in_ext;
+            }
+        } else {
+            cerr << "  snarls_bf not found or failed, skipping\n";
+        }
     }
 #endif
-#endif
 
+
+    if (!bf_ub_file.empty()) {
+        cerr << "\n=== Cross-check with BubbleFinder ultrabubbles ===\n";
+
+        set<SnarlKey> bf_tool_ub;
+        if (parse_bf_output(bf_ub_file, id, bf_tool_ub)) {
+            cerr << "  BubbleFinder UBs: " << bf_tool_ub.size() << "\n";
+            cerr << "  Brute-force UBs:  " << bf_ub_set.size() << "\n";
+
+            int fn = 0, fp = 0; 
+            for (auto& k : bf_ub_set) {
+                if (!bf_tool_ub.count(k)) {
+                    if (fn < 20)
+                        cerr << "    MISSED by BubbleFinder: " << fmt_key(k, nameOf) << "\n";
+                    fn++;
+                }
+            }
+            for (auto& k : bf_tool_ub) {
+                if (!bf_ub_set.count(k)) {
+                    if (fp < 20)
+                        cerr << "    EXTRA in BubbleFinder:  " << fmt_key(k, nameOf) << "\n";
+                    fp++;
+                }
+            }
+
+            cerr << "  False negatives (BF missed): " << fn << "\n";
+            cerr << "  False positives (BF extra):  " << fp << "\n";
+
+            if (fn == 0 && fp == 0)
+                cerr << "  CHECK OK: ultrabubble sets match perfectly\n";
+            else
+                cerr << "  CHECK FAILED: sets differ\n";
+        } else {
+            cerr << "  Could not parse BubbleFinder UB file: " << bf_ub_file << "\n";
+        }
+    }
+
+    if (!bf_snarls_file.empty()) {
+        cerr << "\n=== Cross-check with BubbleFinder snarls ===\n";
+
+        set<SnarlKey> bf_tool_snarls;
+        if (parse_bf_output(bf_snarls_file, id, bf_tool_snarls)) {
+            cerr << "  BubbleFinder snarls: " << bf_tool_snarls.size() << "\n";
+            cerr << "  Brute-force snarls:  " << bf_snarls_set.size() << "\n";
+
+            int fn = 0, fp = 0;
+            for (auto& k : bf_snarls_set) {
+                if (!bf_tool_snarls.count(k)) {
+                    if (fn < 20)
+                        cerr << "    MISSED by BubbleFinder: " << fmt_key(k, nameOf) << "\n";
+                    fn++;
+                }
+            }
+            for (auto& k : bf_tool_snarls) {
+                if (!bf_snarls_set.count(k)) {
+                    if (fp < 20)
+                        cerr << "    EXTRA in BubbleFinder:  " << fmt_key(k, nameOf) << "\n";
+                    fp++;
+                }
+            }
+
+            cerr << "  False negatives (BF missed): " << fn << "\n";
+            cerr << "  False positives (BF extra):  " << fp << "\n";
+
+            if (fn == 0 && fp == 0)
+                cerr << "  CHECK OK: snarl sets match perfectly\n";
+            else
+                cerr << "  CHECK FAILED: sets differ\n";
+
+
+            if (!bf_ub_file.empty()) {
+                set<SnarlKey> bf_tool_ub;
+                if (parse_bf_output(bf_ub_file, id, bf_tool_ub)) {
+                    int missed_ub_in_snarls = 0;
+                    for (auto& k : bf_tool_snarls) {
+                        if (bf_ub_set.count(k) && !bf_tool_ub.count(k)) {
+                            if (missed_ub_in_snarls < 20)
+                                cerr << "    BF snarl is true UB but BF-UB missed it: "
+                                     << fmt_key(k, nameOf) << "\n";
+                            missed_ub_in_snarls++;
+                        }
+                    }
+                    cerr << "  BF snarls that are true UBs but missed by BF-UB: "
+                         << missed_ub_in_snarls << "\n";
+                }
+            }
+        } else {
+            cerr << "  Could not parse BubbleFinder snarls file: " << bf_snarls_file << "\n";
+        }
+    }
+
+    cerr << "\nDone.\n";
+    if (internal_failures > 0) {
+        cerr << "INTERNAL CHECK FAILURES: " << internal_failures << "\n";
+        return 2;
+    }
     return 0;
 }
