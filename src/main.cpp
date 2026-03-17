@@ -2251,6 +2251,8 @@ namespace solver
             auto &C = ctx();
             const Graph &G = *blk.Gblk;
 
+            if(!C.directedSuperbubbles && G.numberOfNodes()<=2) return;
+
             node src = nullptr, snk = nullptr;
 
             for (node v : G.nodes)
@@ -2734,7 +2736,50 @@ namespace solver
 
                 if (blk->Gblk && blk->Gblk->numberOfNodes() >= 3)
                 {
-                    solveSPQR(*blk, *w.cc);
+                    std::vector<std::pair<int,int>> superbubbles;
+                    std::vector<std::pair<int,int>> directed_edges;
+
+                    std::vector<int> blkIndexToOrigIndex(blk->Gblk->numberOfNodes());
+                    for (node v : blk->Gblk->nodes) {
+                        blkIndexToOrigIndex[v->index()] = blk->toOrig[v]->index();
+                    }
+
+                    for(auto &e: blk->Gblk->edges) {
+                        int src = e->source()->index();
+                        int tgt = e->target()->index();
+                        directed_edges.emplace_back(src, tgt);
+                    }
+
+                    std::sort(directed_edges.begin(), directed_edges.end());
+                    directed_edges.erase(std::unique(directed_edges.begin(), directed_edges.end()),
+                                        directed_edges.end());
+
+                    superbubbles = compute_weak_superbubbles_from_edges(blk->Gblk->numberOfNodes(), directed_edges, nullptr);
+
+                    for (auto &sb : superbubbles) {
+                        int xid = sb.first;
+                        int yid = sb.second;
+
+                        ogdf::node xg = ctx().nodeByGlobalId[blkIndexToOrigIndex[xid]];
+                        ogdf::node yg = ctx().nodeByGlobalId[blkIndexToOrigIndex[yid]];
+
+                        std::string xName = ctx().node2name[xg];
+                        std::string yName = ctx().node2name[yg];
+                        
+                        
+                        xName.pop_back();
+                        yName.pop_back();
+                        
+
+                        if(xName<=yName) {
+                            addSuperbubble(xg, yg);
+                        } else {
+                            addSuperbubble(yg, xg);
+                        }
+                    }
+
+
+                    //solveSPQR(*blk, *w.cc);
                 }
                 checkBlockByCutVertices(*blk, *w.cc);
 
@@ -2748,6 +2793,20 @@ namespace solver
         {
             auto &C = ctx();
             Graph &G = C.G;
+
+            C.nodeByGlobalId.clear();
+            C.nodeByGlobalId.resize((size_t)G.numberOfNodes(), nullptr);
+
+            {
+                int id = 0;
+                for (ogdf::node v : G.nodes) {
+                    // nodeId[v] = id;
+                    C.nodeByGlobalId[(size_t)id] = v;
+                    ++id;
+                }
+                OGDF_ASSERT(id == original_n);
+            }
+
 
             std::vector<WorkItem> workItems;
 
@@ -3033,7 +3092,7 @@ namespace solver
         void solve()
         {
             TIME_BLOCK("Finding superbubbles in blocks");
-            findMiniSuperbubbles();
+            if(ctx().directedSuperbubbles) findMiniSuperbubbles();
             solveStreaming();
         }
     }
