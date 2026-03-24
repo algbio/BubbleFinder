@@ -4,9 +4,7 @@
 #include "util/logger.hpp"
 #include "gfa_parser.hpp"
 
-#ifdef BUBBLEFINDER_HAS_GBZ
 #include "gbz_parser.hpp"
-#endif
 
 #include <fstream>
 #include <regex>
@@ -207,12 +205,12 @@ void buildSnarlGraph(BiGraph& bg) {
 void buildUltrabubbleLightGraph(BiGraph& bg) {
     auto &C = ctx();
     const uint32_t N = bg.n_nodes;
-    C.ubNumNodes  = N;
+    C.ubNumNodes = N;
     C.ubNodeNames = std::move(bg.node_names);
 
     struct CanonEdge {
         uint32_t u, v;
-        uint8_t  tu, tv; 
+        uint8_t  tu, tv;
 
         bool operator<(const CanonEdge &o) const {
             if (u != o.u) return u < o.u;
@@ -242,16 +240,24 @@ void buildUltrabubbleLightGraph(BiGraph& bg) {
     edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
     const size_t E = edges.size();
 
+    std::vector<bool> saw_plus(N, false), saw_minus(N, false);
+
     C.ubOffset.assign(N + 1, 0);
     for (const auto &e : edges) {
         C.ubOffset[e.u + 1]++;
         C.ubOffset[e.v + 1]++;
+
+        if (e.tu == (uint8_t)EdgePartType::PLUS) saw_plus[e.u] = true;
+        else                                      saw_minus[e.u] = true;
+        if (e.tv == (uint8_t)EdgePartType::PLUS) saw_plus[e.v] = true;
+        else                                      saw_minus[e.v] = true;
     }
+
     for (uint32_t i = 1; i <= N; i++) {
         C.ubOffset[i] += C.ubOffset[i - 1];
     }
 
-    C.ubEdges.resize(C.ubOffset[N]);  // = 2 * E
+    C.ubEdges.resize(C.ubOffset[N]);
 
     std::vector<uint32_t> cursor(C.ubOffset.begin(), C.ubOffset.end());
 
@@ -260,8 +266,15 @@ void buildUltrabubbleLightGraph(BiGraph& bg) {
         C.ubEdges[cursor[e.v]++] = {e.u, e.tv, e.tu};
     }
 
-    logger::info("graph built: {} nodes, {} edges (CSR: {} adj entries)",
-                 N, E, C.ubEdges.size());
+    C.ubIsTip.resize(N);
+    size_t tip_count = 0;
+    for (uint32_t i = 0; i < N; i++) {
+        C.ubIsTip[i] = !(saw_plus[i] && saw_minus[i]);
+        if (C.ubIsTip[i]) tip_count++;
+    }
+
+    logger::info("graph built: {} nodes, {} edges (CSR: {} adj entries), {} tips",
+                 N, E, C.ubEdges.size(), tip_count);
 }
 
 void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
@@ -288,12 +301,16 @@ void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
     des.reserve(directed_only ? bg.links.size() : bg.links.size() * 2);
 
     for (auto& lk : bg.links) {
-        des.push_back({getNode(lk.src, lk.orient_src)->index(),
-                       getNode(lk.dst, lk.orient_dst)->index()});
-        if (!directed_only)
-            des.push_back({getNode(lk.dst, flipSign(lk.orient_dst))->index(),
-                           getNode(lk.src, flipSign(lk.orient_src))->index()});
+        ogdf::node nSrc = getNode(lk.src, lk.orient_src);
+        ogdf::node nDst = getNode(lk.dst, lk.orient_dst);
+        des.push_back({nSrc->index(), nDst->index()});
+        if (!directed_only) {
+            ogdf::node nRevSrc = getNode(lk.dst, flipSign(lk.orient_dst));
+            ogdf::node nRevDst = getNode(lk.src, flipSign(lk.orient_src));
+            des.push_back({nRevSrc->index(), nRevDst->index()});
+        }
     }
+
     std::sort(des.begin(), des.end());
     des.erase(std::unique(des.begin(), des.end()), des.end());
 
@@ -321,16 +338,10 @@ inline bool ends_with(const std::string& s, const std::string& suffix) {
 
 BiGraph parse_graph_input(const std::string& path, int threads) {
     if (ends_with(path, ".gbz")) {
-#ifdef BUBBLEFINDER_HAS_GBZ
         logger::info("GBZ parser: reading '{}'", path);
         auto bg = GBZParser::parse_file(path);
         logger::info("GBZ parser: {} segments, {} links", bg.n_nodes, bg.links.size());
         return bg;
-#else
-        throw std::runtime_error(
-            "GBZ support not compiled. Rebuild with -DBUBBLEFINDER_HAS_GBZ=ON "
-            "or convert: vg convert -f -H " + path + " | gzip > output.gfa.gz");
-#endif
     }
 
     logger::info("GFA parser: reading '{}'", path);
@@ -352,8 +363,13 @@ void readGFA()
 
     switch (C.bubbleType) {
         case Context::BubbleType::ULTRABUBBLE:
-            buildUltrabubbleLightGraph(bg);
-            return; 
+            if (C.doubledUltrabubbles) {
+                buildSuperbubbleGraph(bg, false);
+            } else {
+                buildUltrabubbleLightGraph(bg);
+                return;
+            }
+            break;
         case Context::BubbleType::SNARL:
             C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
             buildSnarlGraph(bg);
@@ -473,15 +489,15 @@ void readGraph() {
     {
         readGFA();
 
-        if (C.bubbleType == Context::BubbleType::ULTRABUBBLE) {
+        if (C.bubbleType == Context::BubbleType::ULTRABUBBLE && !C.doubledUltrabubbles) {
             logger::info("Graph read");
             return;
         }
 
         C.isEntry = NodeArray<bool>(C.G, false);
-        C.isExit  = NodeArray<bool>(C.G, false);
-        C.inDeg   = NodeArray<int>(C.G, 0);
-        C.outDeg  = NodeArray<int>(C.G, 0);
+        C.isExit= NodeArray<bool>(C.G, false);
+        C.inDeg = NodeArray<int>(C.G, 0);
+        C.outDeg= NodeArray<int>(C.G, 0);
         for (edge e : C.G.edges) {
             C.outDeg(e->source())++;
             C.inDeg (e->target())++;
@@ -519,9 +535,9 @@ void readGraph() {
     if (usingTempFile) { C.graphPath = originalPath; std::remove(tempPath.c_str()); }
 
     C.isEntry = NodeArray<bool>(C.G, false);
-    C.isExit  = NodeArray<bool>(C.G, false);
-    C.inDeg   = NodeArray<int>(C.G, 0);
-    C.outDeg  = NodeArray<int>(C.G, 0);
+    C.isExit= NodeArray<bool>(C.G, false);
+    C.inDeg = NodeArray<int>(C.G, 0);
+    C.outDeg= NodeArray<int>(C.G, 0);
     for (edge e : C.G.edges) {
         C.outDeg(e->source())++;
         C.inDeg (e->target())++;
@@ -574,8 +590,8 @@ void drawGraph(const ogdf::Graph &G, const std::string &file)
         if (vec.size() <= 1) continue;
 
         edge e0 = vec[0];
-        node a  = e0->source();
-        node b  = e0->target();
+        node a = e0->source();
+        node b= e0->target();
 
         double ax = GA.x(a), ay = GA.y(a);
         double bx = GA.x(b), by = GA.y(b);
@@ -617,7 +633,7 @@ void drawGraph(const ogdf::Graph &G, const std::string &file)
     if (std::regex_search(openTag, m,
         std::regex(R"(viewBox\s*=\s*\"([\-0-9\.eE]+)\s+([\-0-9\.eE]+)\s+([\-0-9\.eE]+)\s+([\-0-9\.eE]+))"))) {
         x0 = std::stod(m[1]); y0 = std::stod(m[2]);
-        w  = std::stod(m[3]); h  = std::stod(m[4]);
+        w= std::stod(m[3]); h= std::stod(m[4]);
     } else if (std::regex_search(openTag, m,
         std::regex(R"(width=\"([0-9\.]+)\".*height=\"([0-9\.]+))"))) {
         w = std::stod(m[1]); h = std::stod(m[2]);
@@ -635,7 +651,7 @@ void drawGraph(const ogdf::Graph &G, const std::string &file)
 
 std::vector<std::pair<std::string, std::string>>
 project_bubblegun_pairs_from_doubled() {
-    auto& sb    = ctx().superbubbles; 
+    auto& sb= ctx().superbubbles; 
     auto& names = ctx().node2name;    
 
     auto is_oriented = [](const std::string& s) -> bool {
@@ -688,43 +704,172 @@ void writeSuperbubbles()
 
     if (C.bubbleType == Context::BubbleType::SNARL)
     {
-        if (C.outputPath.empty())
+        if (C.includeTrivial)
         {
-            std::cout << C.snarls.size() << "\n";
-            for (auto &s : C.snarls)
+            if (C.outputPath.empty())
             {
-                for (auto &v : s)
+                std::cout << C.snarls.size() << "\n";
+                for (auto &s : C.snarls)
                 {
-                    std::cout << v << " ";
+                    for (auto &v : s)
+                    {
+                        std::cout << v << " ";
+                    }
+                    std::cout << std::endl;
                 }
-                std::cout << std::endl;
+                if (!std::cout)
+                {
+                    throw std::runtime_error("Error while writing snarls to standard output");
+                }
             }
-            if (!std::cout)
+            else
             {
-                throw std::runtime_error("Error while writing snarls to standard output");
+                std::ofstream out(C.outputPath);
+                if (!out)
+                {
+                    throw std::runtime_error("Failed to open output file '" +
+                                             C.outputPath + "' for writing");
+                }
+                out << C.snarls.size() << "\n";
+                for (auto &s : C.snarls)
+                {
+                    for (auto &v : s)
+                    {
+                        out << v << " ";
+                    }
+                    out << "\n";
+                }
+                if (!out)
+                {
+                    throw std::runtime_error("Error while writing snarls to output file '" +
+                                             C.outputPath + "'");
+                }
             }
         }
         else
         {
-            std::ofstream out(C.outputPath);
-            if (!out)
+            auto get_real_neighbors = [&](ogdf::node u, EdgePartType t)
+                -> std::unordered_set<ogdf::node>
             {
-                throw std::runtime_error("Failed to open output file '" +
-                                         C.outputPath + "' for writing");
-            }
-            out << C.snarls.size() << "\n";
+                std::unordered_set<ogdf::node> result;
+                for (auto adj : u->adjEntries)
+                {
+                    ogdf::edge e = adj->theEdge();
+                    ogdf::node other = adj->twinNode();
+                    EdgePartType typeAtU;
+                    if (e->source() == u)
+                        typeAtU = C._edge2types[e].first;
+                    else
+                        typeAtU = C._edge2types[e].second;
+
+                    if (typeAtU != t) continue;
+
+                    if (C.node2name.count(other) && C.node2name[other] == "_trash")
+                    {
+                        for (auto adj2 : other->adjEntries)
+                        {
+                            ogdf::node real = adj2->twinNode();
+                            if (real != u) result.insert(real);
+                        }
+                    }
+                    else
+                    {
+                        result.insert(other);
+                    }
+                }
+                return result;
+            };
+
+            auto is_trivial_pair = [&](const std::string &s1,
+                                       const std::string &s2) -> bool
+            {
+                if (s1.size() < 2 || s2.size() < 2) return false;
+
+                std::string name1 = s1.substr(0, s1.size() - 1);
+                std::string name2 = s2.substr(0, s2.size() - 1);
+                char c1 = s1.back(), c2 = s2.back();
+
+                if (c1 != '+' && c1 != '-') return false;
+                if (c2 != '+' && c2 != '-') return false;
+                if (name1 == "_trash" || name2 == "_trash") return false;
+
+                auto it1 = C.name2node.find(name1);
+                auto it2 = C.name2node.find(name2);
+                if (it1 == C.name2node.end() || it2 == C.name2node.end()) return false;
+
+                ogdf::node u = it1->second;
+                ogdf::node v = it2->second;
+
+                EdgePartType t1 = (c1 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
+                EdgePartType t2 = (c2 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
+
+                auto nbrs1 = get_real_neighbors(u, t1);
+                auto nbrs2 = get_real_neighbors(v, t2);
+
+                return nbrs1.size() == 1 && nbrs1.count(v) &&
+                       nbrs2.size() == 1 && nbrs2.count(u);
+            };
+
+            struct PairHash
+            {
+                size_t operator()(const std::pair<std::string, std::string> &p) const
+                {
+                    size_t h1 = std::hash<std::string>{}(p.first);
+                    size_t h2 = std::hash<std::string>{}(p.second);
+                    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+                }
+            };
+
+            std::vector<std::pair<std::string, std::string>> filtered;
+            std::unordered_set<std::pair<std::string, std::string>, PairHash> seen;
+
             for (auto &s : C.snarls)
             {
-                for (auto &v : s)
+                for (size_t i = 0; i < s.size(); i++)
                 {
-                    out << v << " ";
+                    for (size_t j = i + 1; j < s.size(); j++)
+                    {
+                        std::string a = s[i], b = s[j];
+                        if (a > b) std::swap(a, b);
+
+                        if (!seen.insert({a, b}).second) continue;
+                        if (is_trivial_pair(a, b)) continue;
+
+                        filtered.emplace_back(a, b);
+                    }
                 }
-                out << "\n";
             }
-            if (!out)
+
+            if (C.outputPath.empty())
             {
-                throw std::runtime_error("Error while writing snarls to output file '" +
-                                         C.outputPath + "'");
+                std::cout << filtered.size() << "\n";
+                for (auto &p : filtered)
+                {
+                    std::cout << p.first << " " << p.second << "\n";
+                }
+                if (!std::cout)
+                {
+                    throw std::runtime_error("Error while writing snarls to standard output");
+                }
+            }
+            else
+            {
+                std::ofstream out(C.outputPath);
+                if (!out)
+                {
+                    throw std::runtime_error("Failed to open output file '" +
+                                             C.outputPath + "' for writing");
+                }
+                out << filtered.size() << "\n";
+                for (auto &p : filtered)
+                {
+                    out << p.first << " " << p.second << "\n";
+                }
+                if (!out)
+                {
+                    throw std::runtime_error("Error while writing snarls to output file '" +
+                                             C.outputPath + "'");
+                }
             }
         }
         return;

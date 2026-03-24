@@ -6,13 +6,15 @@
 [![GPLv3 License](https://img.shields.io/badge/License-GPL%20v3-yellow.svg)](https://opensource.org/licenses/)
 [![Open Source](https://badges.frapsoft.com/os/v1/open-source.svg?v=103)](https://opensource.org/)
 
-`BubbleFinder` computes **all snarls**, **superbubbles**, and **ultrabubbles** in genomic and pangenomic **GFA graphs** (i.e. bidirected graphs).
+`BubbleFinder` computes **all snarls**, **superbubbles**, and **ultrabubbles** in genomic and pangenomic **GFA** and **GBZ** graphs (i.e. bidirected graphs).
 
 BubbleFinder is built around **linear-time algorithms** (linear in the size of the input graph, i.e. `O(|V|+|E|)`), and outputs compact representations:
 
 - **Snarls:** BubbleFinder computes **all snarls** and outputs a representation whose total size is **linear** in the input graph size.
 - **Superbubbles:** superbubbles admit a linear-size representation as **pairs of endpoints**, which BubbleFinder outputs.
-- **Ultrabubbles:** BubbleFinder computes ultrabubbles in **linear time** by reducing them to directed superbubbles after orienting the bidirected graph (requires **at least one tip per connected component**, see the `ultrabubbles` command notes).
+- **Ultrabubbles:** BubbleFinder computes ultrabubbles in **linear time** using two modes:
+  - **Oriented mode** (default): orients the bidirected graph and reduces to directed weak superbubbles. Requires **at least one tip or one cut vertex per connected component**.
+  - **Doubled mode** (`--doubled`): builds a doubled directed graph and runs weak superbubble detection. **No restriction** on connected components, but uses more RAM.
 
 ### Snarls and superbubbles via SPQR trees
 
@@ -27,13 +29,12 @@ For snarls and superbubbles, BubbleFinder exploits the [SPQR trees](https://en.w
 > - **Snarls:** BubbleFinder is consistently faster than [`vg snarls -a -T`](https://github.com/vgteam/vg) on the PGGB graphs (up to ~2× faster on larger graphs and ~3× on the smallest one). On human chromosome graphs (Chromosome 1/10/22), BubbleFinder can be up to ~2× slower end-to-end in a single-threaded run due to preprocessing (BC/SPQR tree building), but benefits from multi-threading (up to ~4× speedup at 16 threads in those datasets).
 > - **Superbubbles:** BubbleFinder runs in similar times as [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun) on small graphs, and is about ~10× faster on larger graphs; in particular, BubbleGun hit a **>3h timeout** on Chromosome 1/10/22, while BubbleFinder completed in minutes in our benchmarks.
 
-### Ultrabubbles via linear-time orientation + reduction to superbubbles
+### Ultrabubbles via linear-time orientation + reduction to weak superbubbles
 
-Ultrabubbles are computed using a different approach (not SPQR-based): BubbleFinder first **orients** each connected component of the bidirected graph with a DFS-based procedure (starting from a tip). During this orientation, **conflicts** (same-sign edges whose endpoints are already fixed) are resolved by introducing auxiliary source/sink tips, yielding a directed graph whose size remains **linear** in the original graph size. BubbleFinder then runs a linear-time directed superbubble algorithm on this oriented graph and maps the resulting superbubbles back to ultrabubbles, ignoring bubbles whose endpoints are auxiliary vertices.
+Ultrabubbles are computed using a different approach (not SPQR-based): BubbleFinder first **orients** each connected component of the bidirected graph with a DFS-based procedure (starting from a tip or a cut vertex). During this orientation, **conflicts** (same-sign edges whose endpoints are already fixed) are resolved by introducing auxiliary source/sink tips, yielding a directed graph whose size remains **linear** in the original graph size. BubbleFinder then runs a linear-time directed weak superbubble algorithm on this oriented graph and maps the resulting superbubbles back to ultrabubbles in the original bidirected graph.
 
 > [!NOTE]
-> **Empirical performance (ultrabubbles).** In our ultrabubble enumeration benchmarks, BubbleFinder consistently outperformed `vg` across all tested datasets: about **2.25×–2.35×** on 1000GP chromosome graphs, **4.75×–6.38×** on PGGB graphs, **10.66×** on HPRC v1.1, and up to **30.79×** on HPRC v2.0 CHM13 (232 individuals), reducing wall time from **9:09:39** to **17:51**.  
-> Peak RAM was generally comparable on smaller graphs, and dropped from **459.90 GiB** to **111.87 GiB** on HPRC v2.0 CHM13 (~**4.11×** less).  
+> **Empirical performance (ultrabubbles).** In our ultrabubble enumeration benchmarks, BubbleFinder consistently outperformed `vg` across all tested datasets. On the HPRC graphs in GBZ format, excluding parsing time, BubbleFinder achieves speedups of **19–26×** over `vg`. On HPRC v2.0 CHM13 (232 individuals), after parsing, BubbleFinder completes in **under 3 minutes** while `vg` requires **more than one hour**, using **four times less RAM** (24.8 GiB vs 101.8 GiB). On GFA input, BubbleFinder is **~200× faster** than [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun) on the HPRC v1.1 graph (47 individuals).  
 > A dedicated ultrabubble preprint describing this method and its benchmarks is forthcoming (link to be added).
 
 ---
@@ -69,24 +70,21 @@ See: [Building from source](#building-from-source)
 
 | Command | Typical input | Output endpoints | Notes |
 |---|---|---|---|
-| `snarls` | bidirected GFA | oriented incidences (`a+`, `d-`) | may output cliques (compact representation of many pairs) |
-| `superbubbles` | bidirected GFA | segment IDs (`a`, `e`) | computed on doubled directed graph + orientation projection |
-| `directed-superbubbles` | directed (`--graph` or `--gfa-directed`) | segment IDs | directed superbubbles directly |
-| `ultrabubbles` | bidirected GFA | oriented incidences | requires ≥ 1 tip per connected component |
-| `spqr-tree` | **GFA only** | `.spqr` v0.1 | connected components + BC-tree + SPQR decomposition |
+| `snarls` | bidirected GFA / GBZ | oriented incidences (`a+`, `d-`) | may output cliques; trivial snarls excluded by default (use `-T` to include) |
+| `superbubbles` | bidirected GFA / GBZ (default) or directed (`--directed`) | segment IDs (`a`, `e`) in bidirected mode; oriented IDs (`a+`, `e-`) in directed mode | computed on doubled directed graph + orientation projection (bidirected) or directly (directed) |
+| `ultrabubbles` | bidirected GFA / GBZ | oriented incidences | oriented mode (default): ≥ 1 tip or cut vertex per CC; doubled mode (`--doubled`): no restriction |
+| `spqr-tree` | **GFA / GBZ only** | `.spqr` v0.4 | connected components + BC-tree + SPQR decomposition |
 
 ## Global usage flowchart
 
 ```mermaid
 flowchart TD
-  %% POINT D'ENTRÉE GÉNÉRAL
   A["Start: ./BubbleFinder COMMAND -g GRAPH -o OUT"] --> B["Read input file (option -g).<br>Auto-detect compression: .gz / .bz2 / .xz"]
   B --> C{"Input format?"}
-  C -->|"--gfa or *.gfa"| D["Parse GFA as bidirected graph"]
+  C -->|"--gfa or *.gfa / *.gbz"| D["Parse GFA/GBZ as bidirected graph"]
   C -->|"--gfa-directed"| E["Parse GFA as directed graph"]
   C -->|"--graph or *.graph"| F["Parse .graph as directed graph"]
 
-  %% SÉLECTION DE COMMANDE
   D --> G{"Command"}
   E --> G
   F --> G
@@ -95,64 +93,87 @@ flowchart TD
   G -->|snarls| S0["Build undirected counterpart<br>of bidirected GFA graph"]
   S0 -->|"For each connected component"| S1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
   S1 --> S2["Traverse SPQR trees.<br>Enumerate ALL snarls (linear-time)"]
-  S2 --> S3["Output (-o): oriented incidences (a+/d-).<br>May use clique-lines (compact representation)"]
+  S2 --> S_triv{"-T flag?"}
+  S_triv -->|"yes (include trivial)"| S3a["Output all snarls as clique-lines"]
+  S_triv -->|"no (default: exclude trivial)"| S3b["Expand cliques to pairs,<br>filter out trivial snarls"]
+  S3b --> S3c["Output non-trivial snarl pairs"]
 
-  %% SUPERBUBBLES (bidirected GFA -> doubled directed)
-  G -->|superbubbles| SB0["Build doubled directed graph<br>with oriented copies v+ / v- for each segment v"]
+  %% SUPERBUBBLES
+  G -->|superbubbles| SB_mode{"--directed flag?"}
+
+  SB_mode -->|"no (default: bidirected)"| SB0["Build doubled directed graph<br>with oriented copies v+ / v- for each segment v"]
   SB0 -->|"For each connected component"| SB1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
   SB1 --> SB2["Traverse SPQR trees with DP on skeletons.<br>Enumerate ALL superbubbles<br>on the doubled graph"]
-  SB2 --> SB3["Orientation projection (see §“Orientation projection”).<br>Merge mirror bubbles, drop +/- , sort endpoints"]
-  SB3 --> SB4["Output (-o): segment ID pairs (a e).<br>Exactly one pair per line"]
+  SB2 --> SB3["Orientation projection.<br>Merge mirror bubbles, drop +/- , sort endpoints"]
+  SB3 --> SB_triv{"-T flag?"}
+  SB_triv -->|"yes (include trivial)"| SB4a["Output all segment ID pairs"]
+  SB_triv -->|"no (default: exclude trivial)"| SB4b["Filter out trivial superbubbles"]
+  SB4b --> SB4c["Output non-trivial segment ID pairs"]
 
-  %% DIRECTED SUPERBUBBLES (même algo, graphe déjà dirigé)
-  G -->|directed-superbubbles| DSB0["Use directed input as-is<br>(--graph or --gfa-directed)"]
+  SB_mode -->|"yes (--directed)"| DSB0["Use directed input as-is"]
   DSB0 -->|"For each connected component"| DSB1["Compute BC-tree + SPQR trees<br>for each biconnected component"]
   DSB1 --> DSB2["Traverse SPQR trees with DP on skeletons.<br>Enumerate ALL directed superbubbles"]
-  DSB2 --> DSB3["Output (-o): segment ID pairs.<br>Exactly one pair per line"]
+  DSB2 --> DSB_triv{"-T flag?"}
+  DSB_triv -->|"yes (include trivial)"| DSB3a["Output all oriented ID pairs"]
+  DSB_triv -->|"no (default: exclude trivial)"| DSB3b["Filter out trivial superbubbles"]
+  DSB3b --> DSB3c["Output non-trivial oriented ID pairs"]
 
-  %% ULTRABUBBLES (orientation + superbubbles dirigés)
-  G -->|ultrabubbles| U0{"At least 1 tip per connected component?"}
-  U0 -->|no| Ufail["Fail (current limitation).<br>Need at least 1 tip per component"]
-  U0 -->|yes| U1["Orient each component via DFS starting from a tip"]
-  U1 --> U2["Resolve same-sign conflicts by adding auxiliary tips<br>(keeps linear size)"]
-  U2 --> U3["Obtain directed skeleton"]
-  U3 --> U4["Run CLSD directed superbubble decomposition"]
-  U4 --> U5["Map superbubbles back to ultrabubbles.<br>Discard bubbles with auxiliary endpoints"]
-  U5 --> U6["Output (-o): oriented incidence pairs (a+ d-)"]
-  U5 --> U7{"Option --clsd-trees FILE?"}
-  U7 -->|yes| U8["Also output ultrabubble hierarchy<br>(reconnected CLSD trees)"]
+  %% ULTRABUBBLES
+  G -->|ultrabubbles| U_mode{"--doubled flag?"}
+
+  U_mode -->|"no (default: oriented)"| U0{"At least 1 tip or 1 cut vertex<br>per connected component?"}
+  U0 -->|no| Ufail["Fail: need at least 1 tip or cut vertex per CC"]
+  U0 -->|yes| U1["Orient each CC via DFS<br>starting from a tip or cut vertex"]
+  U1 --> U2["Resolve same-sign conflicts<br>by adding auxiliary tips (linear size)"]
+  U2 --> U3["Run CLSD directed weak superbubble decomposition"]
+  U3 --> U4["Map weak superbubbles back to ultrabubbles.<br>Discard bubbles with auxiliary endpoints"]
+  U4 --> U_triv{"-T flag?"}
+  U_triv -->|"yes (include trivial)"| U5a["Output all oriented incidence pairs"]
+  U_triv -->|"no (default: exclude trivial)"| U5b["Filter out trivial ultrabubbles"]
+  U5b --> U5c["Output non-trivial oriented incidence pairs"]
+  U4 --> U7{"Option --clsd-trees FILE?"}
+  U7 -->|yes| U8["Also output ultrabubble hierarchy"]
   U7 -->|no| End1["Done"]
 
+  U_mode -->|"yes (--doubled)"| UD0["Build doubled directed graph<br>(no CC restriction)"]
+  UD0 -->|"For each connected component"| UD1["Run CLSD directed weak superbubble decomposition<br>on doubled graph"]
+  UD1 --> UD2["Map back to ultrabubbles.<br>Discard auxiliary endpoints"]
+  UD2 --> UD_triv{"-T flag?"}
+  UD_triv -->|"yes (include trivial)"| UD3a["Output all oriented incidence pairs"]
+  UD_triv -->|"no (default: exclude trivial)"| UD3b["Filter out trivial ultrabubbles"]
+  UD3b --> UD3c["Output non-trivial oriented incidence pairs"]
+
   %% SPQR-TREE OUTPUT
-  G -->|spqr-tree| P0{"GFA input?"}
-  P0 -->|no| Pfail["Fail: spqr-tree requires GFA input"]
+  G -->|spqr-tree| P0{"GFA / GBZ input?"}
+  P0 -->|no| Pfail["Fail: spqr-tree requires GFA/GBZ input"]
   P0 -->|yes| P1["Compute components + BC-tree + SPQR decomposition"]
-  P1 --> P2["Output: .spqr v0.1 file"]
+  P1 --> P2["Output: .spqr v0.4 file"]
 ```
 
 ---
 
 ## Supported commands (detailed)
 
-BubbleFinder supports five commands:
+BubbleFinder supports four commands:
 
-- `snarls`: computes **all** snarls and is supposed to replicate the behavior of [vg snarl](https://github.com/vgteam/vg) (when run with parameters `-a -T`).  
-  Note that `vg snarl` prunes some snarls to output only a linear number of snarls; thus `BubbleFinder` finds more snarls than `vg snarl`.
-
-- `superbubbles`: computes superbubbles in a (virtually) doubled representation of the bidirected graph and is supposed to replicate the behavior of [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun).  
-  Since superbubbles are classically defined on **directed** graphs, BubbleFinder first runs the algorithm on this doubled directed representation, then projects the results back to unordered pairs of segment IDs (see [Orientation projection](#orientation-projection)).  
+- `superbubbles`: computes superbubbles. In **bidirected mode** (default), BubbleFinder builds a doubled directed representation of the bidirected graph, runs the SPQR-based superbubble algorithm on it, and projects the results back to unordered pairs of segment IDs (see [Orientation projection](#orientation-projection)). In **directed mode** (`--directed`), superbubbles are computed directly on the directed input graph.  
+  This command is supposed to replicate the behavior of [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun) in bidirected mode.  
   Notice that BubbleGun also reports weak superbubbles, i.e. for a bubble with entry `s` and exit `t`, it also reports the structures which also have an edge from `t` to `s` (thus the interior of the bubble is not acyclic).
 
-- `directed-superbubbles`: computes superbubbles on a **directed** input graph (`--graph` or `--gfa-directed`).
+- `snarls`: computes **all** snarls and is supposed to replicate the behavior of [vg snarl](https://github.com/vgteam/vg) (when run with parameters `-a -T`).  
+  Note that `vg snarl` prunes some snarls to output only a linear number of snarls; thus `BubbleFinder` finds more snarls than `vg snarl`.  
+  By default, trivial snarls are excluded from the output; use `-T` / `--include-trivial` to include them.
 
-- `ultrabubbles`: computes ultrabubbles by orienting each connected component with a DFS procedure and then running the [clsd](https://github.com/Fabianexe/clsd/tree/c49598fcb149b2c224a4625e0bf4b870f27ec166) superbubble algorithm on the resulting directed skeleton; **requires at least one tip per connected component in the input graph**.
+- `ultrabubbles`: computes ultrabubbles with two available modes:
+  - **Oriented mode** (default): orients each connected component with a DFS procedure starting from a tip or a cut vertex, then runs the [clsd](https://github.com/Fabianexe/clsd/tree/c49598fcb149b2c224a4625e0bf4b870f27ec166) weak superbubble algorithm on the resulting directed skeleton. **Requires at least one tip or one cut vertex per connected component** in the input graph.
+  - **Doubled mode** (`--doubled`): builds a doubled directed graph and runs the CLSD weak superbubble algorithm on each connected component. **No restriction** on connected components, but uses more RAM due to graph doubling.
 
-- `spqr-tree`: outputs the connected components, BC-tree (blocks / cut vertices), and SPQR decomposition of each biconnected block in the **SPQR tree file format** `.spqr` **v0.1** as specified here: https://github.com/sebschmi/SPQR-tree-file-format.
+- `spqr-tree`: outputs the connected components, BC-tree (blocks / cut vertices), and SPQR decomposition of each biconnected block in the **SPQR tree file format** `.spqr` **v0.4** as specified here: https://github.com/sebschmi/SPQR-tree-file-format.
 
-As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees <file>` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble’s parent.
+As an additional feature, BubbleFinder can also output a **tree hierarchy of ultrabubbles** using `--clsd-trees <file>` (see [Ultrabubble hierarchy (CLSD trees)](#ultrabubble-hierarchy)). This hierarchy is derived from the directed weak superbubble decomposition computed on the oriented directed skeleton ([Gärtner & Stadler, 2019](#ref-gartner2019direct)). We then transform this weak superbubble hierarchy into an ultrabubble hierarchy by removing bubbles whose entrance or exit corresponds to an auxiliary vertex introduced during skeleton construction, and by reconnecting their children to the removed bubble's parent.
 
 > [!WARNING]
-> `ultrabubbles` currently requires **at least one tip per connected component** in the input graph (otherwise it might fail).
+> In oriented mode (default), `ultrabubbles` requires **at least one tip or one cut vertex per connected component** in the input graph (otherwise it will fail). Use `--doubled` if your graph has tipless and cut-vertex-free connected components.
 
 ---
 
@@ -167,7 +188,7 @@ As an additional feature, BubbleFinder can also output a **tree hierarchy of ult
   - [2.2. Command-line options](#options)
   - [2.3. Output format](#output-format)
     - [2.3.1. Snarls (`snarls` command)](#snarls-output)
-    - [2.3.2. Superbubbles (`superbubbles`, `directed-superbubbles`)](#superbubbles-output)
+    - [2.3.2. Superbubbles (`superbubbles`)](#superbubbles-output)
     - [2.3.3. Ultrabubbles (`ultrabubbles`)](#ultrabubbles-output)
     - [2.3.4. Ultrabubble hierarchy](#ultrabubble-hierarchy)
     - [2.3.5. SPQR-tree output (`spqr-tree`)](#spqr-tree-output)
@@ -198,7 +219,7 @@ After downloading the asset, extract it and run:
 At the moment, building from source has been tested only on Linux:
 
 ```bash
-git clone https://github.com/algbio/BubbleFinder && \
+git clone --recurse-submodules https://github.com/algbio/BubbleFinder && \
 cd BubbleFinder && \
 cmake -S . -B build && \
 cmake --build build -j <NUM_THREADS> && \
@@ -208,6 +229,12 @@ mv build/BubbleFinder .
 Replace `<NUM_THREADS>` with the number of parallel build jobs you want to use (for example `-j 8`). Omitting `-j` will build single‑threaded but more slowly.
 
 Now `BubbleFinder` is in the root directory.
+
+**Dependencies** are handled automatically by the build system:
+- **OGDF** is fetched and built via CMake FetchContent.
+- **zstd** is detected on the system; if not found, it is automatically fetched and built from source.
+- **OpenSSL** (`libcrypto`) must be available on the system (it is pre-installed on virtually all Linux distributions).
+- **GBZ support** (reading `.gbz` files via `gbwtgraph`) is always enabled. The required submodules (`sdsl-lite`, `libhandlegraph`, `gbwt`, `gbwtgraph`) are included under `external/gbz/` and built automatically.
 
 ## <a id="conda"></a>Conda
 
@@ -230,15 +257,23 @@ Command line to run BubbleFinder:
 ```
 
 Available commands are:
-  - `superbubbles` - Find bidirected superbubbles (GFA -> bidirected by default)
-  - `directed-superbubbles` - Find directed superbubbles (directed graph)
+  - `superbubbles` - Find superbubbles (bidirected by default; use `--directed` for directed mode)
   - `snarls` - Find snarls (typically on bidirected graphs from GFA)
-  - `ultrabubbles` - Find ultrabubbles (typically on bidirected graphs from GFA)
-  - `spqr-tree` - Output the connected components, BC-tree and SPQR decomposition in `.spqr` v0.1 format
+  - `ultrabubbles` - Find ultrabubbles (oriented mode by default; use `--doubled` for doubled-graph mode)
+  - `spqr-tree` - Output the connected components, BC-tree and SPQR decomposition in `.spqr` v0.4 format
+
+> [!NOTE]
+> The legacy command `directed-superbubbles` is still accepted for backward compatibility and is equivalent to `superbubbles --directed`.
 
 ## <a id="input"></a>2.1. Input data
 
-BubbleFinder supports bidirected and directed graphs in [GFA](https://github.com/GFA-spec/GFA-spec) and internal `.graph` format.
+BubbleFinder supports bidirected and directed graphs in the following formats:
+
+| Extension | Format | Description |
+|---|---|---|
+| `.gfa` / `.gfa1` / `.gfa2` | GFA | Graphical Fragment Assembly format (auto-detected) |
+| `.gbz` | GBZ | vg/gbwtgraph binary format |
+| `.graph` | BubbleFinder text | Simple directed edge list (see below) |
 
 BubbleFinder `.graph` text format:
 - first line: two integers n and m
@@ -259,7 +294,7 @@ You can force the format of the input graph with the following flags:
 `--graph`  
   BubbleFinder `.graph` text format with one directed edge per line (described above).
 
-If none of these is given, the format is auto-detected from the file extension (e.g., `.gfa`, `.graph`).
+If none of these is given, the format is auto-detected from the file extension.
 
 Input files can be compressed with gzip, bzip2 or xz. Compression is auto-detected from the file name suffix:
 
@@ -270,7 +305,7 @@ Input files can be compressed with gzip, bzip2 or xz. Compression is auto-detect
 ```
 
 > [!NOTE]
-> `spqr-tree` currently requires **GFA input**.  
+> `spqr-tree` currently requires **GFA or GBZ input**.  
 > The internal `.graph` format is not supported for `spqr-tree`.
 
 ## <a id="options"></a>2.2. Command line options
@@ -295,8 +330,17 @@ Complete list of options:
 `--graph`  
   Force .graph text format (see 'Format options' above)
 
+`--directed`  
+  Interpret the graph as directed for the `superbubbles` command (default: bidirected).
+
+`--doubled`  
+  Use the doubled-graph algorithm for `ultrabubbles` (no tip/cut-vertex requirement per CC, higher RAM usage).
+
+`-T`, `--include-trivial`  
+  Include trivial bubbles in output (default: excluded). Supported for `snarls`, `ultrabubbles` and `superbubbles` commands.
+
 `--clsd-trees <file>`  
-  Compute CLSD superbubble trees (hierarchy) and write them to `<file>`.  
+  Compute CLSD weak superbubble trees (hierarchy) and write them to `<file>`.  
   Only supported for the `ultrabubbles` command.
 
 `--report-json <file>`  
@@ -319,24 +363,26 @@ Each result line encodes one or more **unordered pairs of endpoints**.
 What an "endpoint" looks like depends on the command:
 
 - `snarls` / `ultrabubbles`: endpoints are **oriented incidences**, e.g. `a+`, `d-`.
-- `superbubbles` / `directed-superbubbles`: endpoints are **segment IDs without orientation**, e.g. `a`, `e`.
+- `superbubbles` (bidirected mode): endpoints are **segment IDs without orientation**, e.g. `a`, `e`.
+- `superbubbles --directed`: endpoints are **oriented IDs**, e.g. `a+`, `e-`.
 
 The only difference between commands is:
 
-- `snarls` may output **cliques** (a line with ≥ 2 endpoints encodes all pairs between them),
-- `superbubbles` and `directed-superbubbles` always output **exactly one pair per line**.
+- `snarls` may output **cliques** (a line with ≥ 2 endpoints encodes all pairs between them) when using `-T`,
+- `superbubbles` and `ultrabubbles` always output **exactly one pair per line**.
 
 ### <a id="snarls-output"></a>2.3.1 Snarls (`snarls` command)
 
 Used by the `snarls` command.
 
-- After the header, each line contains **at least two incidences**, separated by whitespace.
-- An **incidence** is a segment (or node) ID followed by an orientation sign, e.g. `a+`, `d-`.
+By default, **trivial snarls** are excluded from the output. A snarl `{uα, vβ}` is trivial when each endpoint has exactly one neighbor on its side, leading directly to the other endpoint. Use `-T` / `--include-trivial` to include them.
+
+**With `-T`** (include trivial): the output uses the compact clique representation. After the header, each line contains **at least two incidences**, separated by whitespace. An **incidence** is a segment (or node) ID followed by an orientation sign, e.g. `a+`, `d-`.
 
 Example on the tiny graph in `example/tiny1.gfa`:
 
 ```bash
-./BubbleFinder snarls -g example/tiny1.gfa -o example/tiny1.snarls --gfa
+./BubbleFinder snarls -T -g example/tiny1.gfa -o example/tiny1.snarls --gfa
 ```
 
 This produces:
@@ -355,17 +401,21 @@ Interpretation:
   - `a+ d- f+ g-` encodes the clique of pairs:
     `{a+, d-}`, `{a+, f+}`, `{a+, g-}`, `{d-, f+}`, `{d-, g-}`, `{f+, g-}`.
 
-So the snarl output is just a compact way to write many pairs at once:  
+So the snarl output with `-T` is just a compact way to write many pairs at once:  
 **one line = all pairs between the listed incidences**.
 
-### <a id="superbubbles-output"></a>2.3.2 Superbubbles (`superbubbles`, `directed-superbubbles`)
+**Without `-T`** (default, exclude trivial): the cliques are expanded into individual pairs, trivial pairs are filtered out, duplicates are removed, and each result line contains **exactly two oriented incidences**:
 
-Used by:
+```text
+N
+a+ d-
+f+ g-
+...
+```
 
-- `superbubbles` (bidirected graphs from GFA),
-- `directed-superbubbles` (directed graphs: `--graph` or `--gfa-directed`).
+### <a id="superbubbles-output"></a>2.3.2 Superbubbles (`superbubbles`)
 
-Here each result line contains **exactly two tokens**, e.g.:
+In **bidirected mode** (default), each result line contains **exactly two segment IDs** (no orientation):
 
 ```text
 3
@@ -374,12 +424,16 @@ e f
 b e
 ```
 
-Interpretation:
+Each line `u v` is a single **unordered pair of segment IDs** `{u, v}`. These pairs are obtained after running the superbubble algorithm on the **doubled directed graph** and then applying the **orientation projection** (see [Orientation projection](#orientation-projection)).
 
-- Each line `u v` is a single **unordered pair of segment IDs** `{u, v}`.
-- IDs are segment names from GFA `S` records (no `+/-` orientation).
+In **directed mode** (`--directed`), each result line contains **two oriented IDs**:
 
-For `superbubbles`, these pairs are obtained after running the superbubble algorithm on the **doubled directed graph** and then applying the **orientation projection** (see [Orientation projection](#orientation-projection)).
+```text
+3
+a+ b-
+e+ f-
+b+ e-
+```
 
 ### <a id="ultrabubbles-output"></a>2.3.3 Ultrabubbles (`ultrabubbles`)
 
@@ -396,6 +450,8 @@ Interpretation:
 
 - each result line contains exactly two oriented incidences,
 - each line encodes one unordered pair of oriented incidences `{u±, v±}`.
+
+Both oriented mode (default) and doubled mode (`--doubled`) produce the same output format.
 
 ### <a id="ultrabubble-hierarchy"></a>2.3.4 Ultrabubble hierarchy
 
@@ -419,12 +475,12 @@ Implementation detail (relevant for interpretation): during construction of the 
 The `spqr-tree` command writes a `.spqr` file according to the **SPQR tree file format** specification:
 
 - Specification repository: https://github.com/sebschmi/SPQR-tree-file-format
-- Version used by BubbleFinder: **v0.1**
+- Version used by BubbleFinder: **v0.4**
 
 BubbleFinder writes the header line:
 
 ```text
-H v0.1 https://github.com/sebschmi/SPQR-tree-file-format
+H v0.4 https://github.com/sebschmi/SPQR-tree-file-format
 ```
 
 For details on the line types and semantics (H/G/N/B/C/S/P/R/V/E), please refer to the specification repository above, which contains the format documentation and examples.
@@ -451,7 +507,7 @@ in the GFA file (where `x, y ∈ {+, -}`), we flip the second sign `y` as `¬y`,
 
 ## <a id="orientation-projection"></a>Orientation projection
 
-Superbubbles are classically defined on **directed** graphs, whereas GFA graphs are **bidirected**. In `superbubbles` mode, BubbleFinder therefore first converts the bidirected graph into a doubled directed graph, where each segment `v` has two oriented copies `v+` and `v-`, and superbubbles are detected between oriented endpoints (e.g. `(a+, e-)` and its mirror `(e+, a-)`).
+Superbubbles are classically defined on **directed** graphs, whereas GFA graphs are **bidirected**. In `superbubbles` mode (bidirected, the default), BubbleFinder therefore first converts the bidirected graph into a doubled directed graph, where each segment `v` has two oriented copies `v+` and `v-`, and superbubbles are detected between oriented endpoints (e.g. `(a+, e-)` and its mirror `(e+, a-)`).
 
 To report results at the level of segments, independently of the arbitrary orientation chosen in the doubled graph, we apply an **orientation projection**:
 
@@ -468,7 +524,7 @@ In this example, the directed graph on segments has three superbubbles with endp
 
 ## <a id="algorithm-correctness"></a>Algorithm correctness
 
-This repository includes a brute-force implementation and a random test harness to validate both the snarl and superbubble algorithms.
+This repository includes a brute-force implementation and a random test harness to validate the snarl, superbubble, and ultrabubble algorithms.
 
 ### Brute-force implementation
 
@@ -481,11 +537,11 @@ cd build
 ./snarls_bf gfaGraphPath
 ```
 
-The brute-force program outputs results in a format consumed by `src/bruteforce.py`, which then compares them with BubbleFinder’s output. The same brute-force engine is also used for superbubble validation via the `--superbubbles` mode, which takes care of running the binary and parsing its output.
+The brute-force program outputs results in a format consumed by `src/bruteforce.py`, which then compares them with BubbleFinder's output. The same brute-force engine is also used for superbubble validation via the `--superbubbles` mode, which takes care of running the binary and parsing its output.
 
 ### Random testing with `src/bruteforce.py`
 
-We also include a generator of random graphs and a driver script that compares the brute-force implementation with BubbleFinder. The script is `src/bruteforce.py`, and it can operate in two modes:
+We also include a generator of random graphs and a driver script that compares the brute-force implementation with BubbleFinder. The script is `src/bruteforce.py`, and it can operate in three modes:
 
 - **Snarls**
 - **Superbubbles**
@@ -508,11 +564,11 @@ This will:
 - run the brute-force snarl finder,
 - run BubbleFinder in snarl mode,
 - compare their outputs (missing / extra pairs / segfaults),
-- and additionally check that BubbleFinder’s output is consistent across different thread counts if you pass several values to `--threads`.
+- and additionally check that BubbleFinder's output is consistent across different thread counts if you pass several values to `--threads`.
 
 #### Ultrabubbles
 
-To run random tests on ultrabubbles, use the brute-force ultrabubble binary (e.g. `./build/ultrabubbles_bf`). Since the current ultrabubble implementation in BubbleFinder requires **at least one tip per connected component**, you can restrict the generated random graphs with:
+To run random tests on ultrabubbles, use the brute-force ultrabubble binary (e.g. `./build/ultrabubbles_bf`). Since the oriented ultrabubble mode requires **at least one tip or cut vertex per connected component**, you can restrict the generated random graphs with:
 
 ```bash
 python3 src/bruteforce.py \

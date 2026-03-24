@@ -336,6 +336,8 @@ def run_bubblefinder(bin_path, gfa_path, out_path, threads, mode="snarls"):
         "-j",
         str(threads)
     ]
+    if mode == "ultrabubbles" or mode == "superbubbles" or mode == "snarls":
+        cmd.append("-T")
     proc = subprocess.run(cmd, capture_output=True)
 
     sout = _decode_bytes(proc.stdout)

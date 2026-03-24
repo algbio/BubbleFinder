@@ -60,18 +60,13 @@
 #include "util/clsd_interface.hpp"
 #include "io/gfa_parser.hpp"
 
-#ifdef BUBBLEFINDER_HAS_GBZ
 #include "io/gbz_parser.hpp"
-#endif
 
 bool VERBOSE = false;
 #define VLOG     \
     if (VERBOSE) \
     std::cerr
 
-// -----------------------------------------------------------------------------
-// Metrics instrumentation (RSS and timing per phase)
-// -----------------------------------------------------------------------------
 namespace metrics
 {
 
@@ -201,16 +196,12 @@ inline void PHASE_RSS_UPDATE_IO() { metrics::updateRSS(metrics::Phase::IO); }
 inline void PHASE_RSS_UPDATE_BUILD() { metrics::updateRSS(metrics::Phase::BUILD); }
 inline void PHASE_RSS_UPDATE_LOGIC() { metrics::updateRSS(metrics::Phase::LOGIC); }
 
-// -----------------------------------------------------------------------------
-// Globals
-// -----------------------------------------------------------------------------
+
 using namespace ogdf;
 
 static std::string g_report_json_path;
 
-// -----------------------------------------------------------------------------
-// CLI helpers
-// -----------------------------------------------------------------------------
+
 static void usage(const char *prog, int exitCode)
 {
     struct CommandHelp
@@ -228,13 +219,13 @@ static void usage(const char *prog, int exitCode)
 
     static const CommandHelp commands[] = {
         { "superbubbles",
-          "Bidirected superbubbles (GFA -> bidirected by default)" },
-        { "directed-superbubbles",
-          "Directed superbubbles (directed graph)" },
+          "Superbubbles (bidirected by default; use --directed for directed mode)" },
         { "snarls",
           "Snarls (typically on bidirected graphs from GFA)" },
         { "ultrabubbles",
-          "Ultrabubbles (requires: each connected component has at least one tip; bidirected -> oriented directed graph -> superbubbles)" },
+          "Ultrabubbles.\n"
+          "      Oriented mode (default): each CC must have at least one tip OR one cut vertex.\n"
+          "      Doubled mode (--doubled): no such restriction, but uses more RAM due to graph doubling." },
         { "spqr-tree",
           "Compute and output the SPQR tree of the input graph" }
     };
@@ -249,11 +240,17 @@ static void usage(const char *prog, int exitCode)
         { "--graph", nullptr,
           "Force .graph text format (see 'Format options' above)" },
 
+        { "--directed", nullptr,
+          "Interpret the graph as directed for the superbubbles command (default: bidirected)" },
+
+        { "--doubled", nullptr,
+          "Use the doubled-graph algorithm for ultrabubbles (no tip/cut-vertex requirement per CC, higher RAM)" },
+
         { "--clsd-trees", "<file>",
           "Write CLSD superbubble trees (ultrabubble hierarchy) to <file> (ultrabubbles command only)" },
 
         { "-T, --include-trivial", nullptr,
-          "Include trivial ultrabubbles in output (default: excluded; ultrabubbles command only)" },
+          "Include trivial bubbles in output (default: excluded; ultrabubbles, superbubbles and snarls commands)" },
 
         { "--report-json", "<file>", "Write JSON metrics report" },
         { "-m", "<bytes>",           "Stack size in bytes" },
@@ -272,7 +269,7 @@ static void usage(const char *prog, int exitCode)
     }
     std::cerr << "\n";
 
-    std::cerr << "Format options (input format):\n"
+std::cerr << "Format options (input format):\n"
               << "  --gfa\n"
               << "      GFA input (bidirected).\n"
               << "  --gfa-directed\n"
@@ -287,7 +284,12 @@ static void usage(const char *prog, int exitCode)
               << "        • u and v are arbitrary node identifiers (strings\n"
               << "            without whitespace).\n"
               << "  If none of these is given, the format is auto-detected\n"
-              << "  from the file extension (e.g. .gfa, .graph).\n\n";
+              << "  from the file extension (.gfa, .gbz, .graph).\n\n";
+
+    std::cerr << "Supported input formats:\n"
+              << "  .gfa / .gfa1 / .gfa2   GFA (auto-detected)\n"
+              << "  .gbz                    GBZ (vg/gbwtgraph format)\n"
+              << "  .graph                  Simple directed edge list\n\n";
 
     std::cerr << "Compression:\n"
               << "  Compression is auto-detected from the file name suffix:\n"
@@ -390,9 +392,7 @@ detectCompressionAndCoreExt(const std::string &path,
     return comp;
 }
 
-// -----------------------------------------------------------------------------
-// Path checks (input/output)
-// -----------------------------------------------------------------------------
+
 
 static bool inputFileReadable(const std::string &path, std::string &errOut)
 {
@@ -453,9 +453,7 @@ static bool outputParentDirWritable(const std::string &path, std::string &errOut
     return true;
 }
 
-// -----------------------------------------------------------------------------
-// Argument parsing
-// -----------------------------------------------------------------------------
+
 void readArgs(int argc, char **argv)
 {
     auto &C = ctx();
@@ -468,7 +466,6 @@ void readArgs(int argc, char **argv)
 
     std::size_t i = 1;
 
-    // 1) Subcommand
     const std::string cmd = args[i];
 
     if (cmd == "-h" || cmd == "--help")
@@ -478,10 +475,11 @@ void readArgs(int argc, char **argv)
     else if (cmd == "superbubbles")
     {
         C.bubbleType = Context::BubbleType::SUPERBUBBLE;
-        C.directedSuperbubbles = false;
+        C.directedSuperbubbles = false;  // bidirected by default
     }
     else if (cmd == "directed-superbubbles")
     {
+        // Backward compatibility
         C.bubbleType = Context::BubbleType::SUPERBUBBLE;
         C.directedSuperbubbles = true;
     }
@@ -494,6 +492,7 @@ void readArgs(int argc, char **argv)
     {
         C.bubbleType = Context::BubbleType::ULTRABUBBLE;
         C.directedSuperbubbles = false;
+        C.doubledUltrabubbles = false;
     }
     else if (cmd == "spqr-tree")
     {
@@ -503,13 +502,12 @@ void readArgs(int argc, char **argv)
     else
     {
         std::cerr << "Error: unknown command '" << cmd
-                  << "'. Expected one of: superbubbles, directed-superbubbles, snarls, ultrabubbles, spqr-tree.\n\n";
+                  << "'. Expected one of: superbubbles, snarls, ultrabubbles, spqr-tree.\n\n";
         usage(args[0].c_str(), 1);
     }
 
     ++i;
 
-    // 2) Options
     for (; i < args.size(); ++i)
     {
         const std::string &s = args[i];
@@ -555,6 +553,26 @@ void readArgs(int argc, char **argv)
             }
             C.inputFormat = Context::InputFormat::Graph;
         }
+        else if (s == "--directed")
+        {
+            if (C.bubbleType != Context::BubbleType::SUPERBUBBLE)
+            {
+                std::cerr << "Error: option '--directed' is only supported with the "
+                             "'superbubbles' command.\n";
+                std::exit(1);
+            }
+            C.directedSuperbubbles = true;
+        }
+        else if (s == "--doubled")
+        {
+            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE)
+            {
+                std::cerr << "Error: option '--doubled' is only supported with the "
+                             "'ultrabubbles' command.\n";
+                std::exit(1);
+            }
+            C.doubledUltrabubbles = true;
+        }
         else if (s == "--report-json")
         {
             g_report_json_path = nextArgOrDie(args, i, "--report-json");
@@ -577,10 +595,12 @@ void readArgs(int argc, char **argv)
         }
         else if (s == "-T" || s == "--include-trivial")
         {
-            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE)
+            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE &&
+                C.bubbleType != Context::BubbleType::SUPERBUBBLE &&
+                C.bubbleType != Context::BubbleType::SNARL)
             {
                 std::cerr << "Error: option '-T' / '--include-trivial' is only supported with the "
-                             "'ultrabubbles' command.\n";
+                             "'ultrabubbles', 'superbubbles' or 'snarls' command.\n";
                 std::exit(1);
             }
             C.includeTrivial = true;
@@ -639,7 +659,6 @@ void readArgs(int argc, char **argv)
         }
     }
 
-    // 3) Basic checks
     if (C.graphPath.empty())
     {
         std::cerr << "Error: missing -g <graphFile>.\n\n";
@@ -651,7 +670,6 @@ void readArgs(int argc, char **argv)
         usage(args[0].c_str(), 1);
     }
 
-    // Extra safety
     if (C.clsdTrees && C.bubbleType != Context::BubbleType::ULTRABUBBLE)
     {
         std::cerr << "Error: option '--clsd-trees' is only supported with the "
@@ -659,7 +677,6 @@ void readArgs(int argc, char **argv)
         std::exit(1);
     }
 
-    // 4) Auto-detect compression and input format (if still Auto)
     std::string coreExt;
     C.compression = detectCompressionAndCoreExt(C.graphPath, coreExt);
 
@@ -757,6 +774,237 @@ struct OgdfAcc
 
 namespace solver
 {
+
+    // namespace superbubble {
+    //     namespace
+    //     {
+    //         thread_local std::vector<std::pair<ogdf::node, ogdf::node>> *tls_superbubble_collector = nullptr;
+    //     }
+
+    //     static bool tryCommitSuperbubble(ogdf::node source, ogdf::node sink)
+    //     {
+    //         auto &C = ctx();
+    //         if (ctx().node2name[source] == "_trash" ||
+    //             ctx().node2name[sink] == "_trash")
+    //         {
+    //             return false;
+    //         }
+    //         C.superbubbles.emplace_back(source, sink);
+    //         return true;
+    //     }
+
+    //     void addSuperbubble(ogdf::node source, ogdf::node sink)
+    //     {
+    //         if (tls_superbubble_collector)
+    //         {
+    //             tls_superbubble_collector->emplace_back(source, sink);
+    //             return;
+    //         }
+    //         tryCommitSuperbubble(source, sink);
+    //     }
+
+    //     void findMiniSuperbubbles()
+    //     {
+    //         MARK_SCOPE_MEM("sb/findMini");
+    //         auto &C = ctx();
+    //         if (!C.includeTrivial) return;
+
+    //         logger::info("Finding mini-superbubbles..");
+    //         for (auto &e : C.G.edges)
+    //         {
+    //             auto a = e->source(); auto b = e->target();
+    //             if (a->outdeg() == 1 && b->indeg() == 1)
+    //             {
+    //                 bool ok = true;
+    //                 for (auto &w : b->adjEntries)
+    //                 {
+    //                     auto e2 = w->theEdge();
+    //                     if (e2->source() == b && e2->target() == a)
+    //                     { ok = false; break; }
+    //                 }
+    //                 if (ok) addSuperbubble(a, b);
+    //             }
+    //         }
+    //         logger::info("Checked for mini-superbubbles");
+    //     }
+
+    //     struct CcWork {
+    //         std::vector<ogdf::node> nodes;
+    //         std::vector<ogdf::edge> edges;
+    //     };
+
+    //     struct ThreadArgs {
+    //         size_t tid;
+    //         size_t numThreads;
+    //         size_t nItems;
+    //         std::atomic<size_t> *nextIndex;
+    //         std::vector<CcWork> *work;
+    //         std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> *results;
+    //     };
+
+    //     static void worker_process_cc(ThreadArgs targs)
+    //     {
+    //         auto &work = *targs.work;
+    //         auto &results = *targs.results;
+    //         const size_t n = targs.nItems;
+    //         const bool keep_trivial = ctx().includeTrivial;
+
+    //         size_t processed = 0;
+
+    //         while (true)
+    //         {
+    //             size_t i = targs.nextIndex->fetch_add(1);
+    //             if (i >= n) break;
+
+    //             auto &cc = work[i];
+    //             const int nNodes = (int)cc.nodes.size();
+    //             if (nNodes <= 1) continue;
+
+    //             std::unordered_map<ogdf::node, int> nodeToId;
+    //             nodeToId.reserve(nNodes);
+    //             std::vector<ogdf::node> idToNode(nNodes);
+    //             for (int j = 0; j < nNodes; j++)
+    //             {
+    //                 nodeToId[cc.nodes[j]] = j;
+    //                 idToNode[j] = cc.nodes[j];
+    //             }
+
+    //             std::vector<std::pair<int,int>> directed_edges;
+    //             directed_edges.reserve(cc.edges.size());
+    //             for (ogdf::edge e : cc.edges)
+    //             {
+    //                 int src = nodeToId[e->source()];
+    //                 int tgt = nodeToId[e->target()];
+    //                 directed_edges.emplace_back(src, tgt);
+    //             }
+
+    //             std::sort(directed_edges.begin(), directed_edges.end());
+    //             directed_edges.erase(
+    //                 std::unique(directed_edges.begin(), directed_edges.end()),
+    //                 directed_edges.end());
+
+    //             auto superbubbles = compute_weak_superbubbles_from_edges(
+    //                 nNodes, directed_edges, nullptr);
+
+    //             if (!keep_trivial && !superbubbles.empty())
+    //             {
+    //                 std::vector<int> odeg(nNodes, 0);
+    //                 for (const auto &de : directed_edges)
+    //                     odeg[de.first]++;
+
+    //                 superbubbles.erase(
+    //                     std::remove_if(superbubbles.begin(),
+    //                                 superbubbles.end(),
+    //                         [&](const std::pair<int,int> &sb) {
+    //                             return odeg[sb.first] == 1 &&
+    //                                 std::binary_search(
+    //                                     directed_edges.begin(),
+    //                                     directed_edges.end(),
+    //                                     std::make_pair(sb.first, sb.second));
+    //                         }),
+    //                     superbubbles.end());
+    //             }
+
+    //             auto &local = results[i];
+    //             local.reserve(superbubbles.size());
+
+    //             for (auto &sb : superbubbles)
+    //             {
+    //                 int xid = sb.first;
+    //                 int yid = sb.second;
+
+    //                 if (xid < 0 || xid >= nNodes ||
+    //                     yid < 0 || yid >= nNodes)
+    //                     continue;
+
+    //                 ogdf::node xg = idToNode[xid];
+    //                 ogdf::node yg = idToNode[yid];
+
+    //                 const std::string &xName = ctx().node2name[xg];
+    //                 const std::string &yName = ctx().node2name[yg];
+
+    //                 if (xName == "_trash" || yName == "_trash")
+    //                     continue;
+
+    //                 local.emplace_back(xg, yg);
+    //             }
+
+    //             ++processed;
+    //         }
+
+    //         std::cout << "Thread " << targs.tid
+    //                 << " processed " << processed
+    //                 << " CCs on doubled graph" << std::endl;
+    //     }
+
+    //     void solveStreaming()
+    //     {
+    //         auto &C = ctx();
+    //         Graph &G = C.G;
+
+    //         NodeArray<int> compIdx(G);
+    //         int nCC;
+    //         {
+    //             MARK_SCOPE_MEM("sb/phase/ComputeCC");
+    //             nCC = connectedComponents(G, compIdx);
+    //         }
+
+    //         std::vector<CcWork> work(nCC);
+    //         {
+    //             MARK_SCOPE_MEM("sb/phase/BucketNodesEdges");
+    //             for (ogdf::node v : G.nodes)
+    //                 work[compIdx[v]].nodes.push_back(v);
+    //             for (ogdf::edge e : G.edges)
+    //                 work[compIdx[e->source()]].edges.push_back(e);
+    //         }
+
+    //         logger::info("Doubled graph: {} CCs, processing each CC entirely via CLSD", nCC);
+
+    //         std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> results(nCC);
+    //         std::atomic<size_t> nextIndex{0};
+
+    //         size_t numThreads = std::thread::hardware_concurrency();
+    //         numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+    //         if (numThreads == 0) numThreads = 1;
+
+    //         {
+    //             MARK_SCOPE_MEM("sb/phase/SolveCCs");
+
+    //             std::vector<std::thread> threads;
+    //             threads.reserve(numThreads);
+
+    //             for (size_t tid = 0; tid < numThreads; ++tid)
+    //             {
+    //                 threads.emplace_back(worker_process_cc, ThreadArgs{
+    //                     tid, numThreads, (size_t)nCC,
+    //                     &nextIndex, &work, &results
+    //                 });
+    //             }
+
+    //             for (auto &t : threads)
+    //                 t.join();
+    //         }
+
+    //         {
+    //             MARK_SCOPE_MEM("sb/phase/CommitResults");
+    //             for (const auto &candidates : results)
+    //                 for (const auto &p : candidates)
+    //                     tryCommitSuperbubble(p.first, p.second);
+    //         }
+
+    //         logger::info("Superbubbles on doubled graph: {} committed",
+    //                      C.superbubbles.size());
+    //     }
+
+    //     void solve()
+    //     {
+    //         TIME_BLOCK("Finding superbubbles on doubled graph");
+    //         if (ctx().directedSuperbubbles)
+    //             findMiniSuperbubbles();
+    //         solveStreaming();
+    //     }
+    // }   
+
     namespace superbubble {
         namespace
         {
@@ -2251,8 +2499,6 @@ namespace solver
             auto &C = ctx();
             const Graph &G = *blk.Gblk;
 
-            if(!C.directedSuperbubbles && G.numberOfNodes()<=2) return;
-
             node src = nullptr, snk = nullptr;
 
             for (node v : G.nodes)
@@ -2736,50 +2982,7 @@ namespace solver
 
                 if (blk->Gblk && blk->Gblk->numberOfNodes() >= 3)
                 {
-                    std::vector<std::pair<int,int>> superbubbles;
-                    std::vector<std::pair<int,int>> directed_edges;
-
-                    std::vector<int> blkIndexToOrigIndex(blk->Gblk->numberOfNodes());
-                    for (node v : blk->Gblk->nodes) {
-                        blkIndexToOrigIndex[v->index()] = blk->toOrig[v]->index();
-                    }
-
-                    for(auto &e: blk->Gblk->edges) {
-                        int src = e->source()->index();
-                        int tgt = e->target()->index();
-                        directed_edges.emplace_back(src, tgt);
-                    }
-
-                    std::sort(directed_edges.begin(), directed_edges.end());
-                    directed_edges.erase(std::unique(directed_edges.begin(), directed_edges.end()),
-                                        directed_edges.end());
-
-                    superbubbles = compute_weak_superbubbles_from_edges(blk->Gblk->numberOfNodes(), directed_edges, nullptr);
-
-                    for (auto &sb : superbubbles) {
-                        int xid = sb.first;
-                        int yid = sb.second;
-
-                        ogdf::node xg = ctx().nodeByGlobalId[blkIndexToOrigIndex[xid]];
-                        ogdf::node yg = ctx().nodeByGlobalId[blkIndexToOrigIndex[yid]];
-
-                        std::string xName = ctx().node2name[xg];
-                        std::string yName = ctx().node2name[yg];
-                        
-                        
-                        xName.pop_back();
-                        yName.pop_back();
-                        
-
-                        if(xName<=yName) {
-                            addSuperbubble(xg, yg);
-                        } else {
-                            addSuperbubble(yg, xg);
-                        }
-                    }
-
-
-                    //solveSPQR(*blk, *w.cc);
+                    solveSPQR(*blk, *w.cc);
                 }
                 checkBlockByCutVertices(*blk, *w.cc);
 
@@ -2793,20 +2996,6 @@ namespace solver
         {
             auto &C = ctx();
             Graph &G = C.G;
-
-            C.nodeByGlobalId.clear();
-            C.nodeByGlobalId.resize((size_t)G.numberOfNodes(), nullptr);
-
-            {
-                int id = 0;
-                for (ogdf::node v : G.nodes) {
-                    // nodeId[v] = id;
-                    C.nodeByGlobalId[(size_t)id] = v;
-                    ++id;
-                }
-                OGDF_ASSERT(id == original_n);
-            }
-
 
             std::vector<WorkItem> workItems;
 
@@ -3092,7 +3281,7 @@ namespace solver
         void solve()
         {
             TIME_BLOCK("Finding superbubbles in blocks");
-            if(ctx().directedSuperbubbles) findMiniSuperbubbles();
+            findMiniSuperbubbles();
             solveStreaming();
         }
     }
@@ -3219,8 +3408,6 @@ namespace solver
                 }
             };
 
-            // For each thread (typically in worker_block_solve), we keep the pairs
-            // of vertices (without sign) that already have an S/P/RR snarl.
 
             thread_local std::unordered_set<std::pair<std::string, std::string>, StrPairHash>
                 tls_spqr_seen_endpoint_pairs;
@@ -3392,11 +3579,8 @@ namespace solver
                     g_cnt_E++;
             }
 
-            // Canonicalisation des paires (ordre stable)
             canonicalize_pair(s);
 
-            // Si c'est un snarl de type S/P/RR, on enregistre la paire d'extrémités
-            // (sans signe) dans le set TLS, uniquement dans le contexte SPQR (tls_snarl_buffer != nullptr).
             if (tls_snarl_buffer && tag &&
                 (std::strcmp(tag, "S") == 0 ||
                  std::strcmp(tag, "P") == 0 ||
@@ -3404,7 +3588,6 @@ namespace solver
                 s.size() == 2)
             {
 
-                // s[0], s[1] sont de la forme "nom+" ou "nom-"
                 auto strip_sign = [](const std::string &x)
                 {
                     if (!x.empty() && (x.back() == '+' || x.back() == '-'))
@@ -3442,7 +3625,6 @@ namespace solver
 
             bool isAcycic{true};
 
-            // NOUVEAU : degrés + / - dans CE bloc uniquement
             ogdf::NodeArray<int> blkDegPlus;
             ogdf::NodeArray<int> blkDegMinus;
 
@@ -3462,8 +3644,8 @@ namespace solver
             ogdf::NodeArray<bool> isCutNode;
             ogdf::NodeArray<bool> isGoodCutNode;
 
-            ogdf::NodeArray<ogdf::node> lastBad; // last bad adjacent block node for cut nodes
-            ogdf::NodeArray<int> badCutCount;    // number of adjacent bad blocks for cut nodes
+            ogdf::NodeArray<ogdf::node> lastBad;
+            ogdf::NodeArray<int> badCutCount;   
 
             ogdf::EdgeArray<ogdf::edge> auxToOriginal;
             // ogdf::NodeArray<std::array<std::vector<ogdf::node>, 3>> cutToBlocks; // 0-all -, 1 - all +, 2 - mixed
@@ -3496,16 +3678,14 @@ namespace solver
             }
         }
 
-        // Given block "vB" and graph node "uG", find all outgoing edges from "uG" inside the block with out type "type"
         void getOutgoingEdgesInBlock(const CcData &cc,
-                                     ogdf::node uG, // node in Gcc
-                                     ogdf::node vB, // B-node in the BC-tree
+                                     ogdf::node uG, 
+                                     ogdf::node vB, 
                                      EdgePartType type,
                                      std::vector<ogdf::edge> &outEdges)
         {
             outEdges.clear();
 
-            // repVertex may return nullptr if uG does not belong to this block
             ogdf::node uB = cc.bc->repVertex(uG, vB);
             if (!uB)
             {
@@ -3516,16 +3696,15 @@ namespace solver
 
             for (auto adjE : uB->adjEntries)
             {
-                ogdf::edge eAux = adjE->theEdge();      // edge in the auxiliary graph
-                ogdf::edge eCc = cc.bc->original(eAux); // edge in cc.Gcc
-
-                // Some auxiliary edges may not have an associated original edge
+                ogdf::edge eAux = adjE->theEdge();      
+                ogdf::edge eCc = cc.bc->original(eAux); 
+                
                 if (!eCc)
                 {
                     continue;
                 }
 
-                ogdf::edge eG = cc.edgeToOrig[eCc]; // edge in the original graph
+                ogdf::edge eG = cc.edgeToOrig[eCc];
 
                 auto outType = getNodeEdgeType(cc.nodeToOrig[uG], eG);
                 if (outType == type)
@@ -3640,28 +3819,24 @@ namespace solver
 
                 const StaticSPQRTree &spqr = *blk.spqr;
 
-                // Determine parent / child in the SPQR tree without relying on source()/target()
                 ogdf::node u = curr_edge->source();
                 ogdf::node v = curr_edge->target();
 
-                ogdf::node A = nullptr; // parent
-                ogdf::node B = nullptr; // child
+                ogdf::node A = nullptr; 
+                ogdf::node B = nullptr; 
 
                 if (blk.parent[u] == v)
                 {
-                    // v is the parent of u
                     A = v;
                     B = u;
                 }
                 else if (blk.parent[v] == u)
                 {
-                    // u is the parent of v
                     A = u;
                     B = v;
                 }
                 else
                 {
-                    // This should never happen if blk.parent correctly encodes the tree
                     OGDF_ASSERT(false);
                     return;
                 }
@@ -3671,7 +3846,7 @@ namespace solver
                 state.localMinusS = 0;
                 state.localMinusT = 0;
 
-                const Skeleton &skel = spqr.skeleton(B); // skeleton of the child
+                const Skeleton &skel = spqr.skeleton(B); 
                 const Graph &skelGraph = skel.getGraph();
 
                 auto mapSkeletonToGlobal = [&](ogdf::node vSkel) -> ogdf::node
@@ -3687,13 +3862,12 @@ namespace solver
                     return cc.nodeToOrig[vCc];
                 };
 
-                // 1) Find the virtual edge in skel(B) that corresponds to the tree edge (A,B)
                 for (ogdf::edge e : skelGraph.edges)
                 {
                     ogdf::node uSk = e->source();
                     ogdf::node vSk = e->target();
 
-                    ogdf::node D = skel.twinTreeNode(e); // SPQR-tree node on the other side
+                    ogdf::node D = skel.twinTreeNode(e);
 
                     if (D == A)
                     {
@@ -3706,7 +3880,6 @@ namespace solver
                     }
                 }
 
-                // 2) Accumulate contributions of real edges and SPQR children into state (on B's side)
                 for (ogdf::edge e : skelGraph.edges)
                 {
                     ogdf::node uSk = e->source();
@@ -3717,7 +3890,6 @@ namespace solver
 
                     if (!skel.isVirtual(e))
                     {
-                        // Real edge: locally count plus/minus for S and T
                         ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
 
                         ogdf::node uG = eG->source();
@@ -3762,24 +3934,18 @@ namespace solver
                         continue;
                     }
 
-                    // Virtual edge: corresponds to another SPQR node D
                     ogdf::node D = skel.twinTreeNode(e);
 
-                    // Skip the edge that corresponds directly to the parent A (already processed)
                     if (D == A)
                     {
                         continue;
                     }
 
-                    // Retrieve the SPQR-tree edge corresponding to this virtual edge
                     ogdf::edge treeE = blk.skel2tree.at(e);
                     OGDF_ASSERT(treeE != nullptr);
 
-                    // Use the child's "downward" DP.
-                    // (The down/up orientation now follows blk.parent)
                     const EdgeDPState &child = dp[treeE].down;
 
-                    // Add the child's subtree contributions to state
                     if (state.s == child.s)
                     {
                         state.localPlusS += child.localPlusS;
@@ -3849,7 +4015,6 @@ namespace solver
                     return nV;
                 };
 
-                // construire newGraph
                 for (edge e : skelG.edges)
                 {
                     node u = e->source();
@@ -3890,7 +4055,6 @@ namespace solver
                         continue;
                     }
 
-                    // virtual edge
                     auto B = skel.twinTreeNode(e);
                     edge treeE = blk.skel2tree.at(e);
                     OGDF_ASSERT(treeE != nullptr);
@@ -3925,7 +4089,6 @@ namespace solver
                     }
                 }
 
-                // Update DP for incoming virtual edges
                 for (edge e : virtualEdges)
                 {
                     EdgeDPState *BA = edgeToDp[e];
@@ -3956,7 +4119,6 @@ namespace solver
                 std::vector<ogdf::edge> adjEdgesG;
                 std::vector<adjEntry> adjEntriesSkel;
 
-                // Associate each virtual edge with its DP state
                 for (edge e : skelG.edges)
                 {
                     if (!skel.isVirtual(e))
@@ -3968,7 +4130,6 @@ namespace solver
                     skelToState[treeE] = child;
                 }
 
-                // DFS to number the vertices in order
                 {
                     std::function<void(ogdf::node, ogdf::node)> dfs =
                         [&](ogdf::node u, ogdf::node prev)
@@ -4035,7 +4196,6 @@ namespace solver
                     EdgePartType t0 = EdgePartType::NONE;
                     EdgePartType t1 = EdgePartType::NONE;
 
-                    // edge 0
                     if (!skel.isVirtual(adjEdgesSkelLoc[0]))
                     {
                         t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
@@ -4094,7 +4254,6 @@ namespace solver
                         if (node_dp[sNode].GccCuts_last3.size() < 3)
                             node_dp[sNode].GccCuts_last3.push_back(uGcc);
 
-                        // left side
                         if (!skel.isVirtual(adjEdgesSkelLoc[0]))
                         {
                             EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
@@ -4117,7 +4276,6 @@ namespace solver
                             }
                         }
 
-                        // right side
                         if (!skel.isVirtual(adjEdgesSkelLoc[1]))
                         {
                             EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
@@ -4170,7 +4328,6 @@ namespace solver
                      << " skeleton |V|=" << skelGraph.numberOfNodes()
                      << " |E|=" << skelGraph.numberOfEdges() << "\n";
 
-                // A P-node has exactly two vertices in its skeleton.
                 ogdf::node pole0Skel = nullptr, pole1Skel = nullptr;
                 {
                     auto it = skelGraph.nodes.begin();
@@ -4200,7 +4357,6 @@ namespace solver
                      << C.node2name[cc.nodeToOrig[pole0Gcc]] << " (Gcc idx=" << pole0Gcc->index() << "), "
                      << C.node2name[cc.nodeToOrig[pole1Gcc]] << " (Gcc idx=" << pole1Gcc->index() << ")\n";
 
-                // Test for dangling blocks (dangling blocks outside the current block)
                 auto hasDanglingOutside = [&](ogdf::node vGcc)
                 {
                     if (!cc.isCutNode[vGcc])
@@ -4217,14 +4373,12 @@ namespace solver
                     return;
                 }
 
-                // Order (circular) of edges incident to pole 0 in the skeleton
                 std::vector<ogdf::adjEntry> edgeOrdering;
                 for (ogdf::adjEntry adj = pole0Skel->firstAdj(); adj; adj = adj->succ())
                 {
                     edgeOrdering.push_back(adj);
                 }
 
-                // 1) First pass: ensure that no SPQR child gives + and - simultaneously to the same pole
                 for (ogdf::adjEntry adj : edgeOrdering)
                 {
                     ogdf::edge eSkel = adj->theEdge();
@@ -4277,7 +4431,6 @@ namespace solver
                     }
                 }
 
-                // 2) For each combination (left,right) ∈ {+,-}², construct the sets E^{left}_{pole0}, E^{right}_{pole1}
                 for (auto left : {EdgePartType::PLUS, EdgePartType::MINUS})
                 {
                     for (auto right : {EdgePartType::PLUS, EdgePartType::MINUS})
@@ -4294,8 +4447,6 @@ namespace solver
 
                             if (!skel.isVirtual(eSkel))
                             {
-                                // Actual edge: the sign is read directly from the poles in the original graph.
-
                                 ogdf::edge eB = skel.realEdge(eSkel);
                                 ogdf::edge eG = blk.edgeToOrig[eB];
 
@@ -4307,7 +4458,6 @@ namespace solver
                             }
                             else
                             {
-                                // Virtual edge: SPQR child, we use the corresponding DP state.
                                 auto itMap = blk.skel2tree.find(eSkel);
                                 if (itMap == blk.skel2tree.end())
                                     continue;
@@ -4317,7 +4467,6 @@ namespace solver
                                 EdgeDP &dpVal = edge_dp[treeE];
                                 EdgeDPState &st = (blk.parent[pNode] == B ? dpVal.up : dpVal.down);
 
-                                // Sign at pole 0
                                 if (st.s == pole0Blk)
                                 {
                                     bool hasPlus = (st.localPlusS > 0);
@@ -4341,7 +4490,6 @@ namespace solver
                                         lSign = EdgePartType::NONE;
                                 }
 
-                                // Signe au pôle 1
                                 if (st.s == pole1Blk)
                                 {
                                     bool hasPlus = (st.localPlusS > 0);
@@ -4366,23 +4514,15 @@ namespace solver
                                 }
                             }
 
-                            // The edge is only added to E^{left}_pole0 / E^{right}_pole1
-                            // if the sign matches. NONE edges are not added to any set.
                             if (lSign == left)
                                 leftPart.push_back(eSkel);
                             if (rSign == right)
                                 rightPart.push_back(eSkel);
                         }
 
-                        // Separability conditions (Proposition P-node of the paper):
-                        //  - E^{left}_{pole0} not empty
-                        //  - E^{left}_{pole0} = E^{right}_{pole1}
                         if (leftPart.empty() || leftPart != rightPart)
                             continue;
 
-                        // Minimality: according to the paper, if |E^{left}_u| > 1, minimality
-                        // follows from the structure P and it is not necessary to filter by S-nodes.
-                        // Filtering via GccCuts_last3 should only apply if leftPart.size() == 1.
                         bool ok = true;
                         if (leftPart.size() == 1)
                         {
@@ -4405,8 +4545,6 @@ namespace solver
                         }
                         if (!ok)
                             continue;
-
-                        // We have a minimal snarl P between the two poles, with the signs (left, right).
                         std::string sName = C.node2name[cc.nodeToOrig[pole0Gcc]] +
                                             (left == EdgePartType::PLUS ? "+" : "-");
                         std::string tName = C.node2name[cc.nodeToOrig[pole1Gcc]] +
@@ -4432,7 +4570,6 @@ namespace solver
                 EdgeDPState &down = edge_dp[rrEdge].down;
                 EdgeDPState &up = edge_dp[rrEdge].up;
 
-                // Incomplete states => no attempt made
                 if (!down.s || !down.t || !up.s || !up.t)
                 {
                     return;
@@ -4448,7 +4585,6 @@ namespace solver
                     return;
                 }
 
-                // Dangling test relative to the current block blk.bNode
                 auto hasDanglingOutside = [&](ogdf::node vGcc)
                 {
                     if (!cc.isCutNode[vGcc])
@@ -4465,7 +4601,6 @@ namespace solver
                     return;
                 }
 
-                // States where a pole sees + and - at the same time are rejected
                 if ((up.localMinusS > 0 && up.localPlusS > 0) ||
                     (up.localMinusT > 0 && up.localPlusT > 0) ||
                     (down.localMinusS > 0 && down.localPlusS > 0) ||
@@ -4722,14 +4857,9 @@ namespace solver
                         return (t == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS);
                     };
 
-                    // Checks the condition of Prop. 3.16 for ONE vertex:
-                    // - if eSign == sign  → case A: e = {u d, ...}, the other incidences
-                    //  must be of opposite sign to sign.
-                    // - if eSign != sign  → case B: e = {u hat(d), ...}, the other incidences
-                    // must have the same sign as sign.
                     auto check_one_vertex = [&](ogdf::node vB,
-                                                EdgePartType sign,    // snarl sign at this node
-                                                EdgePartType eSign) { // sign of the eG ridge at this node
+                                                EdgePartType sign,   
+                                                EdgePartType eSign) { 
                         int totPlus = blk.blkDegPlus[vB];
                         int totMinus = blk.blkDegMinus[vB];
 
@@ -4737,14 +4867,14 @@ namespace solver
                         {
                             if (eSign == EdgePartType::PLUS)
                             {
-                                // Case A: e = {u+, ...}, others must be '-'
+                                // Case A: e = {u+, ...}, others must be -
                                 int othersPlus = totPlus - 1;
                                 int othersMinus = totMinus;
                                 return (othersPlus == 0 && othersMinus > 0);
                             }
                             else
                             {
-                                // Case B: e = {u-, ...}, others must be '+'
+                                // Case B: e = {u-, ...}, others must be +
                                 int othersPlus = totPlus;
                                 int othersMinus = totMinus - 1;
                                 return (othersMinus == 0 && othersPlus > 0);
@@ -4754,14 +4884,14 @@ namespace solver
                         { // sign == MINUS
                             if (eSign == EdgePartType::MINUS)
                             {
-                                // Case A: e = {u-, ...}, others must be '+'
+                                // Case A: e = {u-, ...}, others must be +
                                 int othersMinus = totMinus - 1;
                                 int othersPlus = totPlus;
                                 return (othersMinus == 0 && othersPlus > 0);
                             }
                             else
                             {
-                                // Case B: e = {u+, ...}, others must be '-'
+                                // Case B: e = {u+, ...}, others must be -
                                 int othersMinus = totMinus;
                                 int othersPlus = totPlus - 1;
                                 return (othersPlus == 0 && othersMinus > 0);
@@ -4836,10 +4966,10 @@ namespace solver
                 }
 
                 VLOG << "[DEBUG][findTips] node " << name
-                     << " (Gcc idx=" << v->index() << ")"
-                     << " plusCnt=" << plusCnt
-                     << " minusCnt=" << minusCnt
-                     << " isTip=" << (cc.isTip[v] ? "true" : "false")
+                     << "(Gcc idx=" << v->index() << ")"
+                     << "plusCnt=" << plusCnt
+                     << "minusCnt=" << minusCnt
+                     << "isTip=" << (cc.isTip[v] ? "true" : "false")
                      << "\n";
             }
 
@@ -4890,13 +5020,13 @@ namespace solver
                 }
 
                 VLOG << "[DEBUG][processCutNodes] node " << name
-                     << " (Gcc idx=" << v->index() << ")"
-                     << " isCutNode=" << (cc.isCutNode[v] ? "true" : "false")
-                     << " badCutCount=" << cc.badCutCount[v]
-                     << " isGoodCutNode=" << (cc.isGoodCutNode[v] ? "true" : "false");
+                     << "(Gcc idx=" << v->index() << ")"
+                     << "isCutNode=" << (cc.isCutNode[v] ? "true" : "false")
+                     << "badCutCount=" << cc.badCutCount[v]
+                     << "isGoodCutNode=" << (cc.isGoodCutNode[v] ? "true" : "false");
                 if (cc.lastBad[v] != nullptr)
                 {
-                    VLOG << " lastBad(B-node idx)=" << cc.lastBad[v]->index();
+                    VLOG << "lastBad(B-node idx)=" << cc.lastBad[v]->index();
                 }
                 VLOG << "\n";
             }
@@ -4906,10 +5036,8 @@ namespace solver
         {
             MARK_SCOPE_MEM("sn/findCutSnarl");
 
-            // visited[v].first = visited with a path ending in MINUS
-            // visited[v].second = visited with a path ending in PLUS
             ogdf::NodeArray<std::pair<bool, bool>> visited(
-                *cc.Gcc, {false, false}); // (minusVisited, plusVisited)
+                *cc.Gcc, {false, false}); 
 
             for (ogdf::node start : cc.Gcc->nodes)
             {
@@ -5384,7 +5512,6 @@ namespace solver
                     {
                         MARK_SCOPE_MEM("sn/worker_bcTree/build");
 
-                        // Sanity
                         OGDF_ASSERT(cc->Gcc->numberOfNodes() > 0);
 
                         {
@@ -5399,7 +5526,6 @@ namespace solver
                              << " BC-tree has " << cc->bc->bcTree().numberOfNodes()
                              << " nodes\n";
 
-                        // On ne fait qu'énumérer les B-nodes de type BComp (blocs)
                         for (ogdf::node v : cc->bc->bcTree().nodes)
                         {
                             if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp)
@@ -5602,7 +5728,6 @@ namespace solver
                     BlockData &blk = *prep.blk;
 
                     {
-                        // MEM_TIME_BLOCK("Algorithm: snarl solve (worker)");
                         if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3)
                         {
                             SPQRsolve::solveSPQR(blk, *prep.cc);
@@ -5637,10 +5762,6 @@ namespace solver
             PROFILE_FUNCTION();
             auto &C = ctx();
             Graph &G = C.G;
-
-            // -------------------------------
-            // Phase I/O: CC + Bucketing
-            // -------------------------------
             NodeArray<int> compIdx(G);
             int nCC = 0;
             std::vector<std::vector<node>> bucket;
@@ -5675,8 +5796,6 @@ namespace solver
             std::vector<BlockPrep> blockPreps;
             {
                 PhaseSampler build_sampler(g_stats_build);
-
-                // 1) rebuild cc graphs (worker_component) : parallel
                 {
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
@@ -5746,8 +5865,6 @@ namespace solver
                     }
                 }
 
-                // 2) build BC-trees and collect blocks (worker_bcTree)
-                //    IMPORTANT : still MONO‑THREAD (OGDF/BCTree is not thread‑safe)
                 {
                     size_t numThreads = 1; // security
 
@@ -5771,8 +5888,6 @@ namespace solver
                     }
                 }
 
-                // 3) build SPQR for blocks (worker_block_build)
-                //    IMPORTANT : still MONO‑THREAD regards OGDF::StaticSPQRTree
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
 
@@ -5798,13 +5913,8 @@ namespace solver
                 }
             }
 
-            // ----------------------------------------------------
-            // Phase LOGIC : tips/cuts + solve SPQR on blocks
-            // ----------------------------------------------------
             {
                 PhaseSampler logic_sampler(g_stats_logic);
-
-                // 4) tips & cuts (worker_tips) : parallel
                 {
                     MARK_SCOPE_MEM("sn/phase/tips_cuts");
 
@@ -5871,8 +5981,6 @@ namespace solver
                     }
                 }
 
-                // 5) SPQR solve for blocks (worker_block_solve)
-                //    IMPORTANT : MONO‑THREAD to avoid issues with OGDF
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_solve");
 
@@ -5898,9 +6006,6 @@ namespace solver
                 }
             }
 
-            // -------------------------------
-            // Stats
-            // -------------------------------
             auto to_ms = [](uint64_t us)
             { return us / 1000.0; };
             auto to_mib = [](size_t bytes)
@@ -6054,8 +6159,7 @@ namespace solver
             {
                 ccNodes[component[v]].push_back(v);
             }
-
-            // Tunables for coarse progress (avoid too many prints)
+            
             const int kBlockProgressStep = 256;
             const int kLogEachBlockIfLeq = 50;
             const int kLargeBlockNodes = 200000; 
@@ -6070,7 +6174,6 @@ namespace solver
                         << " (" << compName << "), nodes=" << ccNodes[ccIdx].size()
                         << " ...\n";
 
-                // Write G-line (component declaration)
                 out << "G " << compName;
                 for (ogdf::node v : ccNodes[ccIdx])
                 {
@@ -6499,8 +6602,7 @@ namespace solver
     }
 
     namespace ultrabubble {
-
-        static constexpr uint8_t UB_PLUS  = (uint8_t)EdgePartType::PLUS;
+        static constexpr uint8_t UB_PLUS = (uint8_t)EdgePartType::PLUS;
         static constexpr uint8_t UB_MINUS = (uint8_t)EdgePartType::MINUS;
         static void computeCutVertices(
             const Context &C,
@@ -6601,7 +6703,7 @@ namespace solver
             const std::vector<int> &localId,
             DirectedEdgeBuilder &out
         ) {
-            if (v >= u) return;
+            if (v > u) return;
 
             const int vl = localId[v];
             const int ul = localId[u];
@@ -6625,7 +6727,7 @@ namespace solver
             }
         }
 
-        static void orient_emit_iterative_cc(
+        static void orient(
             uint32_t start,
             bool plus_enter,
             std::vector<int> &plus_dir,
@@ -6633,16 +6735,16 @@ namespace solver
             const Context &C,
             DirectedEdgeBuilder &out
         ) {
-            struct Frame {
+            struct Frame { // used to simulate the DFS recursive call stack iteratively
                 uint32_t v;
-                uint8_t  order[2];
-                int      order_idx;
+                uint8_t order[2];
+                int order_idx;
                 uint32_t edge_pos;  
 
-                bool     pending;
+                bool pending;
                 uint32_t pending_u;
-                uint8_t  pending_sign_v;
-                uint8_t  pending_sign_u;
+                uint8_t pending_sign_v;
+                uint8_t pending_sign_u;
             };
 
             auto make_frame = [](uint32_t v, bool pe, uint32_t adj_start) -> Frame {
@@ -6652,8 +6754,8 @@ namespace solver
                 f.order[1] = UB_MINUS;
                 if (pe) std::swap(f.order[0], f.order[1]);
                 f.order_idx = 0;
-                f.edge_pos  = adj_start;
-                f.pending   = false;
+                f.edge_pos = adj_start;
+                f.pending = false;
                 return f;
             };
 
@@ -6699,8 +6801,8 @@ namespace solver
                             plus_dir[u] = 1 + (int)(ae.type_self != sign_u);
                         }
 
-                        f.pending        = true;
-                        f.pending_u      = u;
+                        f.pending = true;
+                        f.pending_u = u;
                         f.pending_sign_v = ae.type_self;
                         f.pending_sign_u = sign_u;
 
@@ -6720,6 +6822,85 @@ namespace solver
             next_iteration:
                 continue;
             }
+        }
+
+        static bool choose_cut_vertex_start(
+            uint32_t v,
+            const std::vector<uint32_t> &cc,
+            const std::vector<int> &localId,
+            const Context &C,
+            std::vector<int> &comp_of,        
+            std::vector<uint32_t> &q)         
+        {
+            const int k = (int)cc.size();
+
+            comp_of.assign(k, -1);
+            comp_of[localId[v]] = -2;
+
+            int n_comps = 0;
+            q.clear();
+
+            for (const UBEdge *it = C.adjBegin(v), *end = C.adjEnd(v);
+                 it != end; ++it)
+            {
+                uint32_t u = it->neighbor;
+                if (u == v) continue;
+                if (comp_of[localId[u]] != -1) 
+                continue;
+
+                comp_of[localId[u]] = n_comps;
+                q.clear();
+                q.push_back(u);
+                size_t qi = 0;
+                while (qi < q.size()) {
+                    uint32_t w = q[qi++];
+                    for (const UBEdge *jt = C.adjBegin(w), *jend = C.adjEnd(w);
+                         jt != jend; ++jt)
+                    {
+                        uint32_t x = jt->neighbor;
+                        if (x == v) continue;
+                        if (comp_of[localId[x]] != -1) continue;
+                        comp_of[localId[x]] = n_comps;
+                        q.push_back(x);
+                    }
+                }
+                n_comps++;
+            }
+
+            if (n_comps <= 1) return true; 
+            int plus_count = 0, minus_count = 0;
+            std::vector<bool> plus_seen(n_comps, false);
+            std::vector<bool> minus_seen(n_comps, false);
+
+            for (const UBEdge *it = C.adjBegin(v), *end = C.adjEnd(v);
+                 it != end; ++it)
+            {
+                uint32_t u = it->neighbor;
+                if (u == v) 
+                continue;
+                int c = comp_of[localId[u]];
+                if (c < 0) 
+                continue;
+                if (it->type_self == UB_PLUS) {
+                    if (!plus_seen[c]) { 
+                        plus_seen[c] = true; 
+                        plus_count++; 
+                    }
+                } else {
+                    if (!minus_seen[c]) { 
+                        minus_seen[c] = true; 
+                        minus_count++; 
+                    }
+                }
+            }
+
+
+            if (plus_count == 1 && minus_count > 1)
+            return false;   
+            if (minus_count == 1 && plus_count > 1)
+            return true;    
+
+            return true;
         }
 
         void solve() {
@@ -6757,20 +6938,20 @@ namespace solver
                 std::cout << "  Cut vertices: " << cut_count << "\n";
             }
 
-            std::vector<bool> &can_start = is_tip;  
+            std::vector<bool> is_tip_saved(is_tip);
+
+            std::vector<bool> &can_start = is_tip;
             {
                 size_t start_count = 0;
                 for (uint32_t v = 0; v < N; v++) {
-                    can_start[v] = is_tip[v] || is_cut[v];
+                    can_start[v] = is_tip_saved[v] || is_cut[v];
                     if (can_start[v]) start_count++;
                 }
                 std::cout << "  orientation start candidates : " << start_count
                           << " / " << N << "\n";
             }
 
-            // Free is_cut early (can_start absorbed it)
             { std::vector<bool>().swap(is_cut); }
-
 
             std::vector<int> localId(N, -1);
             std::vector<std::vector<uint32_t>> comps;
@@ -6812,6 +6993,7 @@ namespace solver
 
             std::atomic<size_t> next{0};
             std::atomic<bool> abort_flag{false};
+            std::atomic<size_t> total_conflict_vertices{0};
             std::exception_ptr eptr = nullptr;
             std::mutex ep_mtx;
 
@@ -6825,6 +7007,9 @@ namespace solver
 
             for (int t = 0; t < T; ++t) {
                 threads.emplace_back([&, keep_trivial]() {
+                    std::vector<int> cut_comp_scratch;
+                    std::vector<uint32_t> cut_q_scratch;
+
                     try {
                         while (!abort_flag.load(std::memory_order_relaxed)) {
                             size_t ci = next.fetch_add(1);
@@ -6837,9 +7022,17 @@ namespace solver
 
                             for (uint32_t v : cc) {
                                 if (!plus_dir[v] && can_start[v]) {
-                                    plus_dir[v] = 1;
-                                    orient_emit_iterative_cc(
-                                        v, true,
+                                    bool pe;
+                                    if (is_tip_saved[v]) {
+                                        pe = true;
+                                    } else {
+                                        pe = choose_cut_vertex_start(
+                                            v, cc, localId, C,
+                                            cut_comp_scratch, cut_q_scratch);
+                                    }
+                                    plus_dir[v] = pe ? 1 : 2;
+                                    orient(
+                                        v, pe,
                                         plus_dir, localId, C, out
                                     );
                                 }
@@ -6856,6 +7049,8 @@ namespace solver
                                 }
                             }
 
+                            total_conflict_vertices.fetch_add(out.nextId - k);
+
                             auto &directed_edges = out.edges;
                             std::sort(directed_edges.begin(),
                                       directed_edges.end());
@@ -6864,7 +7059,6 @@ namespace solver
                                             directed_edges.end()),
                                 directed_edges.end());
 
-                            // CLSD
                             std::vector<ClsdTree> trees;
                             std::vector<ClsdTree>* trees_ptr =
                                 (C.clsdTrees ? &trees : nullptr);
@@ -6872,21 +7066,6 @@ namespace solver
                                 compute_weak_superbubbles_from_edges(
                                     out.nextId, directed_edges, trees_ptr);
 
-                            // if (!keep_trivial && !superbubbles.empty()) {
-                            //     std::vector<int> odeg(out.nextId, 0);
-                            //     for (const auto &de : directed_edges)
-                            //         odeg[de.first]++;
-
-                            //     superbubbles.erase(
-                            //         std::remove_if(superbubbles.begin(),
-                            //                        superbubbles.end(),
-                            //             [&](const std::pair<int,int> &sb) {
-                            //                 return sb.first >= 0 &&
-                            //                        sb.first < (int)odeg.size() &&
-                            //                        odeg[sb.first] == 1;
-                            //             }),
-                            //         superbubbles.end());
-                            // }
                             if (!keep_trivial && !superbubbles.empty()) {
                                 std::vector<int> odeg(out.nextId, 0);
                                 for (const auto &de : directed_edges)
@@ -6976,7 +7155,6 @@ namespace solver
                             if (C.clsdTrees)
                                 clsdTextByCC[ci] = clsd_buf.str();
 
-                            // ── Collect results ──
                             auto &inc = incidencesByCC[ci];
                             inc.reserve(superbubbles.size());
 
@@ -7006,10 +7184,22 @@ namespace solver
                                     (std::uint32_t(y) << 1) |
                                     (yplus ? 1u : 0u);
 
-                                if (x > y)
-                                    inc.emplace_back(ypack, xpack);
-                                else
-                                    inc.emplace_back(xpack, ypack);
+                                const std::uint32_t xpack_flip = xpack ^ 1u;
+                                const std::uint32_t ypack_flip = ypack ^ 1u;
+
+                                std::uint32_t a1, b1;
+                                if (x <= y) { a1 = xpack;      b1 = ypack; }
+                                else { a1 = ypack;      b1 = xpack; }
+
+                                std::uint32_t a2, b2;
+                                if (x <= y) { a2 = xpack_flip; b2 = ypack_flip; }
+                                else { a2 = ypack_flip; b2 = xpack_flip; }
+
+                                if (std::tie(a2, b2) < std::tie(a1, b1)) {
+                                    inc.emplace_back(a2, b2);
+                                } else {
+                                    inc.emplace_back(a1, b1);
+                                }
                             }
                         }
                     } catch (...) {
@@ -7042,15 +7232,229 @@ namespace solver
                 for (auto &p : incidencesByCC[ci])
                     C.ultrabubbleIncPacked.emplace_back(p);
 
+            std::cout << "  Conflict vertices: " << total_conflict_vertices.load() << "\n";
             std::cout << "ULTRABUBBLES found: "
                       << C.ultrabubbleIncPacked.size()
                       << (keep_trivial ? " (trivial included)" : " (trivial excluded)")
                       << "\n";
         }
 
-    } 
+    }
+
+    namespace ultrabubble_doubled {
+
+        static bool tryCommitSuperbubble(ogdf::node source, ogdf::node sink)
+        {
+            auto &C = ctx();
+            if (C.node2name[source] == "_trash" ||
+                C.node2name[sink] == "_trash")
+            {
+                return false;
+            }
+            C.superbubbles.emplace_back(source, sink);
+            return true;
+        }
+
+        struct CcWork {
+            std::vector<ogdf::node> nodes;
+            std::vector<ogdf::edge> edges;
+        };
+
+        struct ThreadArgs {
+            size_t tid;
+            size_t numThreads;
+            size_t nItems;
+            std::atomic<size_t> *nextIndex;
+            std::vector<CcWork> *work;
+            std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> *results;
+        };
+
+        static void worker_process_cc(ThreadArgs targs)
+        {
+            auto &work = *targs.work;
+            auto &results = *targs.results;
+            const size_t n = targs.nItems;
+            const bool keep_trivial = ctx().includeTrivial;
+
+            size_t processed = 0;
+
+            while (true)
+            {
+                size_t i = targs.nextIndex->fetch_add(1);
+                if (i >= n) break;
+
+                auto &cc = work[i];
+                const int nNodes = (int)cc.nodes.size();
+                if (nNodes <= 1) continue;
+
+                std::unordered_map<ogdf::node, int> nodeToId;
+                nodeToId.reserve(nNodes);
+                std::vector<ogdf::node> idToNode(nNodes);
+                for (int j = 0; j < nNodes; j++)
+                {
+                    nodeToId[cc.nodes[j]] = j;
+                    idToNode[j] = cc.nodes[j];
+                }
+
+                std::vector<std::pair<int,int>> directed_edges;
+                directed_edges.reserve(cc.edges.size());
+                for (ogdf::edge e : cc.edges)
+                {
+                    int src = nodeToId[e->source()];
+                    int tgt = nodeToId[e->target()];
+                    directed_edges.emplace_back(src, tgt);
+                }
+
+                std::sort(directed_edges.begin(), directed_edges.end());
+                directed_edges.erase(
+                    std::unique(directed_edges.begin(), directed_edges.end()),
+                    directed_edges.end());
+
+                auto superbubbles = compute_weak_superbubbles_from_edges(
+                    nNodes, directed_edges, nullptr);
+
+                if (!keep_trivial && !superbubbles.empty())
+                {
+                    std::vector<int> odeg(nNodes, 0);
+                    for (const auto &de : directed_edges)
+                        odeg[de.first]++;
+
+                    superbubbles.erase(
+                        std::remove_if(superbubbles.begin(),
+                                       superbubbles.end(),
+                            [&](const std::pair<int,int> &sb) {
+                                return odeg[sb.first] == 1 &&
+                                    std::binary_search(
+                                        directed_edges.begin(),
+                                        directed_edges.end(),
+                                        std::make_pair(sb.first, sb.second));
+                            }),
+                        superbubbles.end());
+                }
+
+                auto &local = results[i];
+                local.reserve(superbubbles.size());
+
+                for (auto &sb : superbubbles)
+                {
+                    int xid = sb.first;
+                    int yid = sb.second;
+
+                    if (xid < 0 || xid >= nNodes ||
+                        yid < 0 || yid >= nNodes)
+                        continue;
+
+                    ogdf::node xg = idToNode[xid];
+                    ogdf::node yg = idToNode[yid];
+
+                    const std::string &xName = ctx().node2name[xg];
+                    const std::string &yName = ctx().node2name[yg];
+
+                    if (xName == "_trash" || yName == "_trash")
+                        continue;
+
+                    local.emplace_back(xg, yg);
+                }
+
+                ++processed;
+            }
+
+            std::cout << "Thread " << targs.tid
+                      << " processed " << processed
+                      << " CCs (doubled ultrabubbles)" << std::endl;
+        }
+
+        void solve()
+        {
+            std::cout << "Finding ultrabubbles (doubled mode)...\n";
+            PROFILE_FUNCTION();
+
+            auto &C = ctx();
+            Graph &G = C.G;
+
+            if (C.includeTrivial)
+            {
+                MARK_SCOPE_MEM("ub_doubled/findMini");
+                logger::info("Finding mini-superbubbles (trivial)..");
+                for (auto &e : G.edges)
+                {
+                    auto a = e->source();
+                    auto b = e->target();
+                    if (a->outdeg() == 1 && b->indeg() == 1)
+                    {
+                        bool ok = true;
+                        for (auto &w : b->adjEntries)
+                        {
+                            auto e2 = w->theEdge();
+                            if (e2->source() == b && e2->target() == a)
+                            { ok = false; break; }
+                        }
+                        if (ok) tryCommitSuperbubble(a, b);
+                    }
+                }
+                logger::info("Checked for mini-superbubbles");
+            }
+
+            NodeArray<int> compIdx(G);
+            int nCC;
+            {
+                MARK_SCOPE_MEM("ub_doubled/ComputeCC");
+                nCC = connectedComponents(G, compIdx);
+            }
+
+            std::vector<CcWork> work(nCC);
+            {
+                MARK_SCOPE_MEM("ub_doubled/BucketNodesEdges");
+                for (ogdf::node v : G.nodes)
+                    work[compIdx[v]].nodes.push_back(v);
+                for (ogdf::edge e : G.edges)
+                    work[compIdx[e->source()]].edges.push_back(e);
+            }
+
+            logger::info("Doubled ultrabubbles: {} CCs", nCC);
+
+            std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> results(nCC);
+            std::atomic<size_t> nextIndex{0};
+
+            size_t numThreads = std::thread::hardware_concurrency();
+            numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+            if (numThreads == 0) numThreads = 1;
+
+            {
+                MARK_SCOPE_MEM("ub_doubled/SolveCCs");
+
+                std::vector<std::thread> threads;
+                threads.reserve(numThreads);
+
+                for (size_t tid = 0; tid < numThreads; ++tid)
+                {
+                    threads.emplace_back(worker_process_cc, ThreadArgs{
+                        tid, numThreads, (size_t)nCC,
+                        &nextIndex, &work, &results
+                    });
+                }
+
+                for (auto &t : threads)
+                    t.join();
+            }
+
+            {
+                MARK_SCOPE_MEM("ub_doubled/CommitResults");
+                for (const auto &candidates : results)
+                    for (const auto &p : candidates)
+                        tryCommitSuperbubble(p.first, p.second);
+            }
+
+            std::cout << "ULTRABUBBLES (doubled) found: "
+                      << C.superbubbles.size()
+                      << (C.includeTrivial ? " (trivial included)" : " (trivial excluded)")
+                      << "\n";
+        }
+
+    }
 
 }
+
 
 
 
@@ -7110,7 +7514,7 @@ int main(int argc, char **argv)
     if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE)
     {
         solver::superbubble::solve();
-        VLOG << "[main] Superbubble solve finished. Oriented superbubbles: "
+        VLOG << "[main] Superbubble solve finished. Superbubbles: "
              << ctx().superbubbles.size() << std::endl;
     }
     else if (ctx().bubbleType == Context::BubbleType::SNARL)
@@ -7121,7 +7525,15 @@ int main(int argc, char **argv)
     }
     else if (ctx().bubbleType == Context::BubbleType::ULTRABUBBLE)
     {
-        solver::ultrabubble::solve();
+        if (ctx().doubledUltrabubbles)
+        {
+            solver::ultrabubble_doubled::solve();
+            ctx().bubbleType = Context::BubbleType::SUPERBUBBLE;
+        }
+        else
+        {
+            solver::ultrabubble::solve();
+        }
     }
     else if (ctx().bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
     {
@@ -7135,7 +7547,6 @@ int main(int argc, char **argv)
         TIME_BLOCK("Writing output");
         if (ctx().bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
         {
-            // Do nothing, already written
         }
         else
         {

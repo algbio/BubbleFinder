@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(sbSPQRnew LANGUAGES CXX VERSION 1.0)
+project(sbSPQRnew LANGUAGES CXX C VERSION 1.0)
 
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -14,20 +14,24 @@ option(SB_NATIVE_OPTIMIZATIONS "Use -march=native in Release builds" ON)
 option(SB_ENABLE_SANITIZERS    "Enable ASan/UBSan (Debug)"           OFF)
 option(SB_ENABLE_LTO           "Enable Link Time Optimization"       ON)
 option(SB_BUNDLE_OGDF          "Download & build OGDF locally"       ON)
-option(BUBBLEFINDER_HAS_GBZ    "Enable GBZ file format support"      OFF)
 
 set(OGDF_TAG "elderberry-202309" CACHE STRING "OGDF tag/branch/commit")
 
 
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib")
+set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
+
+
 include(FetchContent)
 
-# spdlog (header-only)
 FetchContent_Declare(spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG        v1.15.3)
 FetchContent_MakeAvailable(spdlog)
 
-# OGDF
 if(SB_BUNDLE_OGDF)
     FetchContent_Declare(ogdf
         GIT_REPOSITORY https://github.com/ogdf/ogdf.git
@@ -50,6 +54,73 @@ else()
 endif()
 
 
+find_package(PkgConfig QUIET)
+set(ZSTD_TARGET "")
+
+if(PkgConfig_FOUND)
+    pkg_check_modules(ZSTD_SYS QUIET IMPORTED_TARGET libzstd)
+endif()
+
+if(ZSTD_SYS_FOUND)
+    message(STATUS "zstd: using system (${ZSTD_SYS_VERSION})")
+    set(ZSTD_TARGET PkgConfig::ZSTD_SYS)
+else()
+    message(STATUS "zstd: not found on system, building from source")
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG        v1.5.6
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  build/cmake)
+    FetchContent_MakeAvailable(zstd)
+
+    if(TARGET libzstd_static)
+        set(ZSTD_TARGET libzstd_static)
+        # Ensure <zstd.h> is findable by downstream targets
+        get_target_property(_zstd_inc libzstd_static INTERFACE_INCLUDE_DIRECTORIES)
+        if(NOT _zstd_inc)
+            target_include_directories(libzstd_static INTERFACE
+                ${zstd_SOURCE_DIR}/lib)
+        endif()
+    else()
+        message(FATAL_ERROR "FetchContent built zstd but libzstd_static target not found")
+    endif()
+endif()
+
+
+set(CRYPTO_TARGET "")
+
+if(PkgConfig_FOUND)
+    pkg_check_modules(CRYPTO_SYS QUIET IMPORTED_TARGET libcrypto)
+endif()
+
+if(CRYPTO_SYS_FOUND)
+    message(STATUS "libcrypto: using system via pkg-config (${CRYPTO_SYS_VERSION})")
+    set(CRYPTO_TARGET PkgConfig::CRYPTO_SYS)
+else()
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND AND TARGET OpenSSL::Crypto)
+        message(STATUS "libcrypto: using system via FindOpenSSL (${OPENSSL_VERSION})")
+        set(CRYPTO_TARGET OpenSSL::Crypto)
+    else()
+        message(FATAL_ERROR
+            "libcrypto (OpenSSL) not found. Install it:\n"
+            "  conda install -c conda-forge openssl\n"
+            "  -or- sudo apt install libssl-dev\n"
+            "  -or- sudo yum install openssl-devel\n"
+            "OpenSSL is too large to auto-fetch; it is typically pre-installed on all Linux systems.")
+    endif()
+endif()
+
+
+find_package(OpenMP QUIET)
+
+
 add_library(sbutil OBJECT
     src/util/context.cpp
     src/util/logger.cpp)
@@ -66,86 +137,87 @@ target_include_directories(sbio
 target_link_libraries(sbio PUBLIC sbutil ${OGDF_LIB})
 
 
-if(BUBBLEFINDER_HAS_GBZ)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/gbwtgraph/include")
-        message(FATAL_ERROR
-            "GBZ support requested but submodules not found.\n"
-            "Run:\n"
-            "  mkdir -p external/gbz && cd external/gbz\n"
-            "  git submodule add https://github.com/vgteam/sdsl-lite.git\n"
-            "  git submodule add https://github.com/vgteam/libhandlegraph.git\n"
-            "  git submodule add https://github.com/jltsiren/gbwt.git\n"
-            "  git submodule add https://github.com/jltsiren/gbwtgraph.git")
-    endif()
-
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(ZSTD   REQUIRED libzstd)
-    pkg_check_modules(CRYPTO REQUIRED libcrypto)
-    find_package(OpenMP)
-
-    # sdsl-lite (vgteam fork) — needs policy compat for old libdivsufsort dep
-    set(WITH_GOOGLETEST OFF CACHE BOOL "" FORCE)
-    set(GENERATE_DOC    OFF CACHE BOOL "" FORCE)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
-    add_subdirectory(external/gbz/sdsl-lite EXCLUDE_FROM_ALL)
-
-    # libhandlegraph
-    add_subdirectory(external/gbz/libhandlegraph EXCLUDE_FROM_ALL)
-
-    # gbwt (no CMake upstream — build manually)
-    add_library(gbwt STATIC
-        external/gbz/gbwt/src/algorithms.cpp
-        external/gbz/gbwt/src/bwtmerge.cpp
-        external/gbz/gbwt/src/cached_gbwt.cpp
-        external/gbz/gbwt/src/dynamic_gbwt.cpp
-        external/gbz/gbwt/src/fast_locate.cpp
-        external/gbz/gbwt/src/files.cpp
-        external/gbz/gbwt/src/gbwt.cpp
-        external/gbz/gbwt/src/internal.cpp
-        external/gbz/gbwt/src/metadata.cpp
-        external/gbz/gbwt/src/support.cpp
-        external/gbz/gbwt/src/test.cpp
-        external/gbz/gbwt/src/utils.cpp
-        external/gbz/gbwt/src/variants.cpp)
-    target_include_directories(gbwt PUBLIC external/gbz/gbwt/include)
-    target_link_libraries(gbwt PUBLIC sdsl ${ZSTD_LIBRARIES})
-    target_include_directories(gbwt SYSTEM PUBLIC ${ZSTD_INCLUDE_DIRS})
-    target_compile_features(gbwt PUBLIC cxx_std_17)
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(gbwt PUBLIC OpenMP::OpenMP_CXX)
-    endif()
-
-    add_library(gbwtgraph STATIC
-        external/gbz/gbwtgraph/src/algorithms.cpp
-        external/gbz/gbwtgraph/src/cached_gbwtgraph.cpp
-        external/gbz/gbwtgraph/src/gbwtgraph.cpp
-        external/gbz/gbwtgraph/src/gbz.cpp
-        external/gbz/gbwtgraph/src/gfa.cpp
-        external/gbz/gbwtgraph/src/index.cpp
-        external/gbz/gbwtgraph/src/internal.cpp
-        external/gbz/gbwtgraph/src/minimizer.cpp
-        external/gbz/gbwtgraph/src/naive_graph.cpp
-        external/gbz/gbwtgraph/src/path_cover.cpp
-        external/gbz/gbwtgraph/src/subgraph.cpp
-        external/gbz/gbwtgraph/src/utils.cpp)
-    target_include_directories(gbwtgraph PUBLIC external/gbz/gbwtgraph/include)
-    target_link_libraries(gbwtgraph PUBLIC
-        gbwt handlegraph_shared sdsl
-        ${ZSTD_LIBRARIES} ${CRYPTO_LIBRARIES})
-    target_include_directories(gbwtgraph SYSTEM PUBLIC
-        ${ZSTD_INCLUDE_DIRS} ${CRYPTO_INCLUDE_DIRS})
-    target_compile_features(gbwtgraph PUBLIC cxx_std_17)
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(gbwtgraph PUBLIC OpenMP::OpenMP_CXX)
-    endif()
-
-    target_link_libraries(sbio PUBLIC gbwtgraph)
-    target_compile_definitions(sbio PUBLIC BUBBLEFINDER_HAS_GBZ)
-
-    message(STATUS "GBZ support: ON")
-else()
-    message(STATUS "GBZ support: OFF (use -DBUBBLEFINDER_HAS_GBZ=ON to enable)")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/gbwtgraph/include")
+    message(FATAL_ERROR
+        "GBZ submodules not found. Run:\n"
+        "  cd ${CMAKE_CURRENT_SOURCE_DIR}\n"
+        "  git submodule update --init --recursive\n"
+        "Or if not using submodules:\n"
+        "  mkdir -p external/gbz && cd external/gbz\n"
+        "  git clone https://github.com/vgteam/sdsl-lite.git\n"
+        "  git clone https://github.com/vgteam/libhandlegraph.git\n"
+        "  git clone https://github.com/jltsiren/gbwt.git\n"
+        "  git clone https://github.com/jltsiren/gbwtgraph.git")
 endif()
+
+# sdsl lite
+set(WITH_GOOGLETEST OFF CACHE BOOL "" FORCE)
+set(GENERATE_DOC    OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+add_subdirectory(external/gbz/sdsl-lite EXCLUDE_FROM_ALL)
+
+# libhandlegraph 
+add_subdirectory(external/gbz/libhandlegraph EXCLUDE_FROM_ALL)
+
+if(TARGET handlegraph_static)
+    set(HANDLEGRAPH_LIB handlegraph_static)
+elseif(TARGET handlegraph)
+    set(HANDLEGRAPH_LIB handlegraph)
+elseif(TARGET handlegraph_shared)
+    set(HANDLEGRAPH_LIB handlegraph_shared)
+else()
+    message(FATAL_ERROR "No handlegraph target found")
+endif()
+message(STATUS "Using handlegraph target: ${HANDLEGRAPH_LIB}")
+
+# gbwt
+add_library(gbwt STATIC
+    external/gbz/gbwt/src/algorithms.cpp
+    external/gbz/gbwt/src/bwtmerge.cpp
+    external/gbz/gbwt/src/cached_gbwt.cpp
+    external/gbz/gbwt/src/dynamic_gbwt.cpp
+    external/gbz/gbwt/src/fast_locate.cpp
+    external/gbz/gbwt/src/files.cpp
+    external/gbz/gbwt/src/gbwt.cpp
+    external/gbz/gbwt/src/internal.cpp
+    external/gbz/gbwt/src/metadata.cpp
+    external/gbz/gbwt/src/support.cpp
+    external/gbz/gbwt/src/test.cpp
+    external/gbz/gbwt/src/utils.cpp
+    external/gbz/gbwt/src/variants.cpp)
+target_include_directories(gbwt PUBLIC external/gbz/gbwt/include)
+target_link_libraries(gbwt PUBLIC sdsl ${ZSTD_TARGET})
+target_compile_features(gbwt PUBLIC cxx_std_17)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(gbwt PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+# gbwtgraph
+add_library(gbwtgraph STATIC
+    external/gbz/gbwtgraph/src/algorithms.cpp
+    external/gbz/gbwtgraph/src/cached_gbwtgraph.cpp
+    external/gbz/gbwtgraph/src/gbwtgraph.cpp
+    external/gbz/gbwtgraph/src/gbz.cpp
+    external/gbz/gbwtgraph/src/gfa.cpp
+    external/gbz/gbwtgraph/src/index.cpp
+    external/gbz/gbwtgraph/src/internal.cpp
+    external/gbz/gbwtgraph/src/minimizer.cpp
+    external/gbz/gbwtgraph/src/naive_graph.cpp
+    external/gbz/gbwtgraph/src/path_cover.cpp
+    external/gbz/gbwtgraph/src/subgraph.cpp
+    external/gbz/gbwtgraph/src/utils.cpp)
+target_include_directories(gbwtgraph PUBLIC external/gbz/gbwtgraph/include)
+target_link_libraries(gbwtgraph PUBLIC
+    gbwt ${HANDLEGRAPH_LIB} sdsl
+    ${ZSTD_TARGET} ${CRYPTO_TARGET})
+target_compile_features(gbwtgraph PUBLIC cxx_std_17)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(gbwtgraph PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+target_link_libraries(sbio PUBLIC gbwtgraph)
+
+message(STATUS "GBZ support: ON (always enabled)")
 
 
 include_directories(
@@ -169,6 +241,10 @@ target_link_libraries(BubbleFinder PRIVATE
     ${OGDF_LIB}
     spdlog::spdlog_header_only)
 
+set_target_properties(BubbleFinder PROPERTIES
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib"
+    BUILD_WITH_INSTALL_RPATH FALSE)
+
 
 if(SB_ENABLE_SANITIZERS)
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -185,6 +261,7 @@ if(SB_ENABLE_SANITIZERS)
     endif()
 endif()
 
+
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_ok OUTPUT ipo_err)
 if(SB_ENABLE_LTO AND ipo_ok AND NOT SB_ENABLE_SANITIZERS)
@@ -194,6 +271,7 @@ if(SB_ENABLE_LTO AND ipo_ok AND NOT SB_ENABLE_SANITIZERS)
         endif()
     endforeach()
 endif()
+
 
 foreach(t BubbleFinder sbio sbutil)
     if(TARGET ${t})
@@ -214,6 +292,9 @@ endforeach()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "OGDF target: ${OGDF_LIB}")
+message(STATUS "zstd target: ${ZSTD_TARGET}")
+message(STATUS "crypto target: ${CRYPTO_TARGET}")
+message(STATUS "handlegraph target: ${HANDLEGRAPH_LIB}")
 message(STATUS "Sanitizers: ${SB_ENABLE_SANITIZERS}")
 message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 message(STATUS "Native optimizations (-march=native): ${SB_NATIVE_OPTIMIZATIONS}")

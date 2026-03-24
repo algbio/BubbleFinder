@@ -76,8 +76,11 @@ struct Context
 
     std::string ultrabubbleTreeOutputPath = "";
 
+    std::vector<bool> ubIsTip;
+
     bool gfaInput = false; // kept for backward compatibility
     bool doubleGraph = false;
+    bool doubledUltrabubbles = false;
     LogLevel logLevel = LOG_INFO;
     bool timingEnabled = true;
     unsigned threads = 1;
@@ -89,7 +92,7 @@ struct Context
     std::vector<std::string> gfaLinkLines;
 
     BubbleType bubbleType = SUPERBUBBLE;
-    bool directedSuperbubbles = false;
+    bool directedSuperbubbles = true;
     InputFormat inputFormat = InputFormat::Auto;
     Compression compression = Compression::None;
 

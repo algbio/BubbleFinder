@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
     }
 
     if (gfa_path.empty()) {
-        cerr << "Usage: ./ultrabubbles_bf_consolidated input.gfa "
+        cerr << "Usage: ./ultrabubbles_bf input.gfa "
                 "[--bf-ub BF_UB_OUTPUT] [--bf-snarls BF_SNARLS_OUTPUT]\n";
         return 1;
     }
@@ -212,10 +212,17 @@ int main(int argc, char** argv) {
             ensureN(max(u,v)+1);
             seenSegment[u] = seenSegment[v] = 1;
 
-            char su = oa;
-            char sv = (ob == '-') ? '+' : '-';
-            adj[u].push_back({v, su, sv});
-            adj[v].push_back({u, sv, su});
+            if (u == v) {
+                adj[u].push_back({v, oa, ob});
+                if (oa != ob) {
+                    adj[u].push_back({v, ob, oa});
+                }
+            } else {
+                char su = oa;
+                char sv = (ob == '-') ? '+' : '-';
+                adj[u].push_back({v, su, sv});
+                adj[v].push_back({u, sv, su});
+            }
         }
     }
     fin.close();
@@ -418,11 +425,11 @@ int main(int argc, char** argv) {
     };
 
 
-    set<SnarlKey> bf_snarls_set;    
-    set<SnarlKey> bf_ub_set;        
+    set<SnarlKey> bf_snarls_set;
+    set<SnarlKey> bf_ub_set;
 
-    set<SnarlKey> snarls_with_tips;  
-    set<SnarlKey> snarls_with_cycle; 
+    set<SnarlKey> snarls_with_tips;
+    set<SnarlKey> snarls_with_cycle;
 
     const size_t nV = nodes.size();
     size_t tested = 0;
@@ -484,11 +491,11 @@ int main(int argc, char** argv) {
     int internal_failures = 0;
 
     cerr << "\n";
-    cerr << "=== Brute-force summary ===\n";
-    cerr << "  Snarls found:        " << bf_snarls_set.size() << "\n";
-    cerr << "  Ultrabubbles found:  " << bf_ub_set.size() << "\n";
-    cerr << "  Snarls with tips:    " << snarls_with_tips.size() << "\n";
-    cerr << "  Snarls with cycles:  " << snarls_with_cycle.size() << "\n";
+    cerr << "= Bruteforce summary\n";
+    cerr << "  Snarls found: " << bf_snarls_set.size() << "\n";
+    cerr << "  Ultrabubbles found: " << bf_ub_set.size() << "\n";
+    cerr << "  Snarls with tips: " << snarls_with_tips.size() << "\n";
+    cerr << "  Snarls with cycles: " << snarls_with_cycle.size() << "\n";
 
     {
         int violations = 0;
@@ -531,7 +538,7 @@ int main(int argc, char** argv) {
 
 #ifdef __unix__
     if (!snarls_bf_path.empty() && access(snarls_bf_path.c_str(), X_OK) == 0) {
-        cerr << "\n=== Cross-check with snarls_bf ===\n";
+        cerr << "\n\n\n= Crosscheck with snarls_bf\n";
 
         set<SnarlKey> ext_snarls;
         string cmd = "'" + snarls_bf_path + "' '" + gfa_path + "'";
@@ -551,7 +558,7 @@ int main(int argc, char** argv) {
             for (auto& k : ext_snarls) {
                 if (!bf_snarls_set.count(k)) {
                     if (extra_in_ext < 10)
-                        cerr << "    snarls_bf-only snarl: " << fmt_key(k, nameOf) << "\n";
+                        cerr << "    snarls_bf only snarl: " << fmt_key(k, nameOf) << "\n";
                     extra_in_ext++;
                 }
             }
@@ -572,14 +579,14 @@ int main(int argc, char** argv) {
 
 
     if (!bf_ub_file.empty()) {
-        cerr << "\n=== Cross-check with BubbleFinder ultrabubbles ===\n";
+        cerr << "\n= Crosscheck with BubbleFinder ultrabubbles\n";
 
         set<SnarlKey> bf_tool_ub;
         if (parse_bf_output(bf_ub_file, id, bf_tool_ub)) {
             cerr << "  BubbleFinder UBs: " << bf_tool_ub.size() << "\n";
             cerr << "  Brute-force UBs:  " << bf_ub_set.size() << "\n";
 
-            int fn = 0, fp = 0; 
+            int fn = 0, fp = 0;
             for (auto& k : bf_ub_set) {
                 if (!bf_tool_ub.count(k)) {
                     if (fn < 20)
@@ -596,7 +603,7 @@ int main(int argc, char** argv) {
             }
 
             cerr << "  False negatives (BF missed): " << fn << "\n";
-            cerr << "  False positives (BF extra):  " << fp << "\n";
+            cerr << "  False positives (BF extra): " << fp << "\n";
 
             if (fn == 0 && fp == 0)
                 cerr << "  CHECK OK: ultrabubble sets match perfectly\n";
@@ -608,7 +615,7 @@ int main(int argc, char** argv) {
     }
 
     if (!bf_snarls_file.empty()) {
-        cerr << "\n=== Cross-check with BubbleFinder snarls ===\n";
+        cerr << "\n== Crosscheck with BubbleFinder snarls\n";
 
         set<SnarlKey> bf_tool_snarls;
         if (parse_bf_output(bf_snarls_file, id, bf_tool_snarls)) {

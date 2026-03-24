@@ -1,7 +1,5 @@
 #pragma once
 
-#ifdef BUBBLEFINDER_HAS_GBZ
-
 #include "gfa_parser.hpp"   // BiGraph, BiLink
 
 #include <gbwtgraph/gbz.h>
@@ -116,5 +114,3 @@ private:
         bg.n_nodes = next_id;
     }
 };
-
-#endif
