@@ -7267,6 +7267,7 @@ namespace solver
             std::atomic<size_t> *nextIndex;
             std::vector<CcWork> *work;
             std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> *results;
+            std::vector<std::string> *clsdTextByCC;
         };
 
         static void worker_process_cc(ThreadArgs targs)
@@ -7310,8 +7311,11 @@ namespace solver
                     std::unique(directed_edges.begin(), directed_edges.end()),
                     directed_edges.end());
 
+                std::vector<ClsdTree> trees;
+                std::vector<ClsdTree>* trees_ptr =
+                    (targs.clsdTextByCC ? &trees : nullptr);
                 auto superbubbles = compute_weak_superbubbles_from_edges(
-                    nNodes, directed_edges, nullptr);
+                    nNodes, directed_edges, trees_ptr);
 
                 if (!keep_trivial && !superbubbles.empty())
                 {
@@ -7354,6 +7358,64 @@ namespace solver
                         continue;
 
                     local.emplace_back(xg, yg);
+                }
+
+                if (targs.clsdTextByCC && !trees.empty()) {
+                    std::ostringstream clsd_buf;
+                    auto hierarchy = [&](auto&& self,
+                                         const ClsdTree& tr)
+                        -> std::vector<std::string>
+                    {
+                        int xid = tr.entrance;
+                        int yid = tr.exit;
+
+                        const bool valid =
+                            (xid >= 0 && xid < nNodes) &&
+                            (yid >= 0 && yid < nNodes);
+
+                        std::vector<std::string> children_ser;
+                        children_ser.reserve(tr.children.size());
+                        for (const auto& ch : tr.children) {
+                            auto sub = self(self, ch);
+                            for (auto &s : sub)
+                                children_ser.emplace_back(
+                                    std::move(s));
+                        }
+
+                        if (!valid) return children_ser;
+
+                        ogdf::node xg = idToNode[xid];
+                        ogdf::node yg = idToNode[yid];
+
+                        const std::string &xName = ctx().node2name[xg];
+                        const std::string &yName = ctx().node2name[yg];
+
+                        if (xName == "_trash" ||
+                            yName == "_trash")
+                            return children_ser;
+
+                        std::string res;
+                        if (!children_ser.empty()) {
+                            res += "(";
+                            for (size_t j = 0;
+                                 j < children_ser.size(); ++j) {
+                                res += children_ser[j];
+                                if (j + 1 < children_ser.size())
+                                    res += ",";
+                            }
+                            res += ")";
+                        }
+                        res += "<" + xName + "," + yName + ">";
+                        return std::vector<std::string>{
+                            std::move(res)};
+                    };
+
+                    for (const auto& tr : trees) {
+                        auto lines = hierarchy(hierarchy, tr);
+                        for (const auto& s : lines)
+                            clsd_buf << s << "\n";
+                    }
+                    (*targs.clsdTextByCC)[i] = clsd_buf.str();
                 }
 
                 ++processed;
@@ -7416,6 +7478,9 @@ namespace solver
             std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> results(nCC);
             std::atomic<size_t> nextIndex{0};
 
+            std::vector<std::string> clsdTextByCC;
+            if (C.clsdTrees) clsdTextByCC.resize(nCC);
+
             size_t numThreads = std::thread::hardware_concurrency();
             numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
             if (numThreads == 0) numThreads = 1;
@@ -7430,7 +7495,8 @@ namespace solver
                 {
                     threads.emplace_back(worker_process_cc, ThreadArgs{
                         tid, numThreads, (size_t)nCC,
-                        &nextIndex, &work, &results
+                        &nextIndex, &work, &results,
+                        C.clsdTrees ? &clsdTextByCC : nullptr
                     });
                 }
 
@@ -7443,6 +7509,16 @@ namespace solver
                 for (const auto &candidates : results)
                     for (const auto &p : candidates)
                         tryCommitSuperbubble(p.first, p.second);
+            }
+
+            if (C.clsdTrees) {
+                std::ofstream outFile(C.clsdTreesPath);
+                if (!outFile)
+                    throw std::runtime_error(
+                        "Cannot open CLSD trees output file: " +
+                        C.clsdTreesPath);
+                for (size_t ci = 0; ci < clsdTextByCC.size(); ++ci)
+                    outFile << clsdTextByCC[ci];
             }
 
             std::cout << "ULTRABUBBLES (doubled) found: "
