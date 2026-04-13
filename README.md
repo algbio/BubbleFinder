@@ -48,7 +48,7 @@ Ultrabubbles use a different approach (not SPQR-based). BubbleFinder first **ori
 
 > [!NOTE]
 > **Empirical performance (ultrabubbles).** In our ultrabubble benchmarks, BubbleFinder consistently outperformed `vg` across all tested datasets. On the HPRC graphs in GBZ format, excluding parsing time, BubbleFinder achieves speedups of **19–26×** over `vg`. On HPRC v2.0 CHM13 (232 individuals), after parsing, BubbleFinder completes in **under 3 minutes** while `vg` requires **more than one hour**, using **four times less RAM** (24.8 GiB vs 101.8 GiB). On GFA input, BubbleFinder is **~200× faster** than [BubbleGun](https://github.com/fawaz-dabbaghieh/bubble_gun) on the HPRC v1.1 graph (47 individuals).  
-> A dedicated preprint describing this method, its correctness, and benchmarks is forthcoming (link to be added).
+> A dedicated preprint describing this method, its correctness, and benchmarks is available: [Harviainen, Sena, Moumard et al., 2026](#ref-harviainen2026).
 
 ---
 
@@ -271,4 +271,4 @@ For details on line types and semantics, refer to the specification repository.
 
 - <a id="ref-bubblegun"></a> BubbleGun (GitHub): https://github.com/fawaz-dabbaghieh/bubble_gun
 
-- <a id="ref-ultrabubbles-preprint"></a> *Scalable computation of ultrabubbles in pangenomes by orienting bidirected graphs*. Preprint forthcoming (link to be added).
+- <a id="ref-harviainen2026"></a> Juha Harviainen, Francisco Sena, Corentin Moumard, Aleksandr Politov, Sebastian Schmidt, Alexandru I. Tomescu. *Scalable computation of ultrabubbles in pangenomes by orienting bidirected graphs*. bioRxiv 2026.03.28.714704 (2026). https://www.biorxiv.org/content/10.64898/2026.03.28.714704
