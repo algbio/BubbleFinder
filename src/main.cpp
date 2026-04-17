@@ -2792,10 +2792,9 @@ namespace solver
             size_t tid;
             size_t numThreads;
             int nCC;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<std::unique_ptr<CcData>> *components;
-            std::vector<BlockPrep> *blockPreps;
+            std::vector<std::vector<BlockPrep>> *perThreadPreps;
         };
 
         void *worker_bcTree(void *arg)
@@ -2804,10 +2803,9 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             int nCC = targs->nCC;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
-            std::vector<BlockPrep> *blockPreps = targs->blockPreps;
+            std::vector<BlockPrep> &myPreps = (*targs->perThreadPreps)[tid];
 
             size_t chunkSize = 1;
             size_t processed = 0;
@@ -2816,12 +2814,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(nCC))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(nCC))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(nCC));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(nCC));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -2847,11 +2843,9 @@ namespace solver
                         }
                     }
 
-                    {
-                        static std::mutex prepMutex;
-                        std::lock_guard<std::mutex> lock(prepMutex);
-                        blockPreps->insert(blockPreps->end(), localPreps.begin(), localPreps.end());
-                    }
+                    myPreps.insert(myPreps.end(),
+                                   std::make_move_iterator(localPreps.begin()),
+                                   std::make_move_iterator(localPreps.end()));
 
                     ++processed;
                 }
@@ -2878,8 +2872,7 @@ namespace solver
             size_t tid;
             size_t numThreads;
             size_t nBlocks;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<BlockPrep> *blockPreps;
             std::vector<std::unique_ptr<BlockData>> *allBlockData;
         };
@@ -2890,8 +2883,7 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             size_t nBlocks = targs->nBlocks;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             auto *blockPreps = targs->blockPreps;
             auto *allBlockData = targs->allBlockData;
             size_t chunkSize = 1;
@@ -2900,12 +2892,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= nBlocks)
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= nBlocks)
                         break;
-                    startIndex = *nextIndex;
                     endIndex = std::min(startIndex + chunkSize, nBlocks);
-                    *nextIndex = endIndex;
                 }
                 auto chunkStart = std::chrono::high_resolution_clock::now();
                 for (size_t i = startIndex; i < endIndex; ++i)
@@ -2937,8 +2927,7 @@ namespace solver
             size_t tid;
             size_t numThreads;
             size_t nItems;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<WorkItem> *workItems;
             std::vector<std::unique_ptr<BlockData>> *allBlockData;
             std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> *blockResults;
@@ -2947,8 +2936,7 @@ namespace solver
         static void *worker_processBlocks(void *arg)
         {
             std::unique_ptr<ThreadProcessArgs> targs(static_cast<ThreadProcessArgs *>(arg));
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMux = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             auto &items = *targs->workItems;
             auto &allBlocks = *targs->allBlockData;
             auto &results = *targs->blockResults;
@@ -2957,10 +2945,9 @@ namespace solver
             {
                 size_t i;
                 {
-                    std::lock_guard<std::mutex> lk(*workMux);
-                    if (*nextIndex >= n)
+                    i = nextIndex->fetch_add(1, std::memory_order_relaxed);
+                    if (i >= n)
                         break;
-                    i = (*nextIndex)++;
                 }
 
                 const WorkItem &w = items[i];
@@ -3049,8 +3036,7 @@ namespace solver
                         std::vector<std::thread> workers;
                         workers.reserve(numThreads);
 
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
 
                         for (size_t tid = 0; tid < numThreads; ++tid)
                         {
@@ -3061,11 +3047,9 @@ namespace solver
                                 while (true) {
                                     size_t startIndex, endIndex;
                                     {
-                                        std::lock_guard<std::mutex> lock(workMutex);
-                                        if (nextIndex >= static_cast<size_t>(nCC)) break;
-                                        startIndex = nextIndex;
-                                        endIndex = std::min(nextIndex + chunkSize, static_cast<size_t>(nCC));
-                                        nextIndex = endIndex;
+                                        startIndex = nextIndex.fetch_add(chunkSize, std::memory_order_relaxed);
+                                        if (startIndex >= static_cast<size_t>(nCC)) break;
+                                        endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(nCC));
                                     }
 
                                     for (size_t ci = startIndex; ci < endIndex; ++ci) {
@@ -3115,8 +3099,8 @@ namespace solver
 
                         std::vector<pthread_t> threads(numThreads);
 
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
+                        std::vector<std::vector<BlockPrep>> perThreadPreps(numThreads);
 
                         for (size_t tid = 0; tid < numThreads; ++tid)
                         {
@@ -3135,9 +3119,8 @@ namespace solver
                                 numThreads,
                                 nCC,
                                 &nextIndex,
-                                &workMutex,
                                 &components,
-                                &blockPreps};
+                                &perThreadPreps};
 
                             int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
                             if (ret != 0)
@@ -3153,6 +3136,17 @@ namespace solver
                         {
                             pthread_join(threads[tid], nullptr);
                         }
+
+                        // Flatten per-thread preps into one vector (sequential, post-join)
+                        size_t total = 0;
+                        for (auto &tp : perThreadPreps) total += tp.size();
+                        blockPreps.reserve(total);
+                        for (auto &tp : perThreadPreps)
+                        {
+                            blockPreps.insert(blockPreps.end(),
+                                              std::make_move_iterator(tp.begin()),
+                                              std::make_move_iterator(tp.end()));
+                        }
                     }
 
                     allBlockData.resize(blockPreps.size());
@@ -3164,8 +3158,7 @@ namespace solver
                         numThreads2 = std::min({(size_t)C.threads, (size_t)blockPreps.size(), numThreads2});
                         std::vector<pthread_t> threads2(numThreads2);
 
-                        std::mutex workMutex2;
-                        size_t nextIndex2 = 0;
+                        std::atomic<size_t> nextIndex2{0};
 
                         for (size_t tid = 0; tid < numThreads2; ++tid)
                         {
@@ -3185,8 +3178,7 @@ namespace solver
                                 numThreads2,
                                 blockPreps.size(),
                                 &nextIndex2,
-                                &workMutex2,
-                                &blockPreps,
+                                                                &blockPreps,
                                 &allBlockData};
 
                             int ret = pthread_create(&threads2[tid], &attr, worker_buildBlockData, args);
@@ -3227,8 +3219,7 @@ namespace solver
                     numThreads = 1;
 
                 std::vector<pthread_t> threads(numThreads);
-                std::mutex workMutex;
-                size_t nextIndex = 0;
+                std::atomic<size_t> nextIndex{0};
 
                 for (size_t tid = 0; tid < numThreads; ++tid)
                 {
@@ -3244,8 +3235,7 @@ namespace solver
                         numThreads,
                         workItems.size(),
                         &nextIndex,
-                        &workMutex,
-                        &workItems,
+                                                &workItems,
                         &allBlockData,
                         &blockResults};
 
@@ -3468,7 +3458,6 @@ namespace solver
                           << " E=" << g_cnt_E.load()
                           << std::endl;
             }
-            static std::mutex g_ogdf_mutex;
 
         }
 
@@ -5327,8 +5316,7 @@ namespace solver
             size_t tid;
             size_t numThreads;
             int nCC;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<std::vector<node>> *bucket;
             std::vector<std::vector<edge>> *edgeBuckets;
             std::vector<std::unique_ptr<CcData>> *components;
@@ -5339,10 +5327,9 @@ namespace solver
             size_t tid;
             size_t numThreads;
             int nCC;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<std::unique_ptr<CcData>> *components;
-            std::vector<BlockPrep> *blockPreps;
+            std::vector<std::vector<BlockPrep>> *perThreadPreps;
         };
 
         struct ThreadTipsArgs
@@ -5350,8 +5337,7 @@ namespace solver
             size_t tid;
             size_t numThreads;
             int nCC;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<std::unique_ptr<CcData>> *components;
         };
 
@@ -5360,8 +5346,7 @@ namespace solver
             size_t tid;
             size_t numThreads;
             size_t blocks;
-            size_t *nextIndex;
-            std::mutex *workMutex;
+            std::atomic<size_t> *nextIndex;
             std::vector<BlockPrep> *blockPreps;
         };
 
@@ -5371,8 +5356,7 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             int nCC = targs->nCC;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
             std::vector<std::vector<node>> *bucket = targs->bucket;
             std::vector<std::vector<edge>> *edgeBuckets = targs->edgeBuckets;
@@ -5384,12 +5368,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(nCC))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(nCC))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(nCC));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(nCC));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -5459,10 +5441,9 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             int nCC = targs->nCC;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
-            std::vector<BlockPrep> *blockPreps = targs->blockPreps;
+            std::vector<BlockPrep> &myPreps = (*targs->perThreadPreps)[tid];
 
             size_t chunkSize = 1;
             size_t processed = 0;
@@ -5471,12 +5452,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(nCC))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(nCC))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(nCC));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(nCC));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -5518,12 +5497,10 @@ namespace solver
                     }
 
                     {
-                        static std::mutex prepMutex;
-                        std::lock_guard<std::mutex> lock(prepMutex);
-                        blockPreps->reserve(blockPreps->size() + localPreps.size());
+                        myPreps.reserve(myPreps.size() + localPreps.size());
                         for (auto &bp : localPreps)
                         {
-                            blockPreps->emplace_back(std::move(bp));
+                            myPreps.emplace_back(std::move(bp));
                         }
                     }
 
@@ -5552,8 +5529,7 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             int nCC = targs->nCC;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
 
             size_t chunkSize = 1;
@@ -5566,12 +5542,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(nCC))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(nCC))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(nCC));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(nCC));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -5616,8 +5590,7 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             size_t blocks = targs->blocks;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<BlockPrep> *blockPreps = targs->blockPreps;
 
             size_t chunkSize = 1;
@@ -5627,12 +5600,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(blocks))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(blocks))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(blocks));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(blocks));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -5674,8 +5645,7 @@ namespace solver
             size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             size_t blocks = targs->blocks;
-            size_t *nextIndex = targs->nextIndex;
-            std::mutex *workMutex = targs->workMutex;
+            std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<BlockPrep> *blockPreps = targs->blockPreps;
 
             size_t chunkSize = 1;
@@ -5690,12 +5660,10 @@ namespace solver
             {
                 size_t startIndex, endIndex;
                 {
-                    std::lock_guard<std::mutex> lock(*workMutex);
-                    if (*nextIndex >= static_cast<size_t>(blocks))
+                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
+                    if (startIndex >= static_cast<size_t>(blocks))
                         break;
-                    startIndex = *nextIndex;
-                    endIndex = std::min(*nextIndex + chunkSize, static_cast<size_t>(blocks));
-                    *nextIndex = endIndex;
+                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(blocks));
                 }
 
                 auto chunkStart = std::chrono::high_resolution_clock::now();
@@ -5782,15 +5750,13 @@ namespace solver
 
                     if (numThreads <= 1)
                     {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
                         ThreadComponentArgs *args = new ThreadComponentArgs{
                             0,
                             1,
                             nCC,
                             &nextIndex,
-                            &workMutex,
-                            &bucket,
+                                                        &bucket,
                             &edgeBuckets,
                             &components,
                         };
@@ -5799,8 +5765,7 @@ namespace solver
                     else
                     {
                         std::vector<pthread_t> threads(numThreads);
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
 
                         for (size_t tid = 0; tid < numThreads; ++tid)
                         {
@@ -5822,8 +5787,7 @@ namespace solver
                                 numThreads,
                                 nCC,
                                 &nextIndex,
-                                &workMutex,
-                                &bucket,
+                                                                &bucket,
                                 &edgeBuckets,
                                 &components,
                             };
@@ -5850,17 +5814,17 @@ namespace solver
 
                     if (numThreads <= 1)
                     {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
+                        std::vector<std::vector<BlockPrep>> perThreadPreps(1);
                         ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
                             0,
                             1,
                             nCC,
                             &nextIndex,
-                            &workMutex,
                             &components,
-                            &blockPreps};
+                            &perThreadPreps};
                         worker_bcTree(static_cast<void *>(args));
+                        blockPreps = std::move(perThreadPreps[0]);
                     }
                     else
                     {
@@ -5875,15 +5839,13 @@ namespace solver
 
                     if (numThreads <= 1)
                     {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
                         ThreadBlocksArgs *args = new ThreadBlocksArgs{
                             0,
                             1,
                             blockPreps.size(),
                             &nextIndex,
-                            &workMutex,
-                            &blockPreps};
+                                                        &blockPreps};
                         worker_block_build(static_cast<void *>(args));
                     }
                     else
@@ -5903,23 +5865,20 @@ namespace solver
 
                     if (numThreads <= 1)
                     {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
                         ThreadTipsArgs *args = new ThreadTipsArgs{
                             0,
                             1,
                             nCC,
                             &nextIndex,
-                            &workMutex,
-                            &components};
+                                                        &components};
                         worker_tips(static_cast<void *>(args));
                     }
                     else
                     {
                         std::vector<pthread_t> threads(numThreads);
 
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
 
                         for (size_t tid = 0; tid < numThreads; ++tid)
                         {
@@ -5941,8 +5900,7 @@ namespace solver
                                 numThreads,
                                 nCC,
                                 &nextIndex,
-                                &workMutex,
-                                &components};
+                                                                &components};
 
                             int ret = pthread_create(&threads[tid], &attr, worker_tips, args);
                             if (ret != 0)
@@ -5968,15 +5926,13 @@ namespace solver
 
                     if (numThreads <= 1)
                     {
-                        std::mutex workMutex;
-                        size_t nextIndex = 0;
+                        std::atomic<size_t> nextIndex{0};
                         ThreadBlocksArgs *args = new ThreadBlocksArgs{
                             0,
                             1,
                             blockPreps.size(),
                             &nextIndex,
-                            &workMutex,
-                            &blockPreps};
+                                                        &blockPreps};
                         worker_block_solve(static_cast<void *>(args));
                     }
                     else
