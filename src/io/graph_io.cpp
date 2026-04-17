@@ -303,11 +303,11 @@ void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
     for (auto& lk : bg.links) {
         ogdf::node nSrc = getNode(lk.src, lk.orient_src);
         ogdf::node nDst = getNode(lk.dst, lk.orient_dst);
-        des.push_back({nSrc->index(), nDst->index()});
+        des.push_back({(int)nSrc.index(), (int)nDst.index()});
         if (!directed_only) {
             ogdf::node nRevSrc = getNode(lk.dst, flipSign(lk.orient_dst));
             ogdf::node nRevDst = getNode(lk.src, flipSign(lk.orient_src));
-            des.push_back({nRevSrc->index(), nRevDst->index()});
+            des.push_back({(int)nRevSrc.index(), (int)nRevDst.index()});
         }
     }
 
@@ -315,7 +315,7 @@ void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
     des.erase(std::unique(des.begin(), des.end()), des.end());
 
     std::unordered_map<int, ogdf::node> idx2n;
-    for (ogdf::node v : C.G.nodes) idx2n[v->index()] = v;
+    for (ogdf::node v : C.G.nodes) idx2n[v.index()] = v;
     for (auto& d : des) C.G.newEdge(idx2n[d.u], idx2n[d.v]);
 }
 
@@ -371,7 +371,6 @@ void readGFA()
             }
             break;
         case Context::BubbleType::SNARL:
-            C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
             buildSnarlGraph(bg);
             break;
         case Context::BubbleType::SUPERBUBBLE:
@@ -499,8 +498,8 @@ void readGraph() {
         C.inDeg = NodeArray<int>(C.G, 0);
         C.outDeg= NodeArray<int>(C.G, 0);
         for (edge e : C.G.edges) {
-            C.outDeg(e->source())++;
-            C.inDeg (e->target())++;
+            C.outDeg[C.G.source(e)]++;
+            C.inDeg [C.G.target(e)]++;
         }
         logger::info("Graph read");
         return;
@@ -539,8 +538,8 @@ void readGraph() {
     C.inDeg = NodeArray<int>(C.G, 0);
     C.outDeg= NodeArray<int>(C.G, 0);
     for (edge e : C.G.edges) {
-        C.outDeg(e->source())++;
-        C.inDeg (e->target())++;
+        C.outDeg[C.G.source(e)]++;
+        C.inDeg [C.G.target(e)]++;
     }
     logger::info("Graph read");
 }
@@ -548,104 +547,9 @@ void readGraph() {
 
 void drawGraph(const ogdf::Graph &G, const std::string &file)
 {
+    // Drawing functionality disabled - requires OGDF GraphAttributes/FMMMLayout
+    (void)G; (void)file;
     return;
-    using namespace ogdf;
-
-    auto &C = ctx();
-    TIME_BLOCK("Drawing graph");
-
-    GraphAttributes GA(G,
-        GraphAttributes::nodeGraphics | GraphAttributes::edgeGraphics |
-        GraphAttributes::nodeLabel    | GraphAttributes::edgeLabel    |
-        GraphAttributes::nodeStyle    | GraphAttributes::edgeStyle);
-    GA.directed() = true;
-
-    for (node v : G.nodes) {
-        GA.label(v) = C.node2name.count(v) ? C.node2name[v]
-                                           : std::to_string(v->index());
-        GA.shape(v) = Shape::Ellipse;
-        GA.width(v) = GA.height(v) = 20.0;
-    }
-
-    FMMMLayout().call(GA);
-
-    constexpr double GAP = 12.0;
-
-    struct PairHash {
-        size_t operator()(const std::pair<int,int>& p) const noexcept {
-            return (static_cast<size_t>(p.first) << 32) ^ p.second;
-        }
-    };
-
-    std::unordered_map<std::pair<int,int>, std::vector<edge>, PairHash> bundle;
-
-    for (edge e : G.edges) {
-        int u = e->source()->index();
-        int v = e->target()->index();
-        bundle[{u, v}].push_back(e);
-    }
-
-    for (auto &entry : bundle) {
-        auto &vec = entry.second;
-        if (vec.size() <= 1) continue;
-
-        edge e0 = vec[0];
-        node a = e0->source();
-        node b= e0->target();
-
-        double ax = GA.x(a), ay = GA.y(a);
-        double bx = GA.x(b), by = GA.y(b);
-
-        double dx = bx - ax, dy = by - ay;
-        double len = std::hypot(dx, dy);
-        if (len == 0) len = 1;
-        double px = -dy / len, py = dx / len;
-
-        const int sign = 1;
-        const int k = static_cast<int>(vec.size());
-
-        for (int i = 0; i < k; ++i) {
-            edge e = vec[i];
-            double shift = (i - (k - 1) / 2.0) * GAP;
-
-            double mx = (ax + bx) * 0.5 + sign * px * shift;
-            double my = (ay + by) * 0.5 + sign * py * shift;
-
-            GA.bends(e).clear();
-            GA.bends(e).pushBack(DPoint(mx, my));
-        }
-    }
-
-    const std::string tmp = file + ".svg.tmp";
-    ogdf::GraphIO::drawSVG(GA, tmp);
-
-    std::ifstream in(tmp);
-    std::ofstream out(file + ".svg");
-
-    std::string header;
-    std::getline(in, header);
-    std::string openTag;
-    std::getline(in, openTag);
-    out << header << '\n' << openTag << '\n';
-
-    double x0 = 0, y0 = 0, w = 0, h = 0;
-    std::smatch m;
-    if (std::regex_search(openTag, m,
-        std::regex(R"(viewBox\s*=\s*\"([\-0-9\.eE]+)\s+([\-0-9\.eE]+)\s+([\-0-9\.eE]+)\s+([\-0-9\.eE]+))"))) {
-        x0 = std::stod(m[1]); y0 = std::stod(m[2]);
-        w= std::stod(m[3]); h= std::stod(m[4]);
-    } else if (std::regex_search(openTag, m,
-        std::regex(R"(width=\"([0-9\.]+)\".*height=\"([0-9\.]+))"))) {
-        w = std::stod(m[1]); h = std::stod(m[2]);
-    }
-    out << "  <rect x=\"" << x0 << "\" y=\"" << y0
-        << "\" width=\"" << w  << "\" height=\"" << h
-        << "\" fill=\"#ffffff\"/>\n";
-
-    out << in.rdbuf();
-    in.close();
-    out.close();
-    std::remove(tmp.c_str());
 }
 
 
@@ -752,31 +656,26 @@ void writeSuperbubbles()
                 -> std::unordered_set<ogdf::node>
             {
                 std::unordered_set<ogdf::node> result;
-                for (auto adj : u->adjEntries)
-                {
-                    ogdf::edge e = adj->theEdge();
-                    ogdf::node other = adj->twinNode();
+                C.G.forEachAdj(u, [&](node other, edge e) {
                     EdgePartType typeAtU;
-                    if (e->source() == u)
+                    if (C.G.source(e) == u)
                         typeAtU = C._edge2types[e].first;
                     else
                         typeAtU = C._edge2types[e].second;
 
-                    if (typeAtU != t) continue;
+                    if (typeAtU != t) return;
 
                     if (C.node2name.count(other) && C.node2name[other] == "_trash")
                     {
-                        for (auto adj2 : other->adjEntries)
-                        {
-                            ogdf::node real = adj2->twinNode();
+                        C.G.forEachAdj(other, [&](node real, edge) {
                             if (real != u) result.insert(real);
-                        }
+                        });
                     }
                     else
                     {
                         result.insert(other);
                     }
-                }
+                });
                 return result;
             };
 

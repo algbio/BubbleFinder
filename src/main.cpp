@@ -1172,18 +1172,18 @@ namespace solver
                 EdgeDPState up;   // value valid in  child -> parent direction
             };
 
-            void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp, const Graph &T)
+            void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp, const TreeGraph &T)
             {
                 auto &C = ctx();
 
                 std::cout << "Edge dp states:" << std::endl;
-                for (auto &e : T.edges)
+                for (auto e : T.edges)
                 {
                     {
                         EdgeDPState state = edge_dp[e].down;
                         if (state.s && state.t)
                         {
-                            std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
+                            std::cout << "Edge " << T.source(e) << " -> " << T.target(e) << ": ";
                             std::cout << "s = " << C.node2name[state.s] << ", ";
                             std::cout << "t = " << C.node2name[state.t] << ", ";
                             std::cout << "acyclic = " << state.acyclic << ", ";
@@ -1204,7 +1204,7 @@ namespace solver
                         EdgeDPState state = edge_dp[e].up;
                         if (state.s && state.t)
                         {
-                            std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
+                            std::cout << "Edge " << T.target(e) << " -> " << T.source(e) << ": ";
                             std::cout << "s = " << C.node2name[state.s] << ", ";
                             std::cout << "t = " << C.node2name[state.t] << ", ";
                             std::cout << "acyclic = " << state.acyclic << ", ";
@@ -1225,7 +1225,7 @@ namespace solver
                 std::cout << "Node dp states: " << std::endl;
                 for (node v : T.nodes)
                 {
-                    std::cout << "Node " << v->index() << ", ";
+                    std::cout << "Node " << v.index() << ", ";
                     std::cout << "outgoingCyclesCount: " << node_dp[v].outgoingCyclesCount << ", ";
                     std::cout << "outgoingLeakageCount: " << node_dp[v].outgoingLeakageCount << ", ";
                     std::cout << "outgoingSourceSinkCount: " << node_dp[v].outgoingSourceSinkCount << ", ";
@@ -1234,18 +1234,18 @@ namespace solver
                 }
             }
 
-            void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const Graph &T)
+            void printAllEdgeStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const TreeGraph &T)
             {
                 auto &C = ctx();
 
                 std::cout << "Edge dp states:" << std::endl;
-                for (auto &e : T.edges)
+                for (auto e : T.edges)
                 {
                     {
                         EdgeDPState state = edge_dp[e].down;
                         if (state.s && state.t)
                         {
-                            std::cout << "Edge " << e->source() << " -> " << e->target() << ": ";
+                            std::cout << "Edge " << T.source(e) << " -> " << T.target(e) << ": ";
                             std::cout << "s = " << C.node2name[state.s] << ", ";
                             std::cout << "t = " << C.node2name[state.t] << ", ";
                             std::cout << "acyclic = " << state.acyclic << ", ";
@@ -1266,7 +1266,7 @@ namespace solver
                         EdgeDPState state = edge_dp[e].up;
                         if (state.s && state.t)
                         {
-                            std::cout << "Edge " << e->target() << " -> " << e->source() << ": ";
+                            std::cout << "Edge " << T.target(e) << " -> " << T.source(e) << ": ";
                             std::cout << "s = " << C.node2name[state.s] << ", ";
                             std::cout << "t = " << C.node2name[state.t] << ", ";
                             std::cout << "acyclic = " << state.acyclic << ", ";
@@ -1319,13 +1319,12 @@ namespace solver
 
                 // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
                 node_order.push_back(curr);
-                for (adjEntry adj : curr->adjEntries)
-                {
-                    node child = adj->twinNode();
+                const TreeGraph &T = spqr.tree();
+                T.forEachAdj(curr, [&](node child, edge te) {
                     if (child == parent)
-                        continue;
-                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, adj->theEdge());
-                }
+                        return;
+                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, te);
+                });
                 if (curr != parent)
                     edge_order.push_back(e);
             }
@@ -1344,9 +1343,10 @@ namespace solver
                 EdgeDPState &back_state = dp[curr_edge].up;
 
                 const StaticSPQRTree &spqr = *blk.spqr;
+                const TreeGraph &T = spqr.tree();
 
-                ogdf::node A = curr_edge->source();
-                ogdf::node B = curr_edge->target();
+                ogdf::node A = T.source(curr_edge);
+                ogdf::node B = T.target(curr_edge);
 
                 state.localOutS = 0;
                 state.localInT = 0;
@@ -1354,7 +1354,7 @@ namespace solver
                 state.localInS = 0;
 
                 const Skeleton &skel = spqr.skeleton(B);
-                const Graph &skelGraph = skel.getGraph();
+                const auto &skelGraph = skel.getGraph();
 
                 // Building new graph with correct orientation of virtual edges
                 Graph newGraph;
@@ -1443,8 +1443,8 @@ namespace solver
 
                 for (edge e : skelGraph.edges)
                 {
-                    node u = e->source();
-                    node v = e->target();
+                    node u = skelGraph.source(e);
+                    node v = skelGraph.target(e);
 
                     node nU = skelToNew[u];
                     node nV = skelToNew[v];
@@ -1527,8 +1527,8 @@ namespace solver
                     {
                         if (skel.isVirtual(e))
                             continue;
-                        node u = e->source();
-                        node v = e->target();
+                        node u = skelGraph.source(e);
+                        node v = skelGraph.target(e);
 
                         // node nU = skelToNew[u];
                         // node nV = skelToNew[v];
@@ -1639,14 +1639,14 @@ namespace solver
 
                 ogdf::node A = curr_node;
 
-                const Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
 
                 NodeDPState curr_state = node_dp[A];
 
                 const StaticSPQRTree &spqr = *blk.spqr;
 
                 const Skeleton &skel = spqr.skeleton(A);
-                const Graph &skelGraph = skel.getGraph();
+                const auto &skelGraph = skel.getGraph();
 
                 // Building new graph with correct orientation of virtual edges
                 Graph newGraph;
@@ -1729,8 +1729,8 @@ namespace solver
                     // PROFILE_BLOCK("processNode:: build oriented local graph");
                     for (edge e : skelGraph.edges)
                     {
-                        node u = e->source();
-                        node v = e->target();
+                        node u = skelGraph.source(e);
+                        node v = skelGraph.target(e);
 
                         node nU = skelToNew[u];
                         node nV = skelToNew[v];
@@ -1864,8 +1864,8 @@ namespace solver
                     {
                         if (!skel.isVirtual(e))
                         {
-                            node uG = mapNewToGlobal(skelToNew[e->source()]);
-                            node vG = mapNewToGlobal(skelToNew[e->target()]);
+                            node uG = mapNewToGlobal(skelToNew[skelGraph.source(e)]);
+                            node vG = mapNewToGlobal(skelToNew[skelGraph.target(e)]);
                             if (uG == gPole0 && vG == gPole1)
                                 ++cnt01;
                             else if (uG == gPole1 && vG == gPole0)
@@ -1928,11 +1928,11 @@ namespace solver
                         }
                         else
                         {
-                            node nU = e->source();
-                            node nV = e->target();
+                            node nU = newGraph.source(e);
+                            node nV = newGraph.target(e);
                             auto *st = edgeToDp[e];
                             auto *ts = edgeToDpR[e];
-                            auto *child = edgeChild[e];
+                            auto child = edgeChild[e];
                             bool acyclic = false;
 
                             newGraph.delEdge(e);
@@ -2058,7 +2058,7 @@ namespace solver
                             }
                             else
                             {
-                                node vN = e->source(), uN = e->target();
+                                node vN = newGraph.source(e), uN = newGraph.target(e);
                                 if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount)
                                 {
                                     if (!edgeToDp[e]->globalSourceSink)
@@ -2077,7 +2077,7 @@ namespace solver
                         for (edge e : virtualEdges)
                         {
                             // if(!isVirtual[e]) continue;
-                            node vN = e->source(), uN = e->target();
+                            node vN = newGraph.source(e), uN = newGraph.target(e);
                             if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount)
                             {
                                 if (!edgeToDp[e]->globalSourceSink)
@@ -2127,7 +2127,7 @@ namespace solver
                             }
                             else
                             {
-                                node vN = e->source(), uN = e->target();
+                                node vN = newGraph.source(e), uN = newGraph.target(e);
                                 if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount)
                                 {
                                     if (!edgeToDp[e]->hasLeakage)
@@ -2146,7 +2146,7 @@ namespace solver
                         {
                             // if(!isVirtual[e]) continue;
 
-                            node vN = e->source(), uN = e->target();
+                            node vN = newGraph.source(e), uN = newGraph.target(e);
                             if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount)
                             {
                                 if (!edgeToDp[e]->hasLeakage)
@@ -2166,8 +2166,8 @@ namespace solver
                     for (edge e : virtualEdges)
                     {
                         // if(!isVirtual[e]) continue;
-                        node vN = e->source();
-                        node uN = e->target();
+                        node vN = newGraph.source(e);
+                        node uN = newGraph.target(e);
 
                         EdgeDPState *BA = edgeToDp[e];
                         EdgeDPState *AB = edgeToDpR[e];
@@ -2190,8 +2190,9 @@ namespace solver
                 if (blk.spqr->typeOf(A) != SPQRTree::NodeType::PNode)
                     return;
 
+                const auto &T = blk.spqr->tree();
                 const Skeleton &skel = blk.spqr->skeleton(A);
-                const Graph &skelGraph = skel.getGraph();
+                const auto &skelGraph = skel.getGraph();
 
                 node bS, bT;
                 {
@@ -2203,12 +2204,12 @@ namespace solver
                 }
 
                 int directST = 0, directTS = 0;
-                for (auto &e : skelGraph.edges)
+                for (auto e : skelGraph.edges)
                 {
                     if (skel.isVirtual(e))
                         continue;
 
-                    node a = skel.original(e->source()), b = skel.original(e->target());
+                    node a = skel.original(skelGraph.source(e)), b = skel.original(skelGraph.target(e));
 
                     if (a == bS && b == bT)
                         directST++;
@@ -2229,11 +2230,9 @@ namespace solver
 
                     // std::cout << " at " << A << std::endl;
 
-                    for (adjEntry adj : A->adjEntries)
-                    {
-                        auto e = adj->theEdge();
-                        // std::cout << e->source() << " -> " << e->target() << std::endl;
-                        auto &state = (e->source() == A ? edge_dp[e].down : edge_dp[e].up);
+                    T.forEachAdj(A, [&](node /*other*/, edge e) {
+                        // std::cout << T.source(e) << " -> " << T.target(e) << std::endl;
+                        auto &state = (T.source(e) == A ? edge_dp[e].down : edge_dp[e].up);
                         // directST = (state.s == s ? state.directST : state.directTS);
                         // directTS = (state.s == s ? state.directTS : state.directST);
 
@@ -2241,20 +2240,20 @@ namespace solver
 
                         localOutSSum += localOutS;
                         localInTSum += localInT;
-                        // std::cout << adj->twinNode() << " has outS" <<  localOutS << " and outT " << localInT << std::endl;
+                        // std::cout << other << " has outS" <<  localOutS << " and outT " << localInT << std::endl;
 
                         if (localOutS > 0)
                         {
-                            // std::cout << "PUSHING TO GOODs" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                            // std::cout << "PUSHING TO GOODs" << (T.source(e) == A ? T.target(e): T.source(e)) << std::endl;
                             goodS.push_back(&state);
                         }
 
                         if (localInT > 0)
                         {
-                            // std::cout << "PUSHING TO GOODt" << (e->source() == A ? e->target(): e->source()) << std::endl;
+                            // std::cout << "PUSHING TO GOODt" << (T.source(e) == A ? T.target(e): T.source(e)) << std::endl;
                             goodT.push_back(&state);
                         }
-                    }
+                    });
 
                     // if(q == 1) std::swap(goodS, goodT);
                     // std::cout << "directST: " << directST << ", directTS: " << directTS << std::endl;
@@ -2451,27 +2450,27 @@ namespace solver
             void collectSuperbubbles(const CcData &cc, BlockData &blk, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp)
             {
                 // PROFILE_FUNCTION();
-                const Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
                 // printAllStates(edge_dp, node_dp, T);
 
                 for (edge e : T.edges)
                 {
-                    // std::cout << "CHECKING FOR " << e->source() << " " << e->target() << std::endl;
+                    // std::cout << "CHECKING FOR " << T.source(e) << " " << T.target(e) << std::endl;
                     const EdgeDPState &down = edge_dp[e].down;
                     const EdgeDPState &up = edge_dp[e].up;
 
-                    // if(blk.spqr->typeOf(e->target()) != SPQRTree::NodeType::SNode) {
+                    // if(blk.spqr->typeOf(T.target(e)) != SPQRTree::NodeType::SNode) {
                     //     std::cout << "DOWN" << std::endl;
                     bool additionalCheck;
 
-                    additionalCheck = (blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::SNode);
+                    additionalCheck = (blk.spqr->typeOf(T.source(e)) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(T.target(e)) == SPQRTree::NodeType::SNode);
                     tryBubble(down, up, blk, cc, false, additionalCheck);
                     tryBubble(down, up, blk, cc, true, additionalCheck);
                     // }
 
-                    // if(blk.spqr->typeOf(e->source()) != SPQRTree::NodeType::SNode) {
+                    // if(blk.spqr->typeOf(T.source(e)) != SPQRTree::NodeType::SNode) {
                     // std::cout << "UP" << std::endl;
-                    additionalCheck = (blk.spqr->typeOf(e->target()) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(e->source()) == SPQRTree::NodeType::SNode);
+                    additionalCheck = (blk.spqr->typeOf(T.target(e)) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(T.source(e)) == SPQRTree::NodeType::SNode);
 
                     tryBubble(up, down, blk, cc, false, additionalCheck);
                     tryBubble(up, down, blk, cc, true, additionalCheck);
@@ -2545,21 +2544,20 @@ namespace solver
             {
                 node u = S.top();
                 S.pop();
-                for (adjEntry a = u->firstAdj(); a; a = a->succ())
-                    if (a->isSource())
+                G.forEachAdj(u, [&](node v, edge e) {
+                    if (G.source(e) != u)  // only outgoing edges
+                        return;
+                    if (!vis[v])
                     {
-                        node v = a->twinNode();
-                        if (!vis[v])
+                        if (v == snk)
                         {
-                            if (v == snk)
-                            {
-                                reach = true;
-                                break;
-                            }
-                            vis[v] = true;
-                            S.push(v);
+                            reach = true;
+                            return;
                         }
+                        vis[v] = true;
+                        S.push(v);
                     }
+                });
             }
             if (!reach)
             {
@@ -2579,7 +2577,7 @@ namespace solver
                 return;
             }
 
-            const Graph &T = blk.spqr->tree();
+            const auto &T = blk.spqr->tree();
 
             EdgeArray<SPQRsolve::EdgeDP> dp(T);
             NodeArray<SPQRsolve::NodeDPState> node_dp(T);
@@ -2612,25 +2610,22 @@ namespace solver
 
             logger::info("Finding mini-superbubbles..");
 
-            for (auto &e : C.G.edges)
+            for (auto e : C.G.edges)
             {
-                auto a = e->source();
-                auto b = e->target();
+                auto a = C.G.source(e);
+                auto b = C.G.target(e);
 
-                if (a->outdeg() == 1 && b->indeg() == 1)
+                if (C.G.outdeg(a) == 1 && C.G.indeg(b) == 1)
                 {
                     bool ok = true;
-                    for (auto &w : b->adjEntries)
-                    {
-                        auto e2 = w->theEdge();
-                        auto src = e2->source();
-                        auto tgt = e2->target();
+                    C.G.forEachAdj(b, [&](node other, edge e2) {
+                        auto src = C.G.source(e2);
+                        auto tgt = C.G.target(e2);
                         if (src == b && tgt == a)
                         {
                             ok = false;
-                            break;
                         }
-                    }
+                    });
 
                     if (ok)
                     {
@@ -2709,8 +2704,8 @@ namespace solver
                 for (edge hE : cc.bc->hEdges(blk.bNode))
                 {
                     edge eC = cc.bc->original(hE);
-                    verts.insert(eC->source());
-                    verts.insert(eC->target());
+                    verts.insert(cc.Gcc->source(eC));
+                    verts.insert(cc.Gcc->target(eC));
                 }
 
                 std::unordered_map<node, node> cc_to_blk;
@@ -2728,13 +2723,13 @@ namespace solver
                 for (edge hE : cc.bc->hEdges(blk.bNode))
                 {
                     edge eCc = cc.bc->original(hE);
-                    auto srcIt = cc_to_blk.find(eCc->source());
-                    auto tgtIt = cc_to_blk.find(eCc->target());
+                    auto srcIt = cc_to_blk.find(cc.Gcc->source(eCc));
+                    auto tgtIt = cc_to_blk.find(cc.Gcc->target(eCc));
                     if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end())
                     {
                         edge e = blk.Gblk->newEdge(srcIt->second, tgtIt->second);
-                        blk.outDeg[e->source()]++;
-                        blk.inDeg[e->target()]++;
+                        blk.outDeg[blk.Gblk->source(e)]++;
+                        blk.inDeg[blk.Gblk->target(e)]++;
                     }
                 }
 
@@ -2754,7 +2749,7 @@ namespace solver
                     MARK_SCOPE_MEM("sb/blockData/spqr_build");
                     blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
                 }
-                const Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
                 blk.skel2tree.reserve(2 * T.edges.size());
                 blk.parent.init(T, nullptr);
 
@@ -2763,8 +2758,8 @@ namespace solver
 
                 for (edge te : T.edges)
                 {
-                    node u = te->source();
-                    node v = te->target();
+                    node u = T.source(te);
+                    node v = T.target(te);
                     blk.parent[v] = u;
 
                     if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
@@ -3032,7 +3027,7 @@ namespace solver
                     // PROFILE_BLOCK("solveStreaming:: bucket edges");
                     for (edge e : G.edges)
                     {
-                        edgeBuckets[compIdx[e->source()]].push_back(e);
+                        edgeBuckets[compIdx[G.source(e)]].push_back(e);
                     }
                 }
 
@@ -3092,7 +3087,7 @@ namespace solver
                                             }
 
                                             for (edge e : edgeBuckets[cid]) {
-                                                cc->Gcc->newEdge(orig_to_cc_local[e->source()], orig_to_cc_local[e->target()]);
+                                                cc->Gcc->newEdge(orig_to_cc_local[G.source(e)], orig_to_cc_local[G.target(e)]);
                                             }
                                         }
 
@@ -3660,20 +3655,16 @@ namespace solver
         EdgePartType getNodeEdgeType(ogdf::node v, ogdf::edge e)
         {
             auto &C = ctx();
-            OGDF_ASSERT(v != nullptr && e != nullptr);
-            OGDF_ASSERT(v->graphOf() == &C.G);
-            OGDF_ASSERT(e->graphOf() == &C.G);
-            if (e->source() == v)
+            if (C.G.source(e) == v)
             {
                 return C._edge2types(e).first;
             }
-            else if (e->target() == v)
+            else if (C.G.target(e) == v)
             {
                 return C._edge2types(e).second;
             }
             else
             {
-                OGDF_ASSERT(false);
                 return EdgePartType::NONE;
             }
         }
@@ -3686,25 +3677,13 @@ namespace solver
         {
             outEdges.clear();
 
-            ogdf::node uB = cc.bc->repVertex(uG, vB);
-            if (!uB)
+            for (ogdf::edge eCc : cc.bc->hEdges(vB))
             {
-                return;
-            }
-
-            // std::cout << "Getting outgoing edges in block for graph node " << uG << " in block node " << vB << " " << uB->adjEntries.size() << std::endl;
-
-            for (auto adjE : uB->adjEntries)
-            {
-                ogdf::edge eAux = adjE->theEdge();      
-                ogdf::edge eCc = cc.bc->original(eAux); 
-                
-                if (!eCc)
-                {
+                if (cc.Gcc->source(eCc) != uG && cc.Gcc->target(eCc) != uG)
                     continue;
-                }
 
                 ogdf::edge eG = cc.edgeToOrig[eCc];
+                if (!eG) continue;
 
                 auto outType = getNodeEdgeType(cc.nodeToOrig[uG], eG);
                 if (outType == type)
@@ -3714,21 +3693,19 @@ namespace solver
             }
         }
 
-        void getAllOutgoingEdgesOfType(const CcData &cc, ogdf::node uG, EdgePartType type, std::vector<ogdf::AdjElement *> &outEdges)
+        void getAllOutgoingEdgesOfType(const CcData &cc, ogdf::node uG, EdgePartType type, std::vector<ogdf::adjEntry> &outEdges)
         {
             outEdges.clear();
 
-            for (auto adjE : uG->adjEntries)
-            {
-                ogdf::edge eC = adjE->theEdge();
+            cc.Gcc->forEachAdj(uG, [&](node neighbor, edge eC) {
                 ogdf::edge eOrig = cc.edgeToOrig[eC];
 
-                if (eC->source() == uG)
+                if (cc.Gcc->source(eC) == uG)
                 {
                     EdgePartType outType = ctx()._edge2types(eOrig).first;
                     if (type == outType)
                     {
-                        outEdges.push_back(adjE);
+                        outEdges.push_back(adjEntry{neighbor, eC});
                     }
                 }
                 else
@@ -3736,10 +3713,10 @@ namespace solver
                     EdgePartType outType = ctx()._edge2types(eOrig).second;
                     if (type == outType)
                     {
-                        outEdges.push_back(adjE);
+                        outEdges.push_back(adjEntry{neighbor, eC});
                     }
                 }
-            }
+            });
         }
 
         namespace SPQRsolve
@@ -3767,12 +3744,12 @@ namespace solver
             };
 
             void printAllStates(const ogdf::NodeArray<NodeDPState> &node_dp,
-                                const Graph &T)
+                                const TreeGraph &T)
             {
                 std::cout << "Node dp states: " << std::endl;
                 for (node v : T.nodes)
                 {
-                    std::cout << "Node " << v->index() << ", ";
+                    std::cout << "Node " << v.index() << ", ";
                     std::cout << "GccCuts_last3: " << node_dp[v].GccCuts_last3.size();
                     std::cout << std::endl;
                 }
@@ -3796,13 +3773,12 @@ namespace solver
                 }
 
                 node_order.push_back(curr);
-                for (adjEntry adj : curr->adjEntries)
-                {
-                    node child = adj->twinNode();
+                const auto& T = spqr.tree();
+                T.forEachAdj(curr, [&](node child, edge adjEdge) {
                     if (child == parent)
-                        continue;
-                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, adj->theEdge());
-                }
+                        return;
+                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, adjEdge);
+                });
                 if (curr != parent)
                     edge_order.push_back(e);
             }
@@ -3818,9 +3794,10 @@ namespace solver
                 EdgeDPState &back_state = dp[curr_edge].up;
 
                 const StaticSPQRTree &spqr = *blk.spqr;
+                const auto &T = spqr.tree();
 
-                ogdf::node u = curr_edge->source();
-                ogdf::node v = curr_edge->target();
+                ogdf::node u = T.source(curr_edge);
+                ogdf::node v = T.target(curr_edge);
 
                 ogdf::node A = nullptr; 
                 ogdf::node B = nullptr; 
@@ -3847,7 +3824,7 @@ namespace solver
                 state.localMinusT = 0;
 
                 const Skeleton &skel = spqr.skeleton(B); 
-                const Graph &skelGraph = skel.getGraph();
+                const auto &skelGraph = skel.getGraph();
 
                 auto mapSkeletonToGlobal = [&](ogdf::node vSkel) -> ogdf::node
                 {
@@ -3864,8 +3841,8 @@ namespace solver
 
                 for (ogdf::edge e : skelGraph.edges)
                 {
-                    ogdf::node uSk = e->source();
-                    ogdf::node vSk = e->target();
+                    ogdf::node uSk = skelGraph.source(e);
+                    ogdf::node vSk = skelGraph.target(e);
 
                     ogdf::node D = skel.twinTreeNode(e);
 
@@ -3882,8 +3859,8 @@ namespace solver
 
                 for (ogdf::edge e : skelGraph.edges)
                 {
-                    ogdf::node uSk = e->source();
-                    ogdf::node vSk = e->target();
+                    ogdf::node uSk = skelGraph.source(e);
+                    ogdf::node vSk = skelGraph.target(e);
 
                     ogdf::node uBlk = skel.original(uSk);
                     ogdf::node vBlk = skel.original(vSk);
@@ -3892,8 +3869,8 @@ namespace solver
                     {
                         ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
 
-                        ogdf::node uG = eG->source();
-                        ogdf::node vG = eG->target();
+                        ogdf::node uG = C.G.source(eG);
+                        ogdf::node vG = C.G.target(eG);
 
                         if (uG == blk.nodeToOrig[state.s])
                         {
@@ -3977,10 +3954,11 @@ namespace solver
                              const CcData & /*cc*/,
                              BlockData &blk)
             {
+                auto& C = ctx();
                 ogdf::node A = curr_node;
                 const StaticSPQRTree &spqr = *blk.spqr;
                 const Skeleton &skel = spqr.skeleton(A);
-                const Graph &skelG = skel.getGraph();
+                const auto &skelG = skel.getGraph();
 
                 Graph newGraph;
 
@@ -4017,8 +3995,8 @@ namespace solver
 
                 for (edge e : skelG.edges)
                 {
-                    node u = e->source();
-                    node v = e->target();
+                    node u = skelG.source(e);
+                    node v = skelG.target(e);
 
                     ogdf::node uBlk = skel.original(u);
                     ogdf::node vBlk = skel.original(v);
@@ -4032,8 +4010,8 @@ namespace solver
                     if (!skel.isVirtual(e))
                     {
                         ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
-                        uG = eG->source();
-                        vG = eG->target();
+                        uG = C.G.source(eG);
+                        vG = C.G.target(eG);
 
                         auto newEdge = newGraph.newEdge(nU, nV);
                         isVirtual[newEdge] = false;
@@ -4108,8 +4086,8 @@ namespace solver
                         const CcData &cc)
             {
                 const Skeleton &skel = blk.spqr->skeleton(sNode);
-                const Graph &skelG = skel.getGraph();
-                const Graph &T = blk.spqr->tree();
+                const auto &skelG = skel.getGraph();
+                const auto &T = blk.spqr->tree();
 
                 std::vector<ogdf::node> nodesInOrderGcc;
                 std::vector<ogdf::node> nodesInOrderSkel;
@@ -4137,43 +4115,48 @@ namespace solver
                         nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
                         nodesInOrderSkel.push_back(u);
 
-                        for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-                        {
+                        skelG.forEachAdj(u, [&](node neighbor, edge e) {
 
-                            if (adj->twinNode() == prev)
-                                continue;
+                            if (neighbor == prev)
+                                return;
 
-                            if (adj->twinNode() == skelG.firstNode() && u != skelG.firstNode())
+                            if (neighbor == skelG.firstNode() && u != skelG.firstNode())
                             {
-                                if (skel.realEdge(adj->theEdge()))
+                                if (skel.realEdge(e))
                                 {
-                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(e)]);
                                 }
                                 else
                                 {
                                     adjEdgesG.push_back(nullptr);
                                 }
-                                adjEntriesSkel.push_back(adj);
+                                adjEntriesSkel.push_back(adjEntry{neighbor, e});
                             }
 
-                            if (adj->twinNode() == skelG.firstNode() || adj->twinNode() == prev)
-                                continue;
+                            if (neighbor == skelG.firstNode() || neighbor == prev)
+                                return;
 
-                            if (skel.realEdge(adj->theEdge()))
+                            if (skel.realEdge(e))
                             {
-                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(adj->theEdge())]);
+                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(e)]);
                             }
                             else
                             {
                                 adjEdgesG.push_back(nullptr);
                             }
-                            adjEntriesSkel.push_back(adj);
+                            adjEntriesSkel.push_back(adjEntry{neighbor, e});
 
-                            dfs(adj->twinNode(), u);
-                        }
+                            dfs(neighbor, u);
+                        });
                     };
 
-                    dfs(skelG.firstNode(), skelG.firstNode()->firstAdj()->twinNode());
+                    node firstNode = skelG.firstNode();
+                    node secondNode = nullptr;
+                    skelG.forEachAdj(firstNode, [&](node neighbor, edge) {
+                        if (!secondNode) secondNode = neighbor;
+                    });
+                    if (secondNode)
+                        dfs(firstNode, secondNode);
                 }
 
                 std::vector<bool> cuts(nodesInOrderGcc.size(), false);
@@ -4184,8 +4167,8 @@ namespace solver
                     auto uGcc = nodesInOrderGcc[i];
 
                     std::vector<edge> adjEdgesSkelLoc = {
-                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) % adjEntriesSkel.size()]->theEdge(),
-                        adjEntriesSkel[i]->theEdge()};
+                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) % adjEntriesSkel.size()].theEdge(),
+                        adjEntriesSkel[i].theEdge()};
                     std::vector<ogdf::edge> adjEdgesGLoc = {
                         adjEdgesG[(i + adjEdgesG.size() - 1) % adjEdgesG.size()],
                         adjEdgesG[i]};
@@ -4321,10 +4304,10 @@ namespace solver
                 auto &C = ctx();
 
                 const Skeleton &skel = blk.spqr->skeleton(pNode);
-                const Graph &skelGraph = skel.getGraph();
-                const Graph &T = blk.spqr->tree();
+                const auto &skelGraph = skel.getGraph();
+                const auto &T = blk.spqr->tree();
 
-                VLOG << "[DEBUG][solveP] P-node idx=" << pNode->index()
+                VLOG << "[DEBUG][solveP] P-node idx=" << pNode.index()
                      << " skeleton |V|=" << skelGraph.numberOfNodes()
                      << " |E|=" << skelGraph.numberOfEdges() << "\n";
 
@@ -4354,8 +4337,8 @@ namespace solver
                 ogdf::node pole1Gcc = blk.toCc[pole1Blk];
 
                 VLOG << "[DEBUG][solveP]  poles: "
-                     << C.node2name[cc.nodeToOrig[pole0Gcc]] << " (Gcc idx=" << pole0Gcc->index() << "), "
-                     << C.node2name[cc.nodeToOrig[pole1Gcc]] << " (Gcc idx=" << pole1Gcc->index() << ")\n";
+                     << C.node2name[cc.nodeToOrig[pole0Gcc]] << " (Gcc idx=" << pole0Gcc.index() << "), "
+                     << C.node2name[cc.nodeToOrig[pole1Gcc]] << " (Gcc idx=" << pole1Gcc.index() << ")\n";
 
                 auto hasDanglingOutside = [&](ogdf::node vGcc)
                 {
@@ -4374,14 +4357,13 @@ namespace solver
                 }
 
                 std::vector<ogdf::adjEntry> edgeOrdering;
-                for (ogdf::adjEntry adj = pole0Skel->firstAdj(); adj; adj = adj->succ())
-                {
-                    edgeOrdering.push_back(adj);
-                }
+                skelGraph.forEachAdj(pole0Skel, [&](node neighbor, edge e) {
+                    edgeOrdering.push_back(adjEntry{neighbor, e});
+                });
 
                 for (ogdf::adjEntry adj : edgeOrdering)
                 {
-                    ogdf::edge eSkel = adj->theEdge();
+                    ogdf::edge eSkel = adj.theEdge();
                     if (!skel.isVirtual(eSkel))
                         continue;
 
@@ -4389,7 +4371,7 @@ namespace solver
                     if (itMap == blk.skel2tree.end())
                         continue;
                     ogdf::edge treeE = itMap->second;
-                    ogdf::node B = (treeE->source() == pNode ? treeE->target() : treeE->source());
+                    ogdf::node B = (T.source(treeE) == pNode ? T.target(treeE) : T.source(treeE));
 
                     EdgeDP &dpVal = edge_dp[treeE];
                     EdgeDPState &state = (blk.parent[pNode] == B ? dpVal.up : dpVal.down);
@@ -4440,7 +4422,7 @@ namespace solver
 
                         for (ogdf::adjEntry adj : edgeOrdering)
                         {
-                            ogdf::edge eSkel = adj->theEdge();
+                            ogdf::edge eSkel = adj.theEdge();
 
                             EdgePartType lSign = EdgePartType::NONE;
                             EdgePartType rSign = EdgePartType::NONE;
@@ -4462,7 +4444,7 @@ namespace solver
                                 if (itMap == blk.skel2tree.end())
                                     continue;
                                 ogdf::edge treeE = itMap->second;
-                                ogdf::node B = (treeE->source() == pNode ? treeE->target() : treeE->source());
+                                ogdf::node B = (T.source(treeE) == pNode ? T.target(treeE) : T.source(treeE));
 
                                 EdgeDP &dpVal = edge_dp[treeE];
                                 EdgeDPState &st = (blk.parent[pNode] == B ? dpVal.up : dpVal.down);
@@ -4676,7 +4658,7 @@ namespace solver
                 if (!blk.spqr)
                     return;
 
-                const Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
 
                 VLOG << "[DEBUG][solveNodes] start, |T.nodes|=" << T.numberOfNodes()
                      << " |T.edges|=" << T.numberOfEdges() << "\n";
@@ -4687,7 +4669,7 @@ namespace solver
                     auto tType = blk.spqr->typeOf(tNode);
                     if (tType == StaticSPQRTree::NodeType::SNode)
                     {
-                        VLOG << "[DEBUG][solveNodes] S-node idx=" << tNode->index()
+                        VLOG << "[DEBUG][solveNodes] S-node idx=" << tNode.index()
                              << " -> solveS()\n";
                         solveS(tNode, node_dp, edge_dp, blk, cc);
                     }
@@ -4699,7 +4681,7 @@ namespace solver
                     auto tType = blk.spqr->typeOf(tNode);
                     if (tType == StaticSPQRTree::NodeType::PNode)
                     {
-                        VLOG << "[DEBUG][solveNodes] P-node idx=" << tNode->index()
+                        VLOG << "[DEBUG][solveNodes] P-node idx=" << tNode.index()
                              << " -> solveP()\n";
                         solveP(tNode, node_dp, edge_dp, blk, cc);
                     }
@@ -4708,12 +4690,12 @@ namespace solver
                 // 3) R-R edges
                 for (edge e : T.edges)
                 {
-                    auto srcT = blk.spqr->typeOf(e->source());
-                    auto dstT = blk.spqr->typeOf(e->target());
+                    auto srcT = blk.spqr->typeOf(T.source(e));
+                    auto dstT = blk.spqr->typeOf(T.target(e));
                     if (srcT == SPQRTree::NodeType::RNode &&
                         dstT == SPQRTree::NodeType::RNode)
                     {
-                        VLOG << "[DEBUG][solveNodes] R-R edge idx=" << e->index()
+                        VLOG << "[DEBUG][solveNodes] R-R edge idx=" << e.idx
                              << " -> solveRR()\n";
                         solveRR(e, node_dp, edge_dp, blk, cc);
                     }
@@ -4732,7 +4714,7 @@ namespace solver
                     return;
 
                 auto &C = ctx();
-                const ogdf::Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
 
                 // DP on the edges of the SPQR tree
                 ogdf::EdgeArray<EdgeDP> edge_dp(T);
@@ -4773,7 +4755,7 @@ namespace solver
                     if (blk.spqr->typeOf(mu) != ogdf::StaticSPQRTree::NodeType::SNode)
                         continue;
                     const ogdf::Skeleton &skel = blk.spqr->skeleton(mu);
-                    const ogdf::Graph &skelG = skel.getGraph();
+                    const auto &skelG = skel.getGraph();
                     for (ogdf::node vSk : skelG.nodes)
                     {
                         ogdf::node vB = skel.original(vSk);
@@ -4821,14 +4803,14 @@ namespace solver
 
                 std::sort(edgesSorted.begin(), edgesSorted.end(),
                           [](ogdf::edge a, ogdf::edge b)
-                          { return a->index() < b->index(); });
+                          { return a.idx < b.idx; });
 
                 for (ogdf::edge eB : edgesSorted)
                 {
                     ogdf::edge eG = blk.edgeToOrig[eB];
 
-                    ogdf::node uB = eB->source();
-                    ogdf::node vB = eB->target();
+                    ogdf::node uB = blk.Gblk->source(eB);
+                    ogdf::node vB = blk.Gblk->target(eB);
 
                     ogdf::node uGcc = blk.toCc[uB];
                     ogdf::node vGcc = blk.toCc[vB];
@@ -4941,15 +4923,14 @@ namespace solver
                 node vG = cc.nodeToOrig[v];
                 const std::string &name = C.node2name[vG];
 
-                for (auto adjE : v->adjEntries)
-                {
-                    ogdf::edge e = cc.edgeToOrig[adjE->theEdge()];
+                cc.Gcc->forEachAdj(v, [&](node /*neighbor*/, edge eAdj) {
+                    ogdf::edge e = cc.edgeToOrig[eAdj];
                     EdgePartType eType = getNodeEdgeType(vG, e);
                     if (eType == EdgePartType::PLUS)
                         plusCnt++;
                     else if (eType == EdgePartType::MINUS)
                         minusCnt++;
-                }
+                });
 
                 if (plusCnt + minusCnt == 0)
                 {
@@ -4966,7 +4947,7 @@ namespace solver
                 }
 
                 VLOG << "[DEBUG][findTips] node " << name
-                     << "(Gcc idx=" << v->index() << ")"
+                     << "(Gcc idx=" << v.index() << ")"
                      << "plusCnt=" << plusCnt
                      << "minusCnt=" << minusCnt
                      << "isTip=" << (cc.isTip[v] ? "true" : "false")
@@ -5000,11 +4981,11 @@ namespace solver
                     cc.isCutNode[v] = true;
 
                     bool isGood = true;
-                    ogdf::node vT = cc.bc->bcproper(v);
 
-                    for (auto adjV : vT->adjEntries)
+                    // Iterate over all blocks and check which ones contain this vertex
+                    for (uint32_t bIdx = 0; bIdx < cc.bc->numberOfBComps(); ++bIdx)
                     {
-                        node uT = adjV->twinNode();
+                        node uT{bIdx};  // B-node
                         std::vector<ogdf::edge> outPlus, outMinus;
                         getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::PLUS, outPlus);
                         getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::MINUS, outMinus);
@@ -5020,13 +5001,13 @@ namespace solver
                 }
 
                 VLOG << "[DEBUG][processCutNodes] node " << name
-                     << "(Gcc idx=" << v->index() << ")"
+                     << "(Gcc idx=" << v.index() << ")"
                      << "isCutNode=" << (cc.isCutNode[v] ? "true" : "false")
                      << "badCutCount=" << cc.badCutCount[v]
                      << "isGoodCutNode=" << (cc.isGoodCutNode[v] ? "true" : "false");
                 if (cc.lastBad[v] != nullptr)
                 {
-                    VLOG << "lastBad(B-node idx)=" << cc.lastBad[v]->index();
+                    VLOG << "lastBad(B-node idx)=" << cc.lastBad[v].index();
                 }
                 VLOG << "\n";
             }
@@ -5105,7 +5086,7 @@ namespace solver
                                 plusVisited = true;
                         }
 
-                        std::vector<ogdf::AdjElement *> sameOutEdges, otherOutEdges;
+                        std::vector<ogdf::adjEntry> sameOutEdges, otherOutEdges;
                         getAllOutgoingEdgesOfType(
                             cc, v,
                             (edgeType == EdgePartType::PLUS ? EdgePartType::PLUS
@@ -5121,8 +5102,8 @@ namespace solver
 
                         for (auto &adjE : sameOutEdges)
                         {
-                            ogdf::node otherNode = adjE->twinNode();
-                            ogdf::edge eCc = adjE->theEdge();
+                            ogdf::node otherNode = adjE.twinNode();
+                            ogdf::edge eCc = adjE.theEdge();
                             ogdf::edge eOrig = cc.edgeToOrig[eCc];
 
                             EdgePartType inType =
@@ -5139,8 +5120,8 @@ namespace solver
                         {
                             for (auto &adjE : otherOutEdges)
                             {
-                                ogdf::node otherNode = adjE->twinNode();
-                                ogdf::edge eCc = adjE->theEdge();
+                                ogdf::node otherNode = adjE.twinNode();
+                                ogdf::edge eCc = adjE.theEdge();
                                 ogdf::edge eOrig = cc.edgeToOrig[eCc];
 
                                 EdgePartType inType =
@@ -5171,7 +5152,7 @@ namespace solver
             auto &C = ctx();
 
             VLOG << "[DEBUG][buildBlockData] --------\n";
-            VLOG << "[DEBUG][buildBlockData] B-node index=" << blk.bNode->index() << "\n";
+            VLOG << "[DEBUG][buildBlockData] B-node index=" << blk.bNode.index() << "\n";
 
             blk.Gblk = std::make_unique<ogdf::Graph>();
 
@@ -5196,15 +5177,15 @@ namespace solver
                 for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
                 {
                     ogdf::edge eCc = cc.bc->original(hE);
-                    ogdf::node uC = eCc->source();
-                    ogdf::node vC = eCc->target();
+                    ogdf::node uC = cc.Gcc->source(eCc);
+                    ogdf::node vC = cc.Gcc->target(eCc);
                     ogdf::node uG = cc.nodeToOrig[uC];
                     ogdf::node vG = cc.nodeToOrig[vC];
                     const std::string &uName = C.node2name[uG];
                     const std::string &vName = C.node2name[vG];
 
                     VLOG << "    Gcc edge: " << uName << " -- " << vName
-                         << " (Gcc idx " << uC->index() << " -- " << vC->index() << ")\n";
+                         << " (Gcc idx " << uC.index() << " -- " << vC.index() << ")\n";
 
                     verts_vec.push_back(uC);
                     verts_vec.push_back(vC);
@@ -5212,7 +5193,7 @@ namespace solver
 
                 std::sort(verts_vec.begin(), verts_vec.end(),
                           [](ogdf::node a, ogdf::node b)
-                          { return a->index() < b->index(); });
+                          { return a.index() < b.index(); });
                 verts_vec.erase(std::unique(verts_vec.begin(), verts_vec.end()), verts_vec.end());
             }
 
@@ -5228,8 +5209,8 @@ namespace solver
                 ogdf::node vG = cc.nodeToOrig[vCc];
                 blk.nodeToOrig[vB] = vG;
 
-                VLOG << "    Gcc idx " << vCc->index()
-                     << " -> Gblk idx " << vB->index()
+                VLOG << "    Gcc idx " << vCc.index()
+                     << " -> Gblk idx " << vB.index()
                      << " name=" << C.node2name[vG] << "\n";
             }
 
@@ -5237,8 +5218,8 @@ namespace solver
             for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
             {
                 ogdf::edge eCc = cc.bc->original(hE);
-                auto srcIt = cc_to_blk.find(eCc->source());
-                auto tgtIt = cc_to_blk.find(eCc->target());
+                auto srcIt = cc_to_blk.find(cc.Gcc->source(eCc));
+                auto tgtIt = cc_to_blk.find(cc.Gcc->target(eCc));
                 if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end())
                 {
                     ogdf::edge eB = blk.Gblk->newEdge(srcIt->second, tgtIt->second);
@@ -5251,7 +5232,7 @@ namespace solver
 
                     VLOG << "    add Gblk edge: "
                          << C.node2name[uG] << " -- " << C.node2name[vG]
-                         << " (Gblk idx " << eB->index() << ")\n";
+                         << " (Gblk idx " << eB.idx << ")\n";
 
                     EdgePartType tU = getNodeEdgeType(uG, blk.edgeToOrig[eB]);
                     EdgePartType tV = getNodeEdgeType(vG, blk.edgeToOrig[eB]);
@@ -5284,7 +5265,7 @@ namespace solver
 
                 OGDF_ASSERT(blk.spqr != nullptr);
 
-                const ogdf::Graph &T = blk.spqr->tree();
+                const auto &T = blk.spqr->tree();
 
                 blk.skel2tree.clear();
                 blk.skel2tree.reserve(2 * T.numberOfEdges());
@@ -5312,15 +5293,13 @@ namespace solver
                     ogdf::node u = st.top();
                     st.pop();
 
-                    for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-                    {
-                        ogdf::node v = adj->twinNode();
+                    T.forEachAdj(u, [&](node v, edge /*e*/) {
                         if (blk.parent[v] == nullptr)
                         {
                             blk.parent[v] = u;
                             st.push(v);
                         }
-                    }
+                    });
                 }
             }
         }
@@ -5443,15 +5422,16 @@ namespace solver
                             orig_to_cc[vG] = vC;
                         }
 
+                        auto& G = ctx().G;
                         for (edge e : (*edgeBuckets)[cid])
                         {
-                            auto eC = (*components)[cid]->Gcc->newEdge(orig_to_cc[e->source()], orig_to_cc[e->target()]);
+                            auto eC = (*components)[cid]->Gcc->newEdge(orig_to_cc[G.source(e)], orig_to_cc[G.target(e)]);
                             (*components)[cid]->edgeToOrig[eC] = e;
 
-                            (*components)[cid]->degPlus[orig_to_cc[e->source()]] += (getNodeEdgeType(e->source(), e) == EdgePartType::PLUS ? 1 : 0);
-                            (*components)[cid]->degMinus[orig_to_cc[e->source()]] += (getNodeEdgeType(e->source(), e) == EdgePartType::MINUS ? 1 : 0);
-                            (*components)[cid]->degPlus[orig_to_cc[e->target()]] += (getNodeEdgeType(e->target(), e) == EdgePartType::PLUS ? 1 : 0);
-                            (*components)[cid]->degMinus[orig_to_cc[e->target()]] += (getNodeEdgeType(e->target(), e) == EdgePartType::MINUS ? 1 : 0);
+                            (*components)[cid]->degPlus[orig_to_cc[G.source(e)]] += (getNodeEdgeType(G.source(e), e) == EdgePartType::PLUS ? 1 : 0);
+                            (*components)[cid]->degMinus[orig_to_cc[G.source(e)]] += (getNodeEdgeType(G.source(e), e) == EdgePartType::MINUS ? 1 : 0);
+                            (*components)[cid]->degPlus[orig_to_cc[G.target(e)]] += (getNodeEdgeType(G.target(e), e) == EdgePartType::PLUS ? 1 : 0);
+                            (*components)[cid]->degMinus[orig_to_cc[G.target(e)]] += (getNodeEdgeType(G.target(e), e) == EdgePartType::MINUS ? 1 : 0);
                         }
                     }
                     processed++;
@@ -5531,7 +5511,7 @@ namespace solver
                             if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp)
                             {
                                 VLOG << "  [DEBUG][worker_bcTree]  B-node "
-                                     << v->index() << " (block)\n";
+                                     << v.index() << " (block)\n";
                                 localPreps.emplace_back(cc, v);
                             }
                         }
@@ -5787,7 +5767,7 @@ namespace solver
                     MARK_SCOPE_MEM("sn/phase/BucketEdges");
                     for (edge e : G.edges)
                     {
-                        edgeBuckets[compIdx[e->source()]].push_back(e);
+                        edgeBuckets[compIdx[G.source(e)]].push_back(e);
                     }
                 }
             }
@@ -6194,14 +6174,12 @@ namespace solver
 
                 for (ogdf::node vOrig : ccNodes[ccIdx])
                 {
-                    for (ogdf::adjEntry adj : vOrig->adjEntries)
-                    {
-                        ogdf::edge e = adj->theEdge();
-                        if (adj != e->adjSource())
-                            continue;
+                    C.G.forEachAdj(vOrig, [&](node /*neighbor*/, edge e) {
+                        if (C.G.source(e) != vOrig)  // Only process from source side
+                            return;
 
-                        ogdf::node src = e->source();
-                        ogdf::node tgt = e->target();
+                        ogdf::node src = C.G.source(e);
+                        ogdf::node tgt = C.G.target(e);
 
                         ogdf::node srcCc = origToCc[src];
                         ogdf::node tgtCc = origToCc[tgt];
@@ -6213,7 +6191,7 @@ namespace solver
                         {
                             assert(false && "Edge with endpoint outside connected component");
                         }
-                    }
+                    });
                 }
 
                 std::cerr << "[spqr-tree]   subgraph |V|=" << ccGraph.numberOfNodes()
@@ -6226,8 +6204,8 @@ namespace solver
                     int localE = 0;
                     for (ogdf::edge eCc : ccGraph.edges)
                     {
-                        ogdf::node uOrig = ccToOrig[eCc->source()];
-                        ogdf::node vOrig = ccToOrig[eCc->target()];
+                        ogdf::node uOrig = ccToOrig[ccGraph.source(eCc)];
+                        ogdf::node vOrig = ccToOrig[ccGraph.target(eCc)];
                         (void)localE;
 
                         std::string eName = makeId("E", edgeCtr++);
@@ -6267,8 +6245,8 @@ namespace solver
                         if (!eCc)
                             continue;
 
-                        ogdf::node a = eCc->source();
-                        ogdf::node b = eCc->target();
+                        ogdf::node a = ccGraph.source(eCc);
+                        ogdf::node b = ccGraph.target(eCc);
 
                         if (markCc[a] != stampCc)
                         {
@@ -6300,13 +6278,26 @@ namespace solver
                         ogdf::node vOrig = ccToOrig[vCc];
                         out << "C " << C.node2name[vOrig];
 
-                        ogdf::node vBC = bc.bcproper(vCc);
-                        for (ogdf::adjEntry adj : vBC->adjEntries)
+                        // Iterate over all B-nodes and check if this cut vertex has edges there
+                        for (uint32_t bIdx = 0; bIdx < bc.numberOfBComps(); ++bIdx)
                         {
-                            ogdf::node bNode = adj->twinNode();
-                            auto it = bcNodeToBlockName.find(bNode);
-                            assert(it != bcNodeToBlockName.end());
-                            out << " " << it->second;
+                            ogdf::node bNode{bIdx};
+                            // Check if this cut vertex has edges in this block
+                            bool hasEdgesInBlock = false;
+                            for (ogdf::edge eCc : bc.hEdges(bNode))
+                            {
+                                if (ccGraph.source(eCc) == vCc || ccGraph.target(eCc) == vCc)
+                                {
+                                    hasEdgesInBlock = true;
+                                    break;
+                                }
+                            }
+                            if (hasEdgesInBlock)
+                            {
+                                auto it = bcNodeToBlockName.find(bNode);
+                                assert(it != bcNodeToBlockName.end());
+                                out << " " << it->second;
+                            }
                         }
                         out << "\n";
                     }
@@ -6340,8 +6331,8 @@ namespace solver
                         if (!eCc)
                             continue;
 
-                        ogdf::node a = eCc->source();
-                        ogdf::node b = eCc->target();
+                        ogdf::node a = ccGraph.source(eCc);
+                        ogdf::node b = ccGraph.target(eCc);
 
                         if (markCc[a] != stampCc)
                         {
@@ -6367,8 +6358,8 @@ namespace solver
                             if (!eCc)
                                 continue;
 
-                            ogdf::node uOrig = ccToOrig[eCc->source()];
-                            ogdf::node vOrig = ccToOrig[eCc->target()];
+                            ogdf::node uOrig = ccToOrig[ccGraph.source(eCc)];
+                            ogdf::node vOrig = ccToOrig[ccGraph.target(eCc)];
 
                             std::string eName = makeId("E", edgeCtr++);
                             writeE(eName, blockName, C.node2name[uOrig], C.node2name[vOrig]);
@@ -6400,8 +6391,8 @@ namespace solver
                         if (!eCc)
                             continue;
 
-                        auto itS = ccToBlock.find(eCc->source());
-                        auto itT = ccToBlock.find(eCc->target());
+                        auto itS = ccToBlock.find(ccGraph.source(eCc));
+                        auto itT = ccToBlock.find(ccGraph.target(eCc));
                         if (itS == ccToBlock.end() || itT == ccToBlock.end())
                             continue;
 
@@ -6458,7 +6449,7 @@ namespace solver
 
                             ++stampBlk;
 
-                            const ogdf::Graph &skelG = spqr.skeleton(treeNode).getGraph();
+                            const auto &skelG = spqr.skeleton(treeNode).getGraph();
                             const ogdf::Skeleton &skel = spqr.skeleton(treeNode);
 
                             for (ogdf::node h : skelG.nodes)
@@ -6479,10 +6470,11 @@ namespace solver
                         }
 
                         // Write V-lines (virtual edges in SPQR tree)
-                        for (ogdf::edge te : spqr.tree().edges)
+                        const auto& spqrTree = spqr.tree();
+                        for (ogdf::edge te : spqrTree.edges)
                         {
-                            ogdf::node src = te->source();
-                            ogdf::node tgt = te->target();
+                            ogdf::node src = spqrTree.source(te);
+                            ogdf::node tgt = spqrTree.target(te);
 
                             std::string vName = makeId("V", virtEdgeCtr++);
 
@@ -6491,9 +6483,10 @@ namespace solver
                             if (eSrc)
                             {
                                 const ogdf::Skeleton &skelSrc = spqr.skeleton(src);
+                                const auto& skelGraph = skelSrc.getGraph();
 
-                                ogdf::node uSk = eSrc->source();
-                                ogdf::node vSk = eSrc->target();
+                                ogdf::node uSk = skelGraph.source(eSrc);
+                                ogdf::node vSk = skelGraph.target(eSrc);
 
                                 ogdf::node uB = skelSrc.original(uSk);
                                 ogdf::node vB = skelSrc.original(vSk);
@@ -6516,8 +6509,9 @@ namespace solver
 
                             // Fallback (should be rare): scan src skeleton for the virtual edge to tgt
                             const ogdf::Skeleton &skelSrc = spqr.skeleton(src);
+                            const auto& skelGraphSrc = skelSrc.getGraph();
                             ogdf::edge virtualEdge = nullptr;
-                            for (ogdf::edge e : skelSrc.getGraph().edges)
+                            for (ogdf::edge e : skelGraphSrc.edges)
                             {
                                 if (skelSrc.isVirtual(e) && skelSrc.twinTreeNode(e) == tgt)
                                 {
@@ -6528,8 +6522,8 @@ namespace solver
                             if (!virtualEdge)
                                 continue;
 
-                            ogdf::node uB = skelSrc.original(virtualEdge->source());
-                            ogdf::node vB = skelSrc.original(virtualEdge->target());
+                            ogdf::node uB = skelSrc.original(skelGraphSrc.source(virtualEdge));
+                            ogdf::node vB = skelSrc.original(skelGraphSrc.target(virtualEdge));
                             if (!uB || !vB)
                                 continue;
 
@@ -6562,8 +6556,8 @@ namespace solver
                                 if (!eCc)
                                     continue;
 
-                                ogdf::node uOrig = ccToOrig[eCc->source()];
-                                ogdf::node vOrig = ccToOrig[eCc->target()];
+                                ogdf::node uOrig = ccToOrig[ccGraph.source(eCc)];
+                                ogdf::node vOrig = ccToOrig[ccGraph.target(eCc)];
 
                                 std::string eName = makeId("E", edgeCtr++);
                                 writeE(eName,
@@ -7299,10 +7293,11 @@ namespace solver
 
                 std::vector<std::pair<int,int>> directed_edges;
                 directed_edges.reserve(cc.edges.size());
+                auto& G = ctx().G;
                 for (ogdf::edge e : cc.edges)
                 {
-                    int src = nodeToId[e->source()];
-                    int tgt = nodeToId[e->target()];
+                    int src = nodeToId[G.source(e)];
+                    int tgt = nodeToId[G.target(e)];
                     directed_edges.emplace_back(src, tgt);
                 }
 
@@ -7438,19 +7433,17 @@ namespace solver
             {
                 MARK_SCOPE_MEM("ub_doubled/findMini");
                 logger::info("Finding mini-superbubbles (trivial)..");
-                for (auto &e : G.edges)
+                for (auto e : G.edges)
                 {
-                    auto a = e->source();
-                    auto b = e->target();
-                    if (a->outdeg() == 1 && b->indeg() == 1)
+                    auto a = G.source(e);
+                    auto b = G.target(e);
+                    if (G.outdeg(a) == 1 && G.indeg(b) == 1)
                     {
                         bool ok = true;
-                        for (auto &w : b->adjEntries)
-                        {
-                            auto e2 = w->theEdge();
-                            if (e2->source() == b && e2->target() == a)
-                            { ok = false; break; }
-                        }
+                        G.forEachAdj(b, [&](node neighbor, edge e2) {
+                            if (G.source(e2) == b && G.target(e2) == a)
+                            { ok = false; }
+                        });
                         if (ok) tryCommitSuperbubble(a, b);
                     }
                 }
@@ -7470,7 +7463,7 @@ namespace solver
                 for (ogdf::node v : G.nodes)
                     work[compIdx[v]].nodes.push_back(v);
                 for (ogdf::edge e : G.edges)
-                    work[compIdx[e->source()]].edges.push_back(e);
+                    work[compIdx[G.source(e)]].edges.push_back(e);
             }
 
             logger::info("Doubled ultrabubbles: {} CCs", nCC);

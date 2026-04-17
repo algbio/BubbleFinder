@@ -21,11 +21,8 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             ++dfsIndex;
         }
         
-        for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
-        {
-            if (!adj->isSource()) continue;
-            ogdf::edge e = adj->theEdge();
-            ogdf::node v = adj->twinNode();
+        graph.forEachAdj(u, [&](node v, edge e) {
+            if (graph.source(e) != u) return;  // only outgoing edges
             
             if (colour[v] == 0) {
                 etype[e] = TREE;
@@ -35,7 +32,7 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             } else {
                 etype[e] = (disc[u] < disc[v]) ? FORWARD : CROSS;
             }
-        }
+        });
         colour[u] = 2;
     };
     
@@ -57,8 +54,8 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
     ogdf::node y = nullptr;
 
     for (ogdf::edge e : graph.edges) {
-        ogdf::node u = e->source();
-        ogdf::node v = e->target();
+        ogdf::node u = graph.source(e);
+        ogdf::node v = graph.target(e);
         
         if (etype[e] == TREE) {
             T.newEdge(mapToTree[u], mapToTree[v]);
@@ -80,13 +77,12 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
     {
         std::function<void(ogdf::node, ogdf::node)> dfsSubtree =
             [&](ogdf::node u, ogdf::node prev) {
-                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-                    ogdf::node v = adj->twinNode();
-                    if (v == prev) continue;
+                T.forEachAdj(u, [&](node v, edge e) {
+                    if (T.source(e) != u) return;
+                    if (v == prev) return;
                     dfsSubtree(v, u);
                     backedgeTailSubtreeCount[u] += backedgeTailSubtreeCount[v];
-                }
+                });
             };
 
         dfsSubtree(mapToTree[root], nullptr);
@@ -97,12 +93,11 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
                 if (c == backEdgeCount) {
                     z = mapToOriginal[u];
                 }
-                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-                    ogdf::node v = adj->twinNode();
-                    if (v == prev) continue;
+                T.forEachAdj(u, [&](node v, edge e) {
+                    if (T.source(e) != u) return;
+                    if (v == prev) return;
                     dfs2(v, u);
-                }
+                });
             };
 
         dfs2(mapToTree[root], nullptr);
@@ -125,15 +120,14 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             mapToGp[v] = Gp.newNode();
 
         for (ogdf::edge e : graph.edges) {
-            ogdf::node u = e->source();
-            ogdf::node v = e->target();
+            ogdf::node u = graph.source(e);
+            ogdf::node v = graph.target(e);
             if (inInterval(u) && inInterval(v) && etype[e] == EdgeType::TREE)
                 continue;
             Gp.newEdge(mapToGp[u], mapToGp[v]);
         }
 
         if (!isAcyclic(Gp)) {
-            // Graph without interval is not acyclic, so there is no feedback set
             return;
         }
     }
@@ -156,12 +150,11 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             [&](ogdf::node u) {
                 vis[u] = true;
                 discDfs[u] = ++timeCounter;
-                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue; // follow children only
-                    ogdf::node v = adj->twinNode();
-                    if (vis[v]) continue;
+                graph.forEachAdj(u, [&](node v, edge e) {
+                    if (graph.source(e) != u) return;
+                    if (vis[v]) return;
                     dfsAssignTime(v);
-                }
+                });
                 fin[u] = ++timeCounter;
             };
         
@@ -170,15 +163,14 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
         vis = ogdf::NodeArray<bool>(graph, false);
 
         std::vector<ogdf::node> stk;
-        stk.reserve(graph.nodes.size());
+        stk.reserve(graph.numberOfNodes());
         std::function<void(ogdf::node)> dfsOrder =
             [&](ogdf::node u) {
                 vis[u] = true;
-                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-                    ogdf::node v = adj->twinNode();
+                graph.forEachAdj(u, [&](node v, edge e) {
+                    if (graph.source(e) != u) return;
                     if (!vis[v]) dfsOrder(v);
-                }
+                });
                 stk.push_back(u);
             };
 
@@ -190,43 +182,36 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             stk.pop_back();
             
             // maxi computation
-            for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                if (!adj->isSource()) continue;
-
-                ogdf::edge e  = adj->theEdge();
-                ogdf::node v  = adj->twinNode();
+            graph.forEachAdj(u, [&](node v, edge e) {
+                if (graph.source(e) != u) return;
 
                 if (etype[e] == EdgeType::BACK) {
-                    continue;
+                    return;
                 }
 
                 if (dfsNum[y] <= dfsNum[u] &&
                     dfsNum[u]   < dfsNum[z] &&
                     dfsNum[u] + 1 == dfsNum[v]) {
-                    continue;
+                    return;
                 }
 
                 if (dfsNum[v] <= dfsNum[z]) {
                     maxi[u] = std::max(maxi[u], dfsNum[v]);
-                } else { // dfsNum[v] > dfsNum[z]
+                } else {
                     maxi[u] = std::max(maxi[u], maxi[v]);
                 }
-            }
+            });
 
             // loop computation
             if (isDescendant(z, u)) {
                 loop[u] = true;
             } else {
-                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
-                    if (!adj->isSource()) continue;
-
-                    ogdf::edge e  = adj->theEdge();
-                    ogdf::node v  = adj->twinNode();
-
+                graph.forEachAdj(u, [&](node v, edge e) {
+                    if (graph.source(e) != u) return;
                     if (etype[e] != EdgeType::BACK) {
-                        loop[u] |= (dfsNum[v] > dfsNum[z] && loop[v]);
+                        loop[u] = loop[u] || (dfsNum[v] > dfsNum[z] && loop[v]);
                     }
-                }
+                });
             }
         }
     }
@@ -250,21 +235,18 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             int        cntVnext   = 0;
             ogdf::edge edgeToAdd  = nullptr;
 
-            for (ogdf::adjEntry adj = v->firstAdj(); adj; adj = adj->succ()) {
-                if (!adj->isSource()) continue;
-                
-                ogdf::edge e  = adj->theEdge();
-                ogdf::node v2 = adj->twinNode();
+            graph.forEachAdj(v, [&](node v2, edge e) {
+                if (graph.source(e) != v) return;
                 
                 if (dfsNum[v] + 1 == dfsNum[v2]) {
                     if (edgeToAdd != nullptr) {
                         edgeToAdd = nullptr;
-                        break;
+                        return;  // can't break, but we check cntVnext later
                     } 
                     edgeToAdd = e;
                     ++cntVnext;
                 }
-            }
+            });
             if (cntVnext == 1 && edgeToAdd != nullptr) {
                 result.push_back(edgeToAdd);
             }
@@ -296,8 +278,8 @@ void FeedbackArcSet::find_feedback_arcs(
     }
 
     for (ogdf::edge e : G.edges) {
-        ogdf::node u  = e->source();
-        ogdf::node w  = e->target();
+        ogdf::node u  = G.source(e);
+        ogdf::node w  = G.target(e);
         ogdf::node uC = orig2copy[u];
         ogdf::node wC = orig2copy[w];
         if (uC && wC) {
@@ -347,7 +329,7 @@ std::vector<ogdf::edge> FeedbackArcSet::run() {
         return res;
     } else {
         std::vector<ogdf::edge> res;
-        for (ogdf::edge &e : this->G.edges) res.push_back(e);
+        for (ogdf::edge e : this->G.edges) res.push_back(e);
         return res;
     }
 }
