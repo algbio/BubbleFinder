@@ -2488,7 +2488,6 @@ namespace solver
 
         void checkBlockByCutVertices(const BlockData &blk, const CcData &cc)
         {
-            MARK_SCOPE_MEM("sb/checkCutVertices");
 
             if (!isAcyclic(*blk.Gblk))
             {
@@ -2570,7 +2569,6 @@ namespace solver
 
         void solveSPQR(BlockData &blk, const CcData &cc)
         {
-            MARK_SCOPE_MEM("sb/solveSPQR");
 
             if (!blk.spqr || blk.Gblk->numberOfNodes() < 3)
             {
@@ -2610,15 +2608,22 @@ namespace solver
 
             logger::info("Finding mini-superbubbles..");
 
-            for (auto e : C.G.edges)
-            {
+
+            std::vector<ogdf::edge> edges_vec;
+            edges_vec.reserve(C.G.numberOfEdges());
+            for (auto e : C.G.edges) edges_vec.push_back(e);
+
+            size_t numThreads = std::thread::hardware_concurrency();
+            numThreads = std::min({(size_t)C.threads, numThreads});
+            if (numThreads == 0) numThreads = 1;
+
+            auto check_and_emit = [&](ogdf::edge e) {
                 auto a = C.G.source(e);
                 auto b = C.G.target(e);
-
                 if (C.G.outdeg(a) == 1 && C.G.indeg(b) == 1)
                 {
                     bool ok = true;
-                    C.G.forEachAdj(b, [&](node other, edge e2) {
+                    C.G.forEachAdj(b, [&](node /*other*/, edge e2) {
                         auto src = C.G.source(e2);
                         auto tgt = C.G.target(e2);
                         if (src == b && tgt == a)
@@ -2626,11 +2631,44 @@ namespace solver
                             ok = false;
                         }
                     });
-
                     if (ok)
                     {
                         addSuperbubble(a, b);
                     }
+                }
+            };
+
+            if (numThreads <= 1)
+            {
+                for (auto e : edges_vec) check_and_emit(e);
+            }
+            else
+            {
+                const size_t n = edges_vec.size();
+                std::vector<std::vector<std::pair<ogdf::node, ogdf::node>>> results(numThreads);
+
+                std::vector<std::thread> threads;
+                threads.reserve(numThreads);
+                for (size_t tid = 0; tid < numThreads; ++tid)
+                {
+                    const size_t start = (n * tid) / numThreads;
+                    const size_t end = (n * (tid + 1)) / numThreads;
+                    threads.emplace_back([&, tid, start, end]() {
+                        auto &local = results[tid];
+                        local.reserve(std::max<size_t>(16, (end - start) / 64));
+                        tls_superbubble_collector = &local;
+                        for (size_t i = start; i < end; ++i)
+                        {
+                            check_and_emit(edges_vec[i]);
+                        }
+                        tls_superbubble_collector = nullptr;
+                    });
+                }
+                for (auto &t : threads) t.join();
+
+                for (auto &local : results)
+                {
+                    for (auto &p : local) tryCommitSuperbubble(p.first, p.second);
                 }
             }
 
@@ -2692,7 +2730,6 @@ namespace solver
         static void buildBlockDataParallel(const CcData &cc, BlockData &blk)
         {
             {
-                MARK_SCOPE_MEM("sb/blockData/build");
                 blk.Gblk = std::make_unique<Graph>();
 
                 blk.toOrig.init(*blk.Gblk, nullptr);
@@ -2746,7 +2783,6 @@ namespace solver
             if (blk.Gblk->numberOfNodes() >= 3)
             {
                 {
-                    MARK_SCOPE_MEM("sb/blockData/spqr_build");
                     blk.spqr = std::make_unique<StaticSPQRTree>(*blk.Gblk);
                 }
                 const auto &T = blk.spqr->tree();
@@ -2826,14 +2862,14 @@ namespace solver
                 {
                     CcData *cc = (*components)[cid].get();
 
+                    if (!cc) continue;
+
                     {
-                        MARK_SCOPE_MEM("sb/worker_bcTree/build");
                         cc->bc = std::make_unique<BCTree>(*cc->Gcc);
                     }
 
                     std::vector<BlockPrep> localPreps;
                     {
-                        MARK_SCOPE_MEM("sb/worker_bcTree/collect_B_nodes");
                         for (node v : cc->bc->bcTree().nodes)
                         {
                             if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp)
@@ -2970,6 +3006,7 @@ namespace solver
 
                 tls_superbubble_collector = nullptr;
                 results[i] = std::move(local);
+                allBlocks[i].reset();
             }
             return nullptr;
         }
@@ -3054,10 +3091,13 @@ namespace solver
 
                                     for (size_t ci = startIndex; ci < endIndex; ++ci) {
                                         int cid = static_cast<int>(ci);
+                                        if (edgeBuckets[cid].size() < bucket[cid].size()) {
+                                            continue;
+                                        }
+
                                         auto cc = std::make_unique<CcData>();
 
                                         {
-                                            MARK_SCOPE_MEM("sb/gcc/rebuild");
                                             cc->Gcc = std::make_unique<Graph>();
                                             cc->toOrig.init(*cc->Gcc, nullptr);
                         
@@ -3565,30 +3605,6 @@ namespace solver
 
             canonicalize_pair(s);
 
-            if (tls_snarl_buffer && tag &&
-                (std::strcmp(tag, "S") == 0 ||
-                 std::strcmp(tag, "P") == 0 ||
-                 std::strcmp(tag, "RR") == 0) &&
-                s.size() == 2)
-            {
-
-                auto strip_sign = [](const std::string &x)
-                {
-                    if (!x.empty() && (x.back() == '+' || x.back() == '-'))
-                    {
-                        return x.substr(0, x.size() - 1);
-                    }
-                    return x;
-                };
-
-                std::string aName = strip_sign(s[0]);
-                std::string bName = strip_sign(s[1]);
-                if (aName > bName)
-                    std::swap(aName, bName);
-
-                tls_spqr_seen_endpoint_pairs.insert({aName, bName});
-            }
-
             addSnarl(std::move(s));
         }
 
@@ -4081,7 +4097,8 @@ namespace solver
                 std::vector<ogdf::node> nodesInOrderGcc;
                 std::vector<ogdf::node> nodesInOrderSkel;
 
-                ogdf::EdgeArray<EdgeDPState *> skelToState(T);
+                std::unordered_map<uint32_t, EdgeDPState *> skelToState;
+                skelToState.reserve(8);
 
                 std::vector<ogdf::edge> adjEdgesG;
                 std::vector<adjEntry> adjEntriesSkel;
@@ -4094,58 +4111,69 @@ namespace solver
                     edge treeE = blk.skel2tree.at(e);
 
                     EdgeDPState *child = (B == blk.parent(sNode) ? &dp[treeE].up : &dp[treeE].down);
-                    skelToState[treeE] = child;
+                    skelToState[treeE.idx] = child;
                 }
 
                 {
-                    std::function<void(ogdf::node, ogdf::node)> dfs =
-                        [&](ogdf::node u, ogdf::node prev)
-                    {
-                        nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
-                        nodesInOrderSkel.push_back(u);
-
-                        skelG.forEachAdj(u, [&](node neighbor, edge e) {
-
-                            if (neighbor == prev)
-                                return;
-
-                            if (neighbor == skelG.firstNode() && u != skelG.firstNode())
-                            {
-                                if (skel.realEdge(e))
-                                {
-                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(e)]);
-                                }
-                                else
-                                {
-                                    adjEdgesG.push_back(nullptr);
-                                }
-                                adjEntriesSkel.push_back(adjEntry{neighbor, e});
-                            }
-
-                            if (neighbor == skelG.firstNode() || neighbor == prev)
-                                return;
-
-                            if (skel.realEdge(e))
-                            {
-                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(e)]);
-                            }
-                            else
-                            {
-                                adjEdgesG.push_back(nullptr);
-                            }
-                            adjEntriesSkel.push_back(adjEntry{neighbor, e});
-
-                            dfs(neighbor, u);
-                        });
-                    };
-
                     node firstNode = skelG.firstNode();
                     node secondNode = nullptr;
                     skelG.forEachAdj(firstNode, [&](node neighbor, edge) {
                         if (!secondNode) secondNode = neighbor;
                     });
                     if (secondNode)
-                        dfs(firstNode, secondNode);
+                    {
+                        ogdf::node u = firstNode;
+                        ogdf::node prev = secondNode;
+
+                        while (true)
+                        {
+                            nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
+                            nodesInOrderSkel.push_back(u);
+
+                            ogdf::node nextU = nullptr;
+                            ogdf::edge nextE = nullptr;
+                            bool closing = false;
+                            ogdf::edge closingEdge = nullptr;
+
+                            skelG.forEachAdj(u, [&](ogdf::node neighbor, ogdf::edge e) {
+                                if (neighbor == prev)
+                                    return;
+                                if (neighbor == firstNode && u != firstNode)
+                                {
+                                    closing = true;
+                                    closingEdge = e;
+                                    return;
+                                }
+                                if (neighbor == firstNode || neighbor == prev)
+                                    return;
+
+                                nextU = neighbor;
+                                nextE = e;
+                            });
+
+                            if (closing)
+                            {
+                                if (skel.realEdge(closingEdge))
+                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(closingEdge)]);
+                                else
+                                    adjEdgesG.push_back(nullptr);
+                                adjEntriesSkel.push_back(adjEntry{firstNode, closingEdge});
+                                break;
+                            }
+
+                            if (!nextU)
+                                break;
+
+                            if (skel.realEdge(nextE))
+                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(nextE)]);
+                            else
+                                adjEdgesG.push_back(nullptr);
+                            adjEntriesSkel.push_back(adjEntry{nextU, nextE});
+
+                            prev = u;
+                            u = nextU;
+                        }
+                    }
                 }
 
                 std::vector<bool> cuts(nodesInOrderGcc.size(), false);
@@ -4175,7 +4203,7 @@ namespace solver
                     else
                     {
                         edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
-                        EdgeDPState *state0 = skelToState[treeE0];
+                        EdgeDPState *state0 = skelToState.at(treeE0.idx);
                         if (blk.toCc[state0->s] == uGcc)
                         {
                             if (state0->localMinusS == 0 && state0->localPlusS > 0)
@@ -4200,7 +4228,7 @@ namespace solver
                     else
                     {
                         edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
-                        EdgeDPState *state1 = skelToState[treeE1];
+                        EdgeDPState *state1 = skelToState.at(treeE1.idx);
                         if (blk.toCc[state1->s] == uGcc)
                         {
                             if (state1->localMinusS == 0 && state1->localPlusS > 0)
@@ -4235,7 +4263,7 @@ namespace solver
                         else
                         {
                             edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
-                            EdgeDPState *state0 = skelToState[treeE0];
+                            EdgeDPState *state0 = skelToState.at(treeE0.idx);
                             if (uGcc == blk.toCc[state0->s])
                             {
                                 res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
@@ -4257,7 +4285,7 @@ namespace solver
                         else
                         {
                             edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
-                            EdgeDPState *state1 = skelToState[treeE1];
+                            EdgeDPState *state1 = skelToState.at(treeE1.idx);
                             if (uGcc == blk.toCc[state1->s])
                             {
                                 res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
@@ -4694,7 +4722,6 @@ namespace solver
             }
             void solveSPQR(BlockData &blk, const CcData &cc)
             {
-                MARK_SCOPE_MEM("sn/solveSPQR");
                 PROFILE_FUNCTION();
 
                 if (!blk.spqr)
@@ -4960,35 +4987,58 @@ namespace solver
 
             VLOG << "[DEBUG][processCutNodes] -----\n";
 
+            const uint32_t numB = cc.bc->numberOfBComps();
+            ogdf::EdgeArray<uint32_t> edge2block(*cc.Gcc, UINT32_MAX);
+            for (uint32_t bIdx = 0; bIdx < numB; ++bIdx)
+            {
+                ogdf::node bNode{bIdx};
+                for (ogdf::edge eCc : cc.bc->hEdges(bNode))
+                {
+                    edge2block[eCc] = bIdx;
+                }
+            }
+
             for (node v : cc.Gcc->nodes)
             {
                 node vG = cc.nodeToOrig[v];
                 const std::string &name = C.node2name[vG];
-
                 if (cc.bc->typeOfGNode(v) == BCTree::GNodeType::CutVertex)
                 {
                     cc.isCutNode[v] = true;
 
+                    struct BlockFlags { uint32_t bIdx; bool hasPlus; bool hasMinus; };
+                    std::vector<BlockFlags> blocks;
+                    blocks.reserve(8);
+
+                    cc.Gcc->forEachAdj(v, [&](ogdf::node /*nb*/, ogdf::edge eCc) {
+                        ogdf::edge eG = cc.edgeToOrig[eCc];
+                        if (!eG) return;
+                        uint32_t bIdx = edge2block[eCc];
+                        if (bIdx == UINT32_MAX) return;  // edge not in any block (shouldn't happen)
+                        EdgePartType outType = getNodeEdgeType(vG, eG);
+
+                        BlockFlags *slot = nullptr;
+                        for (auto &bf : blocks) {
+                            if (bf.bIdx == bIdx) { slot = &bf; break; }
+                        }
+                        if (!slot) {
+                            blocks.push_back({bIdx, false, false});
+                            slot = &blocks.back();
+                        }
+                        if (outType == EdgePartType::PLUS)  slot->hasPlus  = true;
+                        if (outType == EdgePartType::MINUS) slot->hasMinus = true;
+                    });
+
                     bool isGood = true;
-
-                    // Iterate over all blocks and check which ones contain this vertex
-                    for (uint32_t bIdx = 0; bIdx < cc.bc->numberOfBComps(); ++bIdx)
-                    {
-                        node uT{bIdx};  // B-node
-                        std::vector<ogdf::edge> outPlus, outMinus;
-                        getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::PLUS, outPlus);
-                        getOutgoingEdgesInBlock(cc, v, uT, EdgePartType::MINUS, outMinus);
-
-                        if (outPlus.size() > 0 && outMinus.size() > 0)
-                        {
+                    for (auto &bf : blocks) {
+                        if (bf.hasPlus && bf.hasMinus) {
                             isGood = false;
-                            cc.lastBad[v] = uT;
+                            cc.lastBad[v] = ogdf::node{bf.bIdx};
                             cc.badCutCount[v]++;
                         }
                     }
                     cc.isGoodCutNode[v] = isGood;
                 }
-
                 VLOG << "[DEBUG][processCutNodes] node " << name
                      << "(Gcc idx=" << v.index() << ")"
                      << "isCutNode=" << (cc.isCutNode[v] ? "true" : "false")
@@ -5135,7 +5185,6 @@ namespace solver
 
         void buildBlockData(BlockData &blk, CcData &cc)
         {
-            MARK_SCOPE_MEM("sn/blockData/build");
             PROFILE_FUNCTION();
 
             auto &C = ctx();
@@ -5152,76 +5201,50 @@ namespace solver
             blk.blkDegPlus.init(*blk.Gblk, 0);
             blk.blkDegMinus.init(*blk.Gblk, 0);
 
-            std::vector<ogdf::node> verts_vec;
+            struct EdgeRec { ogdf::edge eCc; ogdf::node uC; ogdf::node vC; };
+            std::vector<EdgeRec> edges_vec;
+            for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
             {
-                size_t approx = 0;
-                for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
-                {
-                    (void)hE;
-                    ++approx;
-                }
-                verts_vec.reserve(2 * approx);
-
-                VLOG << "[DEBUG][buildBlockData]  hEdges for this B-node:\n";
-                for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
-                {
-                    ogdf::edge eCc = cc.bc->original(hE);
-                    ogdf::node uC = cc.Gcc->source(eCc);
-                    ogdf::node vC = cc.Gcc->target(eCc);
-                    ogdf::node uG = cc.nodeToOrig[uC];
-                    ogdf::node vG = cc.nodeToOrig[vC];
-                    const std::string &uName = C.node2name[uG];
-                    const std::string &vName = C.node2name[vG];
-
-                    VLOG << "    Gcc edge: " << uName << " -- " << vName
-                         << " (Gcc idx " << uC.index() << " -- " << vC.index() << ")\n";
-
-                    verts_vec.push_back(uC);
-                    verts_vec.push_back(vC);
-                }
-
-                std::sort(verts_vec.begin(), verts_vec.end(),
-                          [](ogdf::node a, ogdf::node b)
-                          { return a.index() < b.index(); });
-                verts_vec.erase(std::unique(verts_vec.begin(), verts_vec.end()), verts_vec.end());
+                ogdf::edge eCc = cc.bc->original(hE);
+                edges_vec.push_back({eCc, cc.Gcc->source(eCc), cc.Gcc->target(eCc)});
             }
+
+            std::vector<ogdf::node> verts_vec;
+            verts_vec.reserve(2 * edges_vec.size());
+            for (const auto &er : edges_vec)
+            {
+                verts_vec.push_back(er.uC);
+                verts_vec.push_back(er.vC);
+            }
+            std::sort(verts_vec.begin(), verts_vec.end(),
+                      [](ogdf::node a, ogdf::node b)
+                      { return a.index() < b.index(); });
+            verts_vec.erase(std::unique(verts_vec.begin(), verts_vec.end()), verts_vec.end());
 
             std::unordered_map<ogdf::node, ogdf::node> cc_to_blk;
             cc_to_blk.reserve(verts_vec.size());
 
-            VLOG << "[DEBUG][buildBlockData]  Block vertices (Gcc -> Gblk):\n";
             for (ogdf::node vCc : verts_vec)
             {
                 ogdf::node vB = blk.Gblk->newNode();
                 cc_to_blk[vCc] = vB;
                 blk.toCc[vB] = vCc;
-                ogdf::node vG = cc.nodeToOrig[vCc];
-                blk.nodeToOrig[vB] = vG;
-
-                VLOG << "    Gcc idx " << vCc.index()
-                     << " -> Gblk idx " << vB.index()
-                     << " name=" << C.node2name[vG] << "\n";
+                blk.nodeToOrig[vB] = cc.nodeToOrig[vCc];
             }
 
-            VLOG << "[DEBUG][buildBlockData]  Block edges (Gblk):\n";
-            for (ogdf::edge hE : cc.bc->hEdges(blk.bNode))
+            for (const auto &er : edges_vec)
             {
-                ogdf::edge eCc = cc.bc->original(hE);
-                auto srcIt = cc_to_blk.find(cc.Gcc->source(eCc));
-                auto tgtIt = cc_to_blk.find(cc.Gcc->target(eCc));
+                auto srcIt = cc_to_blk.find(er.uC);
+                auto tgtIt = cc_to_blk.find(er.vC);
                 if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end())
                 {
                     ogdf::edge eB = blk.Gblk->newEdge(srcIt->second, tgtIt->second);
-                    blk.edgeToOrig[eB] = cc.edgeToOrig[eCc];
+                    blk.edgeToOrig[eB] = cc.edgeToOrig[er.eCc];
 
                     ogdf::node uB = srcIt->second;
                     ogdf::node vB = tgtIt->second;
                     ogdf::node uG = blk.nodeToOrig[uB];
                     ogdf::node vG = blk.nodeToOrig[vB];
-
-                    VLOG << "    add Gblk edge: "
-                         << C.node2name[uG] << " -- " << C.node2name[vG]
-                         << " (Gblk idx " << eB.idx << ")\n";
 
                     EdgePartType tU = getNodeEdgeType(uG, blk.edgeToOrig[eB]);
                     EdgePartType tV = getNodeEdgeType(vG, blk.edgeToOrig[eB]);
@@ -5244,7 +5267,6 @@ namespace solver
             if (blk.Gblk->numberOfNodes() >= 3)
             {
                 {
-                    MARK_SCOPE_MEM("sn/blockData/spqr_build");
 
                     OGDF_ASSERT(blk.Gblk != nullptr);
                     OGDF_ASSERT(blk.Gblk->numberOfNodes() > 0);
@@ -5681,6 +5703,9 @@ namespace solver
                             SPQRsolve::solveSPQR(blk, *prep.cc);
                         }
                     }
+
+                    prep.blk.reset();
+
                     ++processed;
                 }
 
@@ -5810,12 +5835,17 @@ namespace solver
                 }
 
                 {
-                    size_t numThreads = 1; // security
+                    MARK_SCOPE_MEM("sn/phase/bcTrees");
+
+                    size_t numThreads = std::thread::hardware_concurrency();
+                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
+
+                    std::vector<std::vector<BlockPrep>> perThreadPreps(
+                        std::max<size_t>(numThreads, 1));
 
                     if (numThreads <= 1)
                     {
                         std::atomic<size_t> nextIndex{0};
-                        std::vector<std::vector<BlockPrep>> perThreadPreps(1);
                         ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
                             0,
                             1,
@@ -5824,18 +5854,68 @@ namespace solver
                             &components,
                             &perThreadPreps};
                         worker_bcTree(static_cast<void *>(args));
-                        blockPreps = std::move(perThreadPreps[0]);
                     }
                     else
                     {
-                        // (never reach, numThreads=1)
+                        std::vector<pthread_t> threads(numThreads);
+
+                        std::atomic<size_t> nextIndex{0};
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if (stackSize < kMinThreadStackSize)
+                                stackSize = kMinThreadStackSize;
+                            int err = pthread_attr_setstacksize(&attr, stackSize);
+                            if (err != 0)
+                            {
+                                std::cerr << "[Error] pthread_attr_setstacksize("
+                                          << stackSize << "): " << strerror(err) << std::endl;
+                            }
+
+                            ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
+                                tid,
+                                numThreads,
+                                nCC,
+                                &nextIndex,
+                                &components,
+                                &perThreadPreps};
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
+                            if (ret != 0)
+                            {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
+                        }
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_join(threads[tid], nullptr);
+                        }
+                    }
+
+                    size_t total = 0;
+                    for (auto &tp : perThreadPreps) total += tp.size();
+                    blockPreps.reserve(total);
+                    for (auto &tp : perThreadPreps)
+                    {
+                        blockPreps.insert(blockPreps.end(),
+                                          std::make_move_iterator(tp.begin()),
+                                          std::make_move_iterator(tp.end()));
                     }
                 }
 
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
 
-                    size_t numThreads = 1; // secutiry
+                    size_t numThreads = std::thread::hardware_concurrency();
+                    numThreads = std::min({(size_t)C.threads, blockPreps.size(), numThreads});
 
                     if (numThreads <= 1)
                     {
@@ -5850,7 +5930,46 @@ namespace solver
                     }
                     else
                     {
-                        // (never reach, numThreads=1)
+                        std::vector<pthread_t> threads(numThreads);
+
+                        std::atomic<size_t> nextIndex{0};
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if (stackSize < kMinThreadStackSize)
+                                stackSize = kMinThreadStackSize;
+                            int err = pthread_attr_setstacksize(&attr, stackSize);
+                            if (err != 0)
+                            {
+                                std::cerr << "[Error] pthread_attr_setstacksize("
+                                          << stackSize << "): " << strerror(err) << std::endl;
+                            }
+
+                            ThreadBlocksArgs *args = new ThreadBlocksArgs{
+                                tid,
+                                numThreads,
+                                blockPreps.size(),
+                                &nextIndex,
+                                                                &blockPreps};
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_block_build, args);
+                            if (ret != 0)
+                            {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
+                        }
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
             }
@@ -5922,7 +6041,8 @@ namespace solver
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_solve");
 
-                    size_t numThreads = 1; // security
+                    size_t numThreads = std::thread::hardware_concurrency();
+                    numThreads = std::min({(size_t)C.threads, blockPreps.size(), numThreads});
 
                     if (numThreads <= 1)
                     {
@@ -5937,7 +6057,46 @@ namespace solver
                     }
                     else
                     {
-                        // (never reach, numThreads=1)
+                        std::vector<pthread_t> threads(numThreads);
+
+                        std::atomic<size_t> nextIndex{0};
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_attr_t attr;
+                            pthread_attr_init(&attr);
+
+                            size_t stackSize = C.stackSize;
+                            if (stackSize < kMinThreadStackSize)
+                                stackSize = kMinThreadStackSize;
+                            int err = pthread_attr_setstacksize(&attr, stackSize);
+                            if (err != 0)
+                            {
+                                std::cerr << "[Error] pthread_attr_setstacksize("
+                                          << stackSize << "): " << strerror(err) << std::endl;
+                            }
+
+                            ThreadBlocksArgs *args = new ThreadBlocksArgs{
+                                tid,
+                                numThreads,
+                                blockPreps.size(),
+                                &nextIndex,
+                                                                &blockPreps};
+
+                            int ret = pthread_create(&threads[tid], &attr, worker_block_solve, args);
+                            if (ret != 0)
+                            {
+                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                delete args;
+                            }
+
+                            pthread_attr_destroy(&attr);
+                        }
+
+                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        {
+                            pthread_join(threads[tid], nullptr);
+                        }
                     }
                 }
             }

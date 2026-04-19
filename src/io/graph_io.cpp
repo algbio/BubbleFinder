@@ -13,15 +13,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstdio>
-#include <unistd.h>  
-#include <stdexcept> 
-#include <sstream>   
+#include <cstdint>
+#include <cstdlib>
+#include <unistd.h>
 
 using namespace ogdf;
 
 namespace GraphIO {
-
-
 
 void readStandard()
 {
@@ -34,106 +32,154 @@ void readStandard()
         throw std::runtime_error("Standard graph input not supported for spqr-tree-only, use GFA input");
     }
 
-    int n, m;
-
-    std::istream* input = nullptr;
-    std::ifstream infile;
+    std::vector<char> buf;
+    const char *srcName = C.graphPath.empty() ? "<stdin>" : C.graphPath.c_str();
 
     if (!C.graphPath.empty()) {
-        infile.open(C.graphPath);
-        if (!infile) {
-            throw std::runtime_error("Cannot open " + C.graphPath);
+        std::FILE *fp = std::fopen(C.graphPath.c_str(), "rb");
+        if (!fp) throw std::runtime_error(std::string("Cannot open ") + srcName);
+        std::fseek(fp, 0, SEEK_END);
+        long sz = std::ftell(fp);
+        std::fseek(fp, 0, SEEK_SET);
+        if (sz < 0) {
+            std::fclose(fp);
+            throw std::runtime_error(std::string("ftell failed on ") + srcName);
         }
-        input = &infile;
+        buf.resize(static_cast<size_t>(sz));
+        size_t got = std::fread(buf.data(), 1, buf.size(), fp);
+        int rd_err = std::ferror(fp);
+        std::fclose(fp);
+        if (rd_err || got != buf.size()) {
+            throw std::runtime_error(std::string("Short read on ") + srcName);
+        }
     } else {
-        input = &std::cin;
+        char chunk[1 << 16];
+        while (true) {
+            size_t got = std::fread(chunk, 1, sizeof(chunk), stdin);
+            if (got == 0) break;
+            buf.insert(buf.end(), chunk, chunk + got);
+        }
     }
+    buf.push_back('\n');
 
-    const char* srcName = C.graphPath.empty() ? "<stdin>" : C.graphPath.c_str();
+    const char *p   = buf.data();
+    const char *end = buf.data() + buf.size();
 
-    if (!(*input >> n >> m)) {
-        throw std::runtime_error(
-            std::string("Invalid .graph header in ") + srcName +
-            ": expected 'n m' on first line.");
-    }
-
-    if (n < 0 || m < 0) {
-        throw std::runtime_error(
-            std::string("Invalid .graph header in ") + srcName +
-            ": n and m must be non-negative.");
-    }
-
-    C.node2name.reserve(static_cast<size_t>(n));
-
-    struct EdgeKey {
-        std::string u, v;
-        bool operator==(const EdgeKey& o) const { return u == o.u && v == o.v; }
-    };
-    struct EdgeKeyHash {
-        std::size_t operator()(EdgeKey const& k) const {
-            std::size_t h1 = std::hash<std::string>{}(k.u);
-            std::size_t h2 = std::hash<std::string>{}(k.v);
-            std::size_t h1_h = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-            return h1_h;
+    auto skip_ws = [&]() {
+        while (p < end) {
+            char c = *p;
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') ++p;
+            else break;
         }
     };
 
-    std::unordered_set<EdgeKey, EdgeKeyHash> edges;
-    for (int i = 0; i < m; ++i) {
-        std::string u, v;
-        if (!(*input >> u >> v)) {
+    auto parse_uint = [&](uint64_t &out) -> bool {
+        skip_ws();
+        if (p >= end || *p < '0' || *p > '9') return false;
+        uint64_t v = 0;
+        while (p < end && *p >= '0' && *p <= '9') {
+            v = v * 10u + static_cast<uint64_t>(*p - '0');
+            ++p;
+        }
+        out = v;
+        return true;
+    };
+
+    // --- Header: "n m" ----------------------------------------------------
+    uint64_t n64 = 0, m64 = 0;
+    if (!parse_uint(n64) || !parse_uint(m64)) {
+        throw std::runtime_error(
+            std::string("Invalid .graph header in ") + srcName +
+            ": expected 'n m' (non-negative integers) on the first line.");
+    }
+    if (n64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error(std::string("n too large in ") + srcName +
+                                 " (.graph reader uses 32-bit node IDs).");
+    }
+    const uint32_t n = static_cast<uint32_t>(n64);
+    const size_t   m = static_cast<size_t>(m64);
+
+    // --- Parse all m edges as (uint32_t, uint32_t) -----------------------
+    std::vector<std::pair<uint32_t, uint32_t>> edges_raw;
+    edges_raw.reserve(m);
+    for (size_t i = 0; i < m; ++i) {
+        uint64_t u, v;
+        if (!parse_uint(u) || !parse_uint(v)) {
             std::ostringstream oss;
-            oss << "Unexpected end of file while reading edge " << (i + 1)
-                << " of " << m << " in " << srcName
-                << " (expected 'u v' on each line).";
+            oss << "Failed to parse edge " << (i + 1) << " of " << m
+                << " in " << srcName
+                << " (expected two non-negative integers per line; "
+                << ".graph reader requires integer node IDs).";
             throw std::runtime_error(oss.str());
         }
-        edges.insert({u, v});
+        if (u >= n || v >= n) {
+            std::ostringstream oss;
+            oss << "Edge " << (i + 1) << " in " << srcName
+                << " references node id (" << u << " or " << v
+                << ") out of range [0, " << n << ").";
+            throw std::runtime_error(oss.str());
+        }
+        edges_raw.push_back({static_cast<uint32_t>(u), static_cast<uint32_t>(v)});
+    }
+    std::vector<char>().swap(buf);
+    auto encode = [](uint32_t u, uint32_t v) -> uint64_t {
+        return (static_cast<uint64_t>(u) << 32) | static_cast<uint64_t>(v);
+    };
+
+    std::unordered_set<uint64_t> edge_set;
+    edge_set.reserve(edges_raw.size() * 2);
+    std::vector<std::pair<uint32_t, uint32_t>> edges_ordered;
+    edges_ordered.reserve(edges_raw.size());
+    for (const auto &e : edges_raw) {
+        if (edge_set.insert(encode(e.first, e.second)).second) {
+            edges_ordered.push_back(e);
+        }
+    }
+    std::vector<std::pair<uint32_t, uint32_t>>().swap(edges_raw);
+
+    std::vector<ogdf::node> id2node(n, nullptr);
+    C.node2name.reserve(n);
+    C.name2node.reserve(n);
+    for (const auto &e : edges_ordered) {
+        if (!id2node[e.first]) {
+            ogdf::node v = C.G.newNode();
+            id2node[e.first] = v;
+            std::string name = std::to_string(e.first);
+            C.node2name[v] = name;
+            C.name2node[std::move(name)] = v;
+        }
+        if (!id2node[e.second]) {
+            ogdf::node v = C.G.newNode();
+            id2node[e.second] = v;
+            std::string name = std::to_string(e.second);
+            C.node2name[v] = name;
+            C.name2node[std::move(name)] = v;
+        }
     }
 
-    std::unordered_set<EdgeKey, EdgeKeyHash> processed;
+    std::unordered_set<uint64_t> processed;
+    processed.reserve(edges_ordered.size() * 2);
+    for (const auto &e : edges_ordered) {
+        uint64_t key = encode(e.first, e.second);
+        if (!processed.insert(key).second) continue;
 
-    for (auto const& e : edges) {
-        if (processed.count(e)) continue;
+        uint64_t revkey = encode(e.second, e.first);
+        bool has_rev = edge_set.count(revkey) > 0;
 
-        EdgeKey rev{e.v, e.u};
+        if (has_rev) {
+            processed.insert(revkey);
 
-        if (edges.count(rev)) {
-            processed.insert(e);
-            processed.insert(rev);
-
-            if (!C.name2node.count(e.u)) {
-                C.name2node[e.u] = C.G.newNode();
-                C.node2name[C.name2node[e.u]] = e.u;
-            }
-            if (!C.name2node.count(e.v)) {
-                C.name2node[e.v] = C.G.newNode();
-                C.node2name[C.name2node[e.v]] = e.v;
-            }
-
-            node t1 = C.G.newNode();
-            node t2 = C.G.newNode();
-
+            ogdf::node t1 = C.G.newNode();
+            ogdf::node t2 = C.G.newNode();
             C.node2name[t1] = "_trash";
             C.node2name[t2] = "_trash";
 
-            C.G.newEdge(C.name2node[e.u], t1);
-            C.G.newEdge(t1, C.name2node[e.v]);
-            C.G.newEdge(C.name2node[e.v], t2);
-            C.G.newEdge(t2, C.name2node[e.u]);
+            C.G.newEdge(id2node[e.first],  t1);
+            C.G.newEdge(t1,                id2node[e.second]);
+            C.G.newEdge(id2node[e.second], t2);
+            C.G.newEdge(t2,                id2node[e.first]);
         } else {
-            processed.insert(e);
-
-            if (!C.name2node.count(e.u)) {
-                C.name2node[e.u] = C.G.newNode();
-                C.node2name[C.name2node[e.u]] = e.u;
-            }
-            if (!C.name2node.count(e.v)) {
-                C.name2node[e.v] = C.G.newNode();
-                C.node2name[C.name2node[e.v]] = e.v;
-            }
-
-            C.G.newEdge(C.name2node[e.u], C.name2node[e.v]);
+            C.G.newEdge(id2node[e.first], id2node[e.second]);
         }
     }
 }
