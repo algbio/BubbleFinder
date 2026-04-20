@@ -1034,8 +1034,10 @@ namespace solver
 
             std::unique_ptr<ogdf::StaticSPQRTree> spqr;
             std::unordered_map<ogdf::edge, ogdf::edge> skel2tree; // mapping from skeleton virtual edge to tree edge
-            ogdf::NodeArray<ogdf::node> parent;                   // mapping from node to parent in SPQR tree, it is possible since it is rooted,
-                                                                  // parent of root is nullptr
+            ogdf::NodeArray<ogdf::node> parent; // mapping from node to parent in SPQR tree
+
+            // Root of the SPQR tree chosen by buildBlockDataParallel
+            ogdf::node myRoot{nullptr};
 
             ogdf::NodeArray<ogdf::node> blkToSkel;
 
@@ -1898,8 +1900,42 @@ namespace solver
                     }
                 }
 
-                // Computing acyclicity
-                if (curr_state.outgoingCyclesCount >= 2)
+                bool X_A_cycle = false;
+                bool X_A_tip   = false;
+                if (curr_node != blk.myRoot)
+                {
+                    const auto &T_topo = blk.spqr->tree();
+                    node Bpar = blk.parent(curr_node);
+                    edge parentTreeEdge = ogdf::INVALID_EDGE;
+                    T_topo.forEachAdj(curr_node, [&](node other, edge te) {
+                        if (other == Bpar && parentTreeEdge == ogdf::INVALID_EDGE)
+                            parentTreeEdge = te;
+                    });
+                    if (parentTreeEdge != ogdf::INVALID_EDGE)
+                    {
+                        const EdgeDPState &upS = edge_dp[parentTreeEdge].up;
+                        X_A_cycle = !upS.acyclic;
+                        X_A_tip   = upS.globalSourceSink;
+                    }
+                }
+
+                if (X_A_cycle || X_A_tip)
+                {
+                    // PROFILE_BLOCK("processNode:: acyclicity - skip (X_A invalid)");
+                    if (X_A_cycle)
+                    {
+                        for (edge e : virtualEdges)
+                        {
+                            if (edgeToDp[e]->acyclic)
+                            {
+                                node_dp[edgeChild[e]].outgoingCyclesCount++;
+                                node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                            }
+                            edgeToDp[e]->acyclic = false;
+                        }
+                    }
+                }
+                else if (curr_state.outgoingCyclesCount >= 2)
                 {
                     // PROFILE_BLOCK("processNode:: acyclicity - multi-outgoing case");
                     for (edge e : virtualEdges)
@@ -2230,9 +2266,8 @@ namespace solver
 
                     // std::cout << " at " << A << std::endl;
 
-                    T.forEachAdj(A, [&](node /*other*/, edge e) {
-                        // std::cout << T.source(e) << " -> " << T.target(e) << std::endl;
-                        auto &state = (T.source(e) == A ? edge_dp[e].down : edge_dp[e].up);
+                    T.forEachAdj(A, [&](node other, edge e) {
+                        auto &state = (blk.parent[other] == A ? edge_dp[e].down : edge_dp[e].up);
                         // directST = (state.s == s ? state.directST : state.directTS);
                         // directTS = (state.s == s ? state.directTS : state.directST);
 
@@ -2582,8 +2617,8 @@ namespace solver
 
             std::vector<ogdf::node> nodeOrder;
             std::vector<ogdf::edge> edgeOrder;
-
-            SPQRsolve::dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder);
+            SPQRsolve::dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder,
+                                     blk.myRoot, blk.myRoot);
 
             blk.blkToSkel.init(*blk.Gblk, nullptr);
 
@@ -2787,17 +2822,9 @@ namespace solver
                 }
                 const auto &T = blk.spqr->tree();
                 blk.skel2tree.reserve(2 * T.edges.size());
-                blk.parent.init(T, nullptr);
-
-                node root = blk.spqr->rootNode();
-                blk.parent[root] = root;
 
                 for (edge te : T.edges)
                 {
-                    node u = T.source(te);
-                    node v = T.target(te);
-                    blk.parent[v] = u;
-
                     if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
                     {
                         blk.skel2tree[eSrc] = te;
@@ -2805,6 +2832,61 @@ namespace solver
                     if (auto eTgt = blk.spqr->skeletonEdgeTgt(te))
                     {
                         blk.skel2tree[eTgt] = te;
+                    }
+                }
+
+                blk.myRoot = blk.spqr->rootNode(); // default fallback
+                {
+                    node tipVblk = nullptr;
+                    for (node vB : blk.Gblk->nodes)
+                    {
+                        if (blk.globIn[vB] == 0 || blk.globOut[vB] == 0)
+                        {
+                            tipVblk = vB;
+                            break;
+                        }
+                    }
+                    if (tipVblk != nullptr)
+                    {
+                        for (node mu : T.nodes)
+                        {
+                            const auto &skel = blk.spqr->skeleton(mu);
+                            const auto &skelG = skel.getGraph();
+                            bool found = false;
+                            for (node h : skelG.nodes)
+                            {
+                                if (skel.original(h) == tipVblk)
+                                {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found)
+                            {
+                                blk.myRoot = mu;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // BFS from blk.myRoot to fill blk.parent[] (root is self-parent).
+                blk.parent.init(T, nullptr);
+                blk.parent[blk.myRoot] = blk.myRoot;
+                {
+                    std::stack<node> st;
+                    st.push(blk.myRoot);
+                    while (!st.empty())
+                    {
+                        node u = st.top();
+                        st.pop();
+                        T.forEachAdj(u, [&](node v, edge /*te*/) {
+                            if (blk.parent[v] == nullptr)
+                            {
+                                blk.parent[v] = u;
+                                st.push(v);
+                            }
+                        });
                     }
                 }
             }
