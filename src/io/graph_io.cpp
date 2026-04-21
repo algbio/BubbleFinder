@@ -698,10 +698,55 @@ void writeSuperbubbles()
         }
         else
         {
-            auto get_real_neighbors = [&](ogdf::node u, EdgePartType t)
-                -> std::unordered_set<ogdf::node>
+            struct NameSignHash
             {
-                std::unordered_set<ogdf::node> result;
+                size_t operator()(const std::pair<std::string, char> &p) const noexcept
+                {
+                    size_t h1 = std::hash<std::string>{}(p.first);
+                    size_t h2 = static_cast<size_t>(static_cast<unsigned char>(p.second));
+                    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+                }
+            };
+
+            auto sign_to_type = [](char c) {
+                return (c == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
+            };
+
+            std::unordered_set<std::pair<std::string, char>, NameSignHash> unique_ns;
+            for (auto &s : C.snarls)
+            {
+                for (auto &v : s)
+                {
+                    if (v.size() < 2) continue;
+                    char c = v.back();
+                    if (c != '+' && c != '-') continue;
+                    std::string base = v.substr(0, v.size() - 1);
+                    if (base == "_trash") continue;
+                    unique_ns.emplace(std::move(base), c);
+                }
+            }
+
+            std::unordered_map<std::pair<std::string, char>,
+                               std::unordered_set<std::string>,
+                               NameSignHash>
+                real_nbrs_cache;
+            real_nbrs_cache.reserve(unique_ns.size() * 2);
+
+            for (const auto &key : unique_ns)
+            {
+                const std::string &name = key.first;
+                char sign = key.second;
+
+                auto it = C.name2node.find(name);
+                if (it == C.name2node.end())
+                {
+                    real_nbrs_cache.emplace(key, std::unordered_set<std::string>{});
+                    continue;
+                }
+                ogdf::node u = it->second;
+                EdgePartType t = sign_to_type(sign);
+
+                std::unordered_set<ogdf::node> nbr_nodes;
                 C.G.forEachAdj(u, [&](node other, edge e) {
                     EdgePartType typeAtU;
                     if (C.G.source(e) == u)
@@ -714,45 +759,51 @@ void writeSuperbubbles()
                     if (C.node2name.count(other) && C.node2name[other] == "_trash")
                     {
                         C.G.forEachAdj(other, [&](node real, edge) {
-                            if (real != u) result.insert(real);
+                            if (real != u) nbr_nodes.insert(real);
                         });
                     }
                     else
                     {
-                        result.insert(other);
+                        nbr_nodes.insert(other);
                     }
                 });
-                return result;
-            };
+
+                std::unordered_set<std::string> nbr_names;
+                nbr_names.reserve(nbr_nodes.size());
+                for (auto n : nbr_nodes)
+                {
+                    auto nit = C.node2name.find(n);
+                    if (nit != C.node2name.end())
+                        nbr_names.insert(nit->second);
+                }
+                real_nbrs_cache.emplace(key, std::move(nbr_names));
+            }
 
             auto is_trivial_pair = [&](const std::string &s1,
                                        const std::string &s2) -> bool
             {
                 if (s1.size() < 2 || s2.size() < 2) return false;
 
-                std::string name1 = s1.substr(0, s1.size() - 1);
-                std::string name2 = s2.substr(0, s2.size() - 1);
                 char c1 = s1.back(), c2 = s2.back();
-
                 if (c1 != '+' && c1 != '-') return false;
                 if (c2 != '+' && c2 != '-') return false;
+
+                std::string name1 = s1.substr(0, s1.size() - 1);
+                std::string name2 = s2.substr(0, s2.size() - 1);
                 if (name1 == "_trash" || name2 == "_trash") return false;
 
-                auto it1 = C.name2node.find(name1);
-                auto it2 = C.name2node.find(name2);
-                if (it1 == C.name2node.end() || it2 == C.name2node.end()) return false;
+                auto cit1 = real_nbrs_cache.find({name1, c1});
+                auto cit2 = real_nbrs_cache.find({name2, c2});
+                if (cit1 == real_nbrs_cache.end() ||
+                    cit2 == real_nbrs_cache.end())
+                {
+                    return false;
+                }
+                const auto &nbrs1 = cit1->second;
+                const auto &nbrs2 = cit2->second;
 
-                ogdf::node u = it1->second;
-                ogdf::node v = it2->second;
-
-                EdgePartType t1 = (c1 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
-                EdgePartType t2 = (c2 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
-
-                auto nbrs1 = get_real_neighbors(u, t1);
-                auto nbrs2 = get_real_neighbors(v, t2);
-
-                return nbrs1.size() == 1 && nbrs1.count(v) &&
-                       nbrs2.size() == 1 && nbrs2.count(u);
+                return nbrs1.size() == 1 && nbrs1.count(name2) &&
+                       nbrs2.size() == 1 && nbrs2.count(name1);
             };
 
             struct PairHash
