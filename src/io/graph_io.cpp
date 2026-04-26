@@ -85,7 +85,6 @@ void readStandard()
         return true;
     };
 
-    // --- Header: "n m" ----------------------------------------------------
     uint64_t n64 = 0, m64 = 0;
     if (!parse_uint(n64) || !parse_uint(m64)) {
         throw std::runtime_error(
@@ -99,7 +98,6 @@ void readStandard()
     const uint32_t n = static_cast<uint32_t>(n64);
     const size_t   m = static_cast<size_t>(m64);
 
-    // --- Parse all m edges as (uint32_t, uint32_t) -----------------------
     std::vector<std::pair<uint32_t, uint32_t>> edges_raw;
     edges_raw.reserve(m);
     for (size_t i = 0; i < m; ++i) {
@@ -203,29 +201,31 @@ std::vector<ogdf::node> createNodes(BiGraph& bg) {
     return id2node;
 }
 
+
 void buildSnarlGraph(BiGraph& bg) {
     auto &C = ctx();
     auto id2node = createNodes(bg);
     C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
 
-    struct PairKey {
-        uint32_t u, v;
-        bool operator<(const PairKey& o) const { return u!=o.u ? u<o.u : v<o.v; }
-        bool operator==(const PairKey& o) const { return u==o.u && v==o.v; }
+    auto encodePair = [](uint32_t a, uint32_t b) -> uint64_t {
+        return (static_cast<uint64_t>(a) << 32) | static_cast<uint64_t>(b);
     };
-    std::vector<PairKey> pkeys;
-    pkeys.reserve(bg.links.size());
+
+    std::unordered_set<uint64_t> seen;
+    std::unordered_set<uint64_t> multis;
+    seen.reserve(bg.links.size());
     for (auto& lk : bg.links) {
         uint32_t a = std::min(lk.src, lk.dst), b = std::max(lk.src, lk.dst);
-        pkeys.push_back({a, b});
+        uint64_t key = encodePair(a, b);
+        if (!seen.insert(key).second) {
+            multis.insert(key);
+        }
     }
-    std::sort(pkeys.begin(), pkeys.end());
+    { std::unordered_set<uint64_t>().swap(seen); }
 
     auto is_multi = [&](uint32_t a, uint32_t b) -> bool {
-        PairKey key{std::min(a,b), std::max(a,b)};
-        auto lo = std::lower_bound(pkeys.begin(), pkeys.end(), key);
-        auto hi = std::upper_bound(lo, pkeys.end(), key);
-        return (hi - lo) > 1;
+        uint32_t lo = std::min(a, b), hi = std::max(a, b);
+        return multis.count(encodePair(lo, hi)) > 0;
     };
 
     for (auto& lk : bg.links) {
@@ -371,7 +371,7 @@ void buildSpqrGraph(BiGraph& bg) {
     for (auto& lk : bg.links) C.G.newEdge(id2node[lk.src], id2node[lk.dst]);
 }
 
-} 
+}
 
 
 
@@ -396,7 +396,7 @@ BiGraph parse_graph_input(const std::string& path, int threads) {
     return bg;
 }
 
-} 
+}
 
 void readGFA()
 {
@@ -593,7 +593,6 @@ void readGraph() {
 
 void drawGraph(const ogdf::Graph &G, const std::string &file)
 {
-    // Drawing functionality disabled - requires OGDF GraphAttributes/FMMMLayout
     (void)G; (void)file;
     return;
 }
@@ -601,8 +600,8 @@ void drawGraph(const ogdf::Graph &G, const std::string &file)
 
 std::vector<std::pair<std::string, std::string>>
 project_bubblegun_pairs_from_doubled() {
-    auto& sb= ctx().superbubbles; 
-    auto& names = ctx().node2name;    
+    auto& sb= ctx().superbubbles;
+    auto& names = ctx().node2name;
 
     auto is_oriented = [](const std::string& s) -> bool {
         return !s.empty() && (s.back() == '+' || s.back() == '-');
@@ -643,6 +642,41 @@ project_bubblegun_pairs_from_doubled() {
 }
 
 
+namespace {
+
+constexpr size_t kIoChunkHighWater = 64ull * 1024ull * 1024ull;  // 64 MiB
+
+inline void flushStringBuf(std::ostream &out, std::string &buf) {
+    if (!buf.empty()) {
+        out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+        buf.clear();
+    }
+}
+
+template <typename SnarlSet>
+void writeAllSnarls_buffered(std::ostream &out, const SnarlSet &snarls)
+{
+    std::string buf;
+    buf.reserve(kIoChunkHighWater + 4096);
+
+    buf.append(std::to_string(snarls.size()));
+    buf.push_back('\n');
+
+    for (const auto &s : snarls) {
+        for (const auto &v : s) {
+            buf.append(v);
+            buf.push_back(' ');
+        }
+        buf.push_back('\n');
+        if (buf.size() >= kIoChunkHighWater) {
+            flushStringBuf(out, buf);
+        }
+    }
+    flushStringBuf(out, buf);
+}
+
+}  
+
 void writeSuperbubbles()
 {
     auto &C = ctx();
@@ -658,39 +692,20 @@ void writeSuperbubbles()
         {
             if (C.outputPath.empty())
             {
-                std::cout << C.snarls.size() << "\n";
-                for (auto &s : C.snarls)
-                {
-                    for (auto &v : s)
-                    {
-                        std::cout << v << " ";
-                    }
-                    std::cout << std::endl;
-                }
-                if (!std::cout)
-                {
+                writeAllSnarls_buffered(std::cout, C.snarls);
+                if (!std::cout) {
                     throw std::runtime_error("Error while writing snarls to standard output");
                 }
             }
             else
             {
-                std::ofstream out(C.outputPath);
-                if (!out)
-                {
+                std::ofstream out(C.outputPath, std::ios::out | std::ios::binary);
+                if (!out) {
                     throw std::runtime_error("Failed to open output file '" +
                                              C.outputPath + "' for writing");
                 }
-                out << C.snarls.size() << "\n";
-                for (auto &s : C.snarls)
-                {
-                    for (auto &v : s)
-                    {
-                        out << v << " ";
-                    }
-                    out << "\n";
-                }
-                if (!out)
-                {
+                writeAllSnarls_buffered(out, C.snarls);
+                if (!out) {
                     throw std::runtime_error("Error while writing snarls to output file '" +
                                              C.outputPath + "'");
                 }
@@ -698,120 +713,192 @@ void writeSuperbubbles()
         }
         else
         {
-            auto get_real_neighbors = [&](ogdf::node u, EdgePartType t)
-                -> std::unordered_set<ogdf::node>
-            {
-                std::unordered_set<ogdf::node> result;
-                C.G.forEachAdj(u, [&](node other, edge e) {
-                    EdgePartType typeAtU;
-                    if (C.G.source(e) == u)
-                        typeAtU = C._edge2types[e].first;
-                    else
-                        typeAtU = C._edge2types[e].second;
+            struct RealNbrKey {
+                uint32_t node_idx;
+                uint8_t sign;  // 0 = PLUS, 1 = MINUS
+                bool operator==(const RealNbrKey &o) const noexcept {
+                    return node_idx == o.node_idx && sign == o.sign;
+                }
+            };
+            struct RealNbrKeyHash {
+                size_t operator()(const RealNbrKey &k) const noexcept {
+                    return (static_cast<size_t>(k.node_idx) << 1) ^ k.sign;
+                }
+            };
+            std::unordered_map<RealNbrKey, ogdf::node, RealNbrKeyHash> uniqueRealNbr;
+            uniqueRealNbr.reserve(C.G.numberOfNodes() * 2);
 
-                    if (typeAtU != t) return;
+            size_t max_idx = 0;
+            for (ogdf::node n : C.G.nodes) {
+                if (static_cast<size_t>(n.idx) > max_idx) max_idx = static_cast<size_t>(n.idx);
+            }
+            std::vector<bool> is_trash(max_idx + 1, false);
+            for (const auto &kv : C.node2name) {
+                if (kv.second == "_trash") {
+                    is_trash[kv.first.idx] = true;
+                }
+            }
 
-                    if (C.node2name.count(other) && C.node2name[other] == "_trash")
-                    {
-                        C.G.forEachAdj(other, [&](node real, edge) {
-                            if (real != u) result.insert(real);
+            for (ogdf::node u : C.G.nodes) {
+                ogdf::node nbrPlus{nullptr};
+                ogdf::node nbrMinus{nullptr};
+                int countPlus = 0, countMinus = 0;
+                C.G.forEachAdj(u, [&](ogdf::node other, ogdf::edge e) {
+                    EdgePartType typeAtU = (C.G.source(e) == u)
+                        ? C._edge2types[e].first
+                        : C._edge2types[e].second;
+                    int *cnt;
+                    ogdf::node *slot;
+                    if (typeAtU == EdgePartType::PLUS) { cnt = &countPlus;  slot = &nbrPlus;  }
+                    else if (typeAtU == EdgePartType::MINUS) { cnt = &countMinus; slot = &nbrMinus; }
+                    else return;
+
+                    if (*cnt > 1) return;  // already disqualified
+
+                    if (is_trash[other.idx]) {
+                        C.G.forEachAdj(other, [&](ogdf::node real, ogdf::edge) {
+                            if (real == u) return;
+                            if (*cnt > 1) return;
+                            if (*cnt == 0 || *slot == real) {
+                                *slot = real;
+                                if (*cnt == 0) (*cnt)++;
+                            } else {
+                                (*cnt)++;  // becomes 2 -> disqualified
+                            }
                         });
-                    }
-                    else
-                    {
-                        result.insert(other);
+                    } else {
+                        if (*cnt == 0 || *slot == other) {
+                            *slot = other;
+                            if (*cnt == 0) (*cnt)++;
+                        } else {
+                            (*cnt)++;
+                        }
                     }
                 });
-                return result;
-            };
+                if (countPlus  == 1) uniqueRealNbr[{static_cast<uint32_t>(u.idx), 0}] = nbrPlus;
+                if (countMinus == 1) uniqueRealNbr[{static_cast<uint32_t>(u.idx), 1}] = nbrMinus;
+            }
 
-            auto is_trivial_pair = [&](const std::string &s1,
-                                       const std::string &s2) -> bool
-            {
-                if (s1.size() < 2 || s2.size() < 2) return false;
 
-                std::string name1 = s1.substr(0, s1.size() - 1);
-                std::string name2 = s2.substr(0, s2.size() - 1);
-                char c1 = s1.back(), c2 = s2.back();
+            std::vector<std::pair<uint32_t, uint8_t>> snarl_nodes;
 
-                if (c1 != '+' && c1 != '-') return false;
-                if (c2 != '+' && c2 != '-') return false;
-                if (name1 == "_trash" || name2 == "_trash") return false;
+            std::unordered_set<uint64_t> seen_num;
+            seen_num.reserve(20'000'000);
 
-                auto it1 = C.name2node.find(name1);
-                auto it2 = C.name2node.find(name2);
-                if (it1 == C.name2node.end() || it2 == C.name2node.end()) return false;
-
-                ogdf::node u = it1->second;
-                ogdf::node v = it2->second;
-
-                EdgePartType t1 = (c1 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
-                EdgePartType t2 = (c2 == '+') ? EdgePartType::PLUS : EdgePartType::MINUS;
-
-                auto nbrs1 = get_real_neighbors(u, t1);
-                auto nbrs2 = get_real_neighbors(v, t2);
-
-                return nbrs1.size() == 1 && nbrs1.count(v) &&
-                       nbrs2.size() == 1 && nbrs2.count(u);
-            };
-
-            struct PairHash
-            {
-                size_t operator()(const std::pair<std::string, std::string> &p) const
-                {
+            struct PairHash {
+                size_t operator()(const std::pair<std::string, std::string> &p) const noexcept {
                     size_t h1 = std::hash<std::string>{}(p.first);
                     size_t h2 = std::hash<std::string>{}(p.second);
                     return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
                 }
             };
+            std::unordered_set<std::pair<std::string, std::string>, PairHash> seen_str;
 
-            std::vector<std::pair<std::string, std::string>> filtered;
-            std::unordered_set<std::pair<std::string, std::string>, PairHash> seen;
+            std::string out_buf;
+            out_buf.reserve(400ull * 1024ull * 1024ull);
+            size_t pair_count = 0;
 
-            for (auto &s : C.snarls)
+            auto pack_key = [](uint32_t a_idx, uint8_t a_sign,
+                                uint32_t b_idx, uint8_t b_sign) -> uint64_t {
+                uint64_t ka = (static_cast<uint64_t>(a_idx) << 1) | a_sign;
+                uint64_t kb = (static_cast<uint64_t>(b_idx) << 1) | b_sign;
+                if (ka > kb) std::swap(ka, kb);
+                return (ka << 32) | kb;
+            };
+
+            for (const auto &s : C.snarls)
             {
-                for (size_t i = 0; i < s.size(); i++)
+                snarl_nodes.clear();
+                snarl_nodes.reserve(s.size());
+                for (const auto &str : s) {
+                    uint8_t sign = 255;
+                    uint32_t idx = 0;
+                    if (str.size() >= 2) {
+                        char c = str.back();
+                        if (c == '+' || c == '-') {
+                            std::string name(str.data(), str.size() - 1);
+                            if (name != "_trash") {
+                                auto it = C.name2node.find(name);
+                                if (it != C.name2node.end()) {
+                                    idx = static_cast<uint32_t>(it->second.idx);
+                                    sign = (c == '+') ? 0 : 1;
+                                }
+                            }
+                        }
+                    }
+                    snarl_nodes.push_back({idx, sign});
+                }
+
+                const size_t n = s.size();
+                for (size_t i = 0; i < n; i++)
                 {
-                    for (size_t j = i + 1; j < s.size(); j++)
+                    auto [iu, su] = snarl_nodes[i];
+                    for (size_t j = i + 1; j < n; j++)
                     {
-                        std::string a = s[i], b = s[j];
-                        if (a > b) std::swap(a, b);
+                        auto [iv, sv] = snarl_nodes[j];
 
-                        if (!seen.insert({a, b}).second) continue;
-                        if (is_trivial_pair(a, b)) continue;
+                        const std::string *pa = &s[i];
+                        const std::string *pb = &s[j];
+                        if (*pa > *pb) std::swap(pa, pb);
 
-                        filtered.emplace_back(a, b);
+                        bool is_trivial = false;
+
+                        if (su != 255 && sv != 255) {
+                            uint64_t key = pack_key(iu, su, iv, sv);
+                            if (!seen_num.insert(key).second) continue;
+
+                            auto it_u = uniqueRealNbr.find({iu, su});
+                            if (it_u != uniqueRealNbr.end() &&
+                                static_cast<uint32_t>(it_u->second.idx) == iv) {
+                                auto it_v = uniqueRealNbr.find({iv, sv});
+                                if (it_v != uniqueRealNbr.end() &&
+                                    static_cast<uint32_t>(it_v->second.idx) == iu) {
+                                    is_trivial = true;
+                                }
+                            }
+                        } else {
+                            if (!seen_str.insert({*pa, *pb}).second) continue;
+                            // is_trivial is false for non-resolvable names (matches original)
+                        }
+
+                        if (is_trivial) continue;
+
+                        out_buf.append(*pa);
+                        out_buf.push_back(' ');
+                        out_buf.append(*pb);
+                        out_buf.push_back('\n');
+                        pair_count++;
                     }
                 }
             }
 
+            // Free dedup memory before writing (out_buf alone is ~340 MB).
+            std::unordered_set<uint64_t>().swap(seen_num);
+            std::unordered_set<std::pair<std::string, std::string>, PairHash>().swap(seen_str);
+            std::vector<std::pair<uint32_t, uint8_t>>().swap(snarl_nodes);
+
+            auto writeStreamedOutput = [&](std::ostream &os) {
+                std::string header = std::to_string(pair_count) + "\n";
+                os.write(header.data(), static_cast<std::streamsize>(header.size()));
+                os.write(out_buf.data(), static_cast<std::streamsize>(out_buf.size()));
+            };
+
             if (C.outputPath.empty())
             {
-                std::cout << filtered.size() << "\n";
-                for (auto &p : filtered)
-                {
-                    std::cout << p.first << " " << p.second << "\n";
-                }
-                if (!std::cout)
-                {
+                writeStreamedOutput(std::cout);
+                if (!std::cout) {
                     throw std::runtime_error("Error while writing snarls to standard output");
                 }
             }
             else
             {
-                std::ofstream out(C.outputPath);
-                if (!out)
-                {
+                std::ofstream out(C.outputPath, std::ios::out | std::ios::binary);
+                if (!out) {
                     throw std::runtime_error("Failed to open output file '" +
                                              C.outputPath + "' for writing");
                 }
-                out << filtered.size() << "\n";
-                for (auto &p : filtered)
-                {
-                    out << p.first << " " << p.second << "\n";
-                }
-                if (!out)
-                {
+                writeStreamedOutput(out);
+                if (!out) {
                     throw std::runtime_error("Error while writing snarls to output file '" +
                                              C.outputPath + "'");
                 }

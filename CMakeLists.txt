@@ -287,6 +287,16 @@ set_target_properties(BubbleFinder PROPERTIES
     INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib"
     BUILD_WITH_INSTALL_RPATH FALSE)
 
+option(BUBBLEFINDER_INSTRUMENT
+    "Enable BubbleFinder profiling counters and timers (zero overhead when OFF)"
+    OFF)
+if(BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(BubbleFinder PRIVATE BUBBLEFINDER_INSTRUMENT)
+endif()
+
+# Link against libdl (libspqr_rust.a indirectly calls dlsym).
+target_link_libraries(BubbleFinder PRIVATE ${CMAKE_DL_LIBS})
+
 
 if(SB_ENABLE_SANITIZERS)
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -340,6 +350,8 @@ message(STATUS "handlegraph target: ${HANDLEGRAPH_LIB}")
 message(STATUS "Sanitizers: ${SB_ENABLE_SANITIZERS}")
 message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 message(STATUS "Native optimizations (-march=native): ${SB_NATIVE_OPTIMIZATIONS}")
+
+message(STATUS "BubbleFinder instrumentation: ${BUBBLEFINDER_INSTRUMENT}")
 
 
 add_executable(snarls_bf src/snarls_bruteforce.cpp)

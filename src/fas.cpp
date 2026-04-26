@@ -10,7 +10,6 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
     std::vector<ogdf::node> dfsNumInverse(graph.numberOfNodes(), nullptr);
     ogdf::edge singleBackEdge = nullptr;
 
-    // Building dfs tree and classifying edges
     std::function<void(ogdf::node)> dfs1 = [&](ogdf::node u)
     {
         colour[u] = 1;
@@ -22,7 +21,7 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
         }
         
         graph.forEachAdj(u, [&](node v, edge e) {
-            if (graph.source(e) != u) return;  // only outgoing edges
+            if (graph.source(e) != u) return;  
             
             if (colour[v] == 0) {
                 etype[e] = TREE;
@@ -181,7 +180,6 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
             ogdf::node u = stk.back();
             stk.pop_back();
             
-            // maxi computation
             graph.forEachAdj(u, [&](node v, edge e) {
                 if (graph.source(e) != u) return;
 
@@ -202,7 +200,6 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
                 }
             });
 
-            // loop computation
             if (isDescendant(z, u)) {
                 loop[u] = true;
             } else {
@@ -216,14 +213,12 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
         }
     }
 
-    // init
     ogdf::node v = y;
     int maxitest = -1;
     for (int i = 0; i < dfsNum[y]; ++i) {
         maxitest = std::max(maxitest, maxi[dfsNumInverse[i]]);
     }
 
-    // step 4
     while (true) {
         if (loop[v]) {
             break;
@@ -241,7 +236,7 @@ void FeedbackArcSet::run_fas(const ogdf::Graph &graph,
                 if (dfsNum[v] + 1 == dfsNum[v2]) {
                     if (edgeToAdd != nullptr) {
                         edgeToAdd = nullptr;
-                        return;  // can't break, but we check cntVnext later
+                        return; 
                     } 
                     edgeToAdd = e;
                     ++cntVnext;
@@ -331,5 +326,40 @@ std::vector<ogdf::edge> FeedbackArcSet::run() {
         std::vector<ogdf::edge> res;
         for (ogdf::edge e : this->G.edges) res.push_back(e);
         return res;
+    }
+}
+
+bool FeedbackArcSet::run_or_acyclic(std::vector<ogdf::edge> &out) {
+    ogdf::NodeArray<int> comp(this->G);
+    int sccs = strongComponents(this->G, comp);
+
+    std::vector<int> size(sccs, 0);
+    for (ogdf::node v : this->G.nodes) ++size[comp[v]];
+
+    int nonTrivial = 0;
+    int ntIdx      = -1;
+
+    for (int i = 0; i < sccs; ++i) {
+        if (size[i] > 1) {
+            ++nonTrivial;
+            ntIdx = i;
+        }
+    }
+
+    if (nonTrivial >= 2) {
+        out.clear();
+        return false;  
+    } else if (nonTrivial == 1) {
+        ogdf::NodeArray<bool> toRemove(this->G, false);
+        for (ogdf::node v : this->G.nodes) {
+            if (comp[v] != ntIdx) toRemove[v] = true;
+        }
+
+        out.clear();
+        this->find_feedback_arcs(out, toRemove);
+        return false;  
+    } else {
+        out.clear();
+        return true; 
     }
 }

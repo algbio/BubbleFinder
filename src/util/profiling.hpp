@@ -13,7 +13,7 @@
 
 class Profiler {
 public:
-    using Clock    = std::chrono::high_resolution_clock;
+    using Clock = std::chrono::high_resolution_clock;
     using Duration = Clock::duration;
 
     static Profiler& instance() {
@@ -27,7 +27,6 @@ public:
     }
 
     void report() const {
-        // 1) Find the "root" total
         auto it = data_.find("Total run");
         Duration total = (it != data_.end())
                          ? it->second
@@ -44,7 +43,6 @@ public:
             return;
         }
 
-        // 2) Sort descending by duration
         std::vector<std::pair<std::string, Duration>> items;
         items.reserve(data_.size());
         for (auto const& kv : data_)
@@ -55,7 +53,6 @@ public:
                       return a.second > b.second;
                   });
 
-        // 3) Print relative to the root total
         std::cout << "=== Profiling Report (percent of \"Total run\") ===\n";
         for (auto const& kv : items) {
             double secs = std::chrono::duration<double>(kv.second).count();
@@ -90,23 +87,20 @@ private:
     Profiler::Clock::time_point        start_;
 };
 
-//— two-step concat to force __LINE__ expansion —
 #define CONCAT_IMPL(a, b) a##b
 #define CONCAT(a, b)      CONCAT_IMPL(a, b)
 
-// now each instantiation gets a truly unique variable name
 #define PROFILE_BLOCK(name) \
     ProfileBlock CONCAT(_prof_block_, __LINE__){ name }
 
 #define PROFILE_FUNCTION()  PROFILE_BLOCK(__func__)
 
-// call this once (e.g. at end of main) to dump your sorted % report
 #define PROFILING_REPORT()  Profiler::instance().report()
 
-#else  // ENABLE_PROFILING not defined
+#else  
 
 #define PROFILE_BLOCK(name)
 #define PROFILE_FUNCTION()
 #define PROFILING_REPORT()
 
-#endif  // ENABLE_PROFILING
+#endif 

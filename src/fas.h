@@ -23,4 +23,6 @@ public:
     FeedbackArcSet(ogdf::Graph &graph) : G(graph) {}
 
     std::vector<ogdf::edge> run();
+
+    bool run_or_acyclic(std::vector<ogdf::edge> &out);
 };

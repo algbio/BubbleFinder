@@ -1,6 +1,7 @@
 #include "util/ogdf_all.hpp"
 
 #include <iostream>
+#include <iomanip>
 #include <vector>
 #include <chrono>
 #include <sstream>
@@ -51,6 +52,7 @@
 #include "util/timer.hpp"
 #include "util/logger.hpp"
 #include "util/profiling.hpp"
+#include "util/profiling_macros.hpp"
 #include "fas.h"
 
 #include "util/mark_scope.hpp"
@@ -391,7 +393,6 @@ detectCompressionAndCoreExt(const std::string &path,
 
     return comp;
 }
-
 
 
 static bool inputFileReadable(const std::string &path, std::string &errOut)
@@ -1009,6 +1010,11 @@ namespace solver
         namespace
         {
             thread_local std::vector<std::pair<ogdf::node, ogdf::node>> *tls_superbubble_collector = nullptr;
+            std::atomic<uint64_t> tip_diag_spqr_blocks{0};
+            std::atomic<uint64_t> tip_diag_spqr_verts{0};
+            std::atomic<uint64_t> tip_diag_internal_ss{0};
+            std::atomic<uint64_t> tip_diag_blocks_with_ss{0};
+            std::atomic<uint64_t> tip_diag_max_ss_one_block{0};
         }
 
         static bool tryCommitSuperbubble(ogdf::node source, ogdf::node sink)
@@ -1036,6 +1042,7 @@ namespace solver
             std::unordered_map<ogdf::edge, ogdf::edge> skel2tree; // mapping from skeleton virtual edge to tree edge
             ogdf::NodeArray<ogdf::node> parent;                   // mapping from node to parent in SPQR tree, it is possible since it is rooted,
                                                                   // parent of root is nullptr
+            ogdf::node root{nullptr};
 
             ogdf::NodeArray<ogdf::node> blkToSkel;
 
@@ -1079,6 +1086,141 @@ namespace solver
             // std::vector<BlockData> blocks;
             std::vector<std::unique_ptr<BlockData>> blocks;
         };
+
+        #ifdef BUBBLEFINDER_INSTRUMENT
+                namespace profiling_patch
+                {
+                    std::atomic<uint64_t> reroot_time_ns{0};
+                    std::atomic<uint64_t> reroot_marked_found{0};
+                    std::atomic<uint64_t> reroot_fallback{0};
+                    std::atomic<uint64_t> reroot_spqr_nodes_scanned{0};
+
+                    std::atomic<uint64_t> phase2_full_count{0};
+                    std::atomic<uint64_t> phase2_light_count{0};
+                    std::atomic<uint64_t> phase2_pruned_tip{0};
+                    std::atomic<uint64_t> phase2_pruned_cycle{0};
+                    std::atomic<uint64_t> phase2_pruned_both{0};
+
+                    std::atomic<uint64_t> blocks_with_spqr{0};
+                    std::atomic<uint64_t> total_tree_nodes{0};
+
+                    std::atomic<uint64_t> phase1_edge_dp_time_ns{0};
+                    std::atomic<uint64_t> phase2_node_dp_time_ns{0};
+                    std::atomic<uint64_t> phase3_collect_time_ns{0};
+
+                    std::atomic<uint64_t> phase1_calls{0};
+                    std::atomic<uint64_t> phase2_calls{0};
+                    std::atomic<uint64_t> phase3_calls{0};
+
+                    std::atomic<uint64_t> pn_A_setup_ns{0};
+                    std::atomic<uint64_t> pn_B_build_ns{0};
+                    std::atomic<uint64_t> pn_C_mark_ns{0};
+                    std::atomic<uint64_t> pn_D_pnode_ns{0};
+                    std::atomic<uint64_t> pn_E1_branch_ns{0};
+                    std::atomic<uint64_t> pn_E2_branch_ns{0};
+                    std::atomic<uint64_t> pn_E3_branch_ns{0};
+                    std::atomic<uint64_t> pn_F_gss_ns{0};
+                    std::atomic<uint64_t> pn_G_leak_ns{0};
+                    std::atomic<uint64_t> pn_H_poles_ns{0};
+
+                    std::atomic<uint64_t> pn_E1_calls{0};
+                    std::atomic<uint64_t> pn_E2_calls{0};
+                    std::atomic<uint64_t> pn_E3_calls{0};
+                    std::atomic<uint64_t> pn_total_calls{0};
+                    std::atomic<uint64_t> pn_pnode_early_returns{0};
+
+                    std::atomic<uint64_t> pe_A_setup_ns{0};
+                    std::atomic<uint64_t> pe_B_build_ns{0};
+                    std::atomic<uint64_t> pe_C_pnode_extra_ns{0};
+                    std::atomic<uint64_t> pe_D_leakage_ns{0};
+                    std::atomic<uint64_t> pe_E_acyclic_ns{0};
+                    std::atomic<uint64_t> pe_total_calls{0};
+
+                    std::atomic<uint64_t> pn_fastpath_calls{0};
+
+                    std::atomic<uint64_t> pn_E3_fas_dag_skipped{0};
+                }
+        #endif 
+
+        static ogdf::node chooseSPQRRootForPruning(BlockData &blk)
+        {
+            if (!blk.spqr)
+                return nullptr;
+
+            const auto &T = blk.spqr->tree();
+            uint64_t localScanned = 0;
+
+            for (ogdf::node mu : T.nodes)
+            {
+                const Skeleton &skel = blk.spqr->skeleton(mu);
+                const auto &skelGraph = skel.getGraph();
+                ++localScanned;  // counts as one getGraph() call
+
+                for (ogdf::node h : skelGraph.nodes)
+                {
+                    ogdf::node vB = skel.original(h);
+                    if (vB != nullptr && (blk.globIn[vB] == 0 || blk.globOut[vB] == 0))
+                    {
+                        BF_INSTR(
+                        profiling_patch::reroot_spqr_nodes_scanned.fetch_add(localScanned, std::memory_order_relaxed);
+                        profiling_patch::reroot_marked_found.fetch_add(1, std::memory_order_relaxed);
+                        )
+                        return mu;
+                    }
+                }
+            }
+
+            BF_INSTR(
+            profiling_patch::reroot_spqr_nodes_scanned.fetch_add(localScanned, std::memory_order_relaxed);
+            profiling_patch::reroot_fallback.fetch_add(1, std::memory_order_relaxed);
+            )
+            return blk.spqr->rootNode();
+        }
+
+        static void rootSPQRTreeForDP(BlockData &blk)
+        {
+            OGDF_ASSERT(blk.spqr != nullptr);
+
+            BF_INSTR(auto __t0_reroot = std::chrono::high_resolution_clock::now();)
+
+            const auto &T = blk.spqr->tree();
+
+            blk.root = chooseSPQRRootForPruning(blk);
+            if (!blk.root)
+                blk.root = blk.spqr->rootNode();
+
+            blk.parent.init(T, nullptr);
+            blk.parent[blk.root] = blk.root;
+
+            std::vector<ogdf::node> stack;
+            stack.reserve(T.edges.size() + 1);
+            stack.push_back(blk.root);
+
+            while (!stack.empty())
+            {
+                ogdf::node u = stack.back();
+                stack.pop_back();
+
+                T.forEachAdj(u, [&](ogdf::node v, ogdf::edge /*te*/) {
+                    if (v == blk.parent[u])
+                        return;
+                    if (blk.parent[v] != nullptr)
+                        return;
+
+                    blk.parent[v] = u;
+                    stack.push_back(v);
+                });
+            }
+
+            BF_INSTR(
+            auto __t1_reroot = std::chrono::high_resolution_clock::now();
+            profiling_patch::reroot_time_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(__t1_reroot - __t0_reroot).count(),
+                std::memory_order_relaxed);
+            profiling_patch::blocks_with_spqr.fetch_add(1, std::memory_order_relaxed);
+            profiling_patch::total_tree_nodes.fetch_add(T.numberOfNodes(), std::memory_order_relaxed);
+            )
+        }
 
         void printBlockEdges(std::vector<CcData> &comps)
         {
@@ -1171,6 +1313,189 @@ namespace solver
                 EdgeDPState down; // value valid in  parent -> child  direction
                 EdgeDPState up;   // value valid in  child -> parent direction
             };
+
+            inline ogdf::node parentOnTreeEdge(const TreeGraph &T, const BlockData &blk, ogdf::edge te)
+            {
+                ogdf::node a = T.source(te);
+                ogdf::node b = T.target(te);
+
+                if (blk.parent[a] == b)
+                    return b;
+
+                OGDF_ASSERT(blk.parent[b] == a);
+                return a;
+            }
+
+            inline ogdf::node childOnTreeEdge(const TreeGraph &T, const BlockData &blk, ogdf::edge te)
+            {
+                ogdf::node a = T.source(te);
+                ogdf::node b = T.target(te);
+
+                if (blk.parent[a] == b)
+                    return a;
+
+                OGDF_ASSERT(blk.parent[b] == a);
+                return b;
+            }
+
+            inline const EdgeDPState &stateLeavingNode(
+                const EdgeArray<EdgeDP> &dp,
+                const TreeGraph &T,
+                const BlockData &blk,
+                ogdf::node from,
+                ogdf::edge te)
+            {
+                OGDF_ASSERT(T.source(te) == from || T.target(te) == from);
+                ogdf::node to = (T.source(te) == from ? T.target(te) : T.source(te));
+                return (blk.parent[to] == from ? dp[te].down : dp[te].up);
+            }
+
+            enum Phase2PruneMask : unsigned char
+            {
+                P2None  = 0,
+                P2Tip   = 1u << 0,
+                P2Cycle = 1u << 1
+            };
+
+            inline unsigned char pruneMaskFromState(const EdgeDPState &st)
+            {
+                unsigned char m = P2None;
+                if (st.globalSourceSink) m |= P2Tip;
+                if (!st.acyclic)         m |= P2Cycle;
+                return m;
+            }
+
+            struct LightVirtualRef
+            {
+                ogdf::node other{nullptr};
+                EdgeDPState *toUpdate{nullptr};
+                EdgeDPState *opposite{nullptr};
+            };
+
+            void processNodePrunedLight(
+                ogdf::node curr_node,
+                EdgeArray<EdgeDP> &edge_dp,
+                BlockData &blk,
+                unsigned char pruneMask)
+            {
+                OGDF_ASSERT(pruneMask != P2None);
+
+                const StaticSPQRTree &spqr = *blk.spqr;
+                const Skeleton &skel = spqr.skeleton(curr_node);
+                const uint32_t nSkel = skel.numberOfNodes();
+
+
+
+                thread_local std::vector<int> tls_localInDeg;
+                thread_local std::vector<int> tls_localOutDeg;
+                thread_local std::vector<LightVirtualRef> tls_virtualEdges;
+
+                if (tls_localInDeg.size() < nSkel) {
+                    tls_localInDeg.resize(nSkel);
+                    tls_localOutDeg.resize(nSkel);
+                }
+                std::fill_n(tls_localInDeg.begin(),  nSkel, 0);
+                std::fill_n(tls_localOutDeg.begin(), nSkel, 0);
+                tls_virtualEdges.clear();
+
+
+
+                for (uint32_t i = 0; i < nSkel; ++i) {
+                    ogdf::node h{i};
+                    blk.blkToSkel[skel.original(h)] = h;
+                }
+
+                const ogdf::node parent_of_curr = blk.parent[curr_node];
+
+
+
+                skel.forEachEdge([&](ogdf::edge e, ogdf::node u, ogdf::node v) {
+                    if (!skel.isVirtual(e)) {
+                        tls_localOutDeg[u.idx]++;
+                        tls_localInDeg [v.idx]++;
+                        return;
+                    }
+
+                    ogdf::node other = skel.twinTreeNode(e);
+                    ogdf::edge treeE = blk.skel2tree.at(e);
+                    OGDF_ASSERT(treeE != nullptr);
+
+                    EdgeDPState *opposite =
+                        (other == parent_of_curr ? &edge_dp[treeE].up
+                                                 : &edge_dp[treeE].down);
+                    EdgeDPState *toUpdate =
+                        (other == parent_of_curr ? &edge_dp[treeE].down
+                                                 : &edge_dp[treeE].up);
+
+                    tls_virtualEdges.push_back({other, toUpdate, opposite});
+
+                    OGDF_ASSERT(opposite->s != nullptr && opposite->t != nullptr);
+                    ogdf::node sH = blk.blkToSkel[opposite->s];
+                    ogdf::node tH = blk.blkToSkel[opposite->t];
+                    OGDF_ASSERT(sH != nullptr && tH != nullptr);
+
+                    tls_localOutDeg[sH.idx] += opposite->localOutS;
+                    tls_localInDeg [sH.idx] += opposite->localInS;
+                    tls_localOutDeg[tH.idx] += opposite->localOutT;
+                    tls_localInDeg [tH.idx] += opposite->localInT;
+                });
+
+
+
+                if (spqr.typeOf(curr_node) == StaticSPQRTree::NodeType::PNode)
+                {
+                    ogdf::node pole0Blk = nullptr, pole1Blk = nullptr;
+                    if (nSkel >= 1) pole0Blk = skel.original(ogdf::node{0u});
+                    if (nSkel >= 2) pole1Blk = skel.original(ogdf::node{1u});
+
+                    if (pole0Blk && pole1Blk)
+                    {
+                        int cnt01 = 0, cnt10 = 0;
+                        skel.forEachEdge([&](ogdf::edge e, ogdf::node u, ogdf::node v) {
+                            if (skel.isVirtual(e)) return;
+                            ogdf::node bU = skel.original(u);
+                            ogdf::node bV = skel.original(v);
+                            if      (bU == pole0Blk && bV == pole1Blk) ++cnt01;
+                            else if (bU == pole1Blk && bV == pole0Blk) ++cnt10;
+                        });
+
+                        for (const auto &ve : tls_virtualEdges) {
+                            EdgeDPState &st = *ve.toUpdate;
+                            if (st.s == pole0Blk && st.t == pole1Blk) {
+                                st.directST |= (cnt01 > 0);
+                                st.directTS |= (cnt10 > 0);
+                            } else if (st.s == pole1Blk && st.t == pole0Blk) {
+                                st.directST |= (cnt10 > 0);
+                                st.directTS |= (cnt01 > 0);
+                            }
+                        }
+                    }
+                }
+
+                const bool propagateTip   = (pruneMask & P2Tip)   != 0;
+                const bool propagateCycle = (pruneMask & P2Cycle) != 0;
+
+                for (const auto &ve : tls_virtualEdges)
+                {
+                    EdgeDPState *BA = ve.toUpdate;
+                    EdgeDPState *AB = ve.opposite;
+
+                    if (ve.other != parent_of_curr) {
+                        if (propagateCycle) BA->acyclic = false;
+                        if (propagateTip)   BA->globalSourceSink = true;
+                    }
+
+                    OGDF_ASSERT(BA->s != nullptr && BA->t != nullptr);
+                    ogdf::node sH = blk.blkToSkel[BA->s];
+                    ogdf::node tH = blk.blkToSkel[BA->t];
+                    OGDF_ASSERT(sH != nullptr && tH != nullptr);
+
+                    BA->localInS  = tls_localInDeg [sH.idx] - AB->localInS;
+                    BA->localOutS = tls_localOutDeg[sH.idx] - AB->localOutS;
+                    BA->localInT  = tls_localInDeg [tH.idx] - AB->localInT;
+                    BA->localOutT = tls_localOutDeg[tH.idx] - AB->localOutT;
+                }
+            }
 
             void printAllStates(const ogdf::EdgeArray<EdgeDP> &edge_dp, const ogdf::NodeArray<NodeDPState> &node_dp, const TreeGraph &T)
             {
@@ -1304,40 +1629,32 @@ namespace solver
                 SPQRTree &spqr,
                 std::vector<ogdf::edge> &edge_order, // order of edges to process
                 std::vector<ogdf::node> &node_order,
-                node curr = nullptr,
-                node parent = nullptr,
-                edge e = nullptr)
+                const ogdf::NodeArray<ogdf::node> &parent,
+                node curr)
             {
                 // PROFILE_FUNCTION();
-                if (curr == nullptr)
-                {
-                    curr = spqr.rootNode();
-                    parent = curr;
-                    dfsSPQR_order(spqr, edge_order, node_order, curr, parent);
-                    return;
-                }
-
                 // std::cout << "Node " << curr->index() << " is " << nodeTypeToString(spqr.typeOf(curr)) << std::endl;
                 node_order.push_back(curr);
                 const TreeGraph &T = spqr.tree();
                 T.forEachAdj(curr, [&](node child, edge te) {
-                    if (child == parent)
+                    if (child == parent[curr])
                         return;
-                    dfsSPQR_order(spqr, edge_order, node_order, child, curr, te);
+                    dfsSPQR_order(spqr, edge_order, node_order, parent, child);
+                    edge_order.push_back(te);
                 });
-                if (curr != parent)
-                    edge_order.push_back(e);
             }
 
-            // process edge in the direction of parent to child
-            // Computing A->B (curr_edge)
             void processEdge(ogdf::edge curr_edge, ogdf::EdgeArray<EdgeDP> &dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk)
             {
                 // PROFILE_FUNCTION();
-                auto &C = ctx();
 
-                const ogdf::NodeArray<int> &globIn = C.inDeg;
-                const ogdf::NodeArray<int> &globOut = C.outDeg;
+                BF_INSTR(
+                profiling_patch::pe_total_calls.fetch_add(1, std::memory_order_relaxed);
+                auto __pe_tA_start = std::chrono::high_resolution_clock::now();
+                )
+
+                const ogdf::NodeArray<int> &globIn = blk.globIn;
+                const ogdf::NodeArray<int> &globOut = blk.globOut;
 
                 EdgeDPState &state = dp[curr_edge].down;
                 EdgeDPState &back_state = dp[curr_edge].up;
@@ -1345,8 +1662,8 @@ namespace solver
                 const StaticSPQRTree &spqr = *blk.spqr;
                 const TreeGraph &T = spqr.tree();
 
-                ogdf::node A = T.source(curr_edge);
-                ogdf::node B = T.target(curr_edge);
+                ogdf::node A = parentOnTreeEdge(T, blk, curr_edge);
+                ogdf::node B = childOnTreeEdge(T, blk, curr_edge);
 
                 state.localOutS = 0;
                 state.localInT = 0;
@@ -1355,27 +1672,35 @@ namespace solver
 
                 const Skeleton &skel = spqr.skeleton(B);
                 const auto &skelGraph = skel.getGraph();
+                const uint32_t pe_nSkel = skelGraph.numberOfNodes();
 
-                // Building new graph with correct orientation of virtual edges
                 Graph newGraph;
 
-                NodeArray<node> skelToNew(skelGraph, nullptr);
-                for (node v : skelGraph.nodes)
-                    skelToNew[v] = newGraph.newNode();
-                NodeArray<node> newToSkel(newGraph, nullptr);
-                for (node v : skelGraph.nodes)
-                    newToSkel[skelToNew[v]] = v;
+                thread_local std::vector<uint32_t> tls_pe_skelToNew;
+                thread_local std::vector<uint32_t> tls_pe_newToSkel;
+                thread_local std::vector<int>      tls_pe_localInDeg;
+                thread_local std::vector<int>      tls_pe_localOutDeg;
+
+                if (tls_pe_skelToNew.size()   < pe_nSkel) tls_pe_skelToNew.resize(pe_nSkel);
+                if (tls_pe_newToSkel.size()   < pe_nSkel) tls_pe_newToSkel.resize(pe_nSkel);
+                if (tls_pe_localInDeg.size()  < pe_nSkel) tls_pe_localInDeg.resize(pe_nSkel);
+                if (tls_pe_localOutDeg.size() < pe_nSkel) tls_pe_localOutDeg.resize(pe_nSkel);
+
+                std::fill_n(tls_pe_localInDeg.begin(),  pe_nSkel, 0);
+                std::fill_n(tls_pe_localOutDeg.begin(), pe_nSkel, 0);
+
+                for (node v : skelGraph.nodes) {
+                    ogdf::node vNew = newGraph.newNode();
+                    tls_pe_skelToNew[v.idx] = vNew.idx;
+                    tls_pe_newToSkel[vNew.idx] = v.idx;
+                }
 
                 {
-                    // PROFILE_BLOCK("processNode:: map block to skeleton nodes");
-                    for (ogdf::node h : skelGraph.nodes)
-                    {
+                    for (ogdf::node h : skelGraph.nodes) {
                         ogdf::node vB = skel.original(h);
                         blk.blkToSkel[vB] = h;
                     }
                 }
-
-                NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
 
                 // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
                 //     // global -> component
@@ -1393,25 +1718,6 @@ namespace solver
                 //     return skelToNew[vSkel];
                 // };
 
-                auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node
-                {
-                    if (!vN)
-                        return nullptr;
-
-                    ogdf::node vSkel = newToSkel[vN];
-                    if (!vSkel)
-                        return nullptr;
-
-                    ogdf::node vBlk = skel.original(vSkel);
-                    if (!vBlk)
-                        return nullptr;
-
-                    ogdf::node vCc = blk.toCc[vBlk];
-                    if (!vCc)
-                        return nullptr;
-
-                    return cc.toOrig[vCc];
-                };
 
                 // auto mapBlkToNew = [&](ogdf::node bV) -> ogdf::node {
                 //     if (!bV) return nullptr;
@@ -1428,32 +1734,33 @@ namespace solver
                 //     return cc.toOrig[vCc];
                 // };
 
-                // For debug
-                auto printDegrees = [&]()
-                {
-                    for (node vN : newGraph.nodes)
-                    {
-                        node vG = mapNewToGlobal(vN);
-
-                        // std::cout << C.node2name[vG] << ":    out: " << localOutDeg[vN] << ", in: " << localInDeg[vN] << std::endl;
-                    }
-                };
 
                 ogdf::node nS, nT;
+
+                {
+                    BF_INSTR(
+                    auto __pe_tB_start = std::chrono::high_resolution_clock::now();
+                    profiling_patch::pe_A_setup_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            __pe_tB_start - __pe_tA_start).count(),
+                        std::memory_order_relaxed);
+                    )
+                }
+                BF_INSTR(auto __pe_tB_start = std::chrono::high_resolution_clock::now();)
 
                 for (edge e : skelGraph.edges)
                 {
                     node u = skelGraph.source(e);
                     node v = skelGraph.target(e);
 
-                    node nU = skelToNew[u];
-                    node nV = skelToNew[v];
+                    node nU{tls_pe_skelToNew[u.idx]};
+                    node nV{tls_pe_skelToNew[v.idx]};
 
                     if (!skel.isVirtual(e))
                     {
                         newGraph.newEdge(nU, nV);
-                        localOutDeg[nU]++;
-                        localInDeg[nV]++;
+                        tls_pe_localOutDeg[nU.idx]++;
+                        tls_pe_localInDeg[nV.idx]++;
 
                         continue;
                     }
@@ -1486,8 +1793,8 @@ namespace solver
                     // ogdf::node nS = mapGlobalToNew(child.s);
                     // ogdf::node nT = mapGlobalToNew(child.t);
 
-                    ogdf::node nA = skelToNew[blk.blkToSkel[child.s]];
-                    ogdf::node nB = skelToNew[blk.blkToSkel[child.t]];
+                    ogdf::node nA{tls_pe_skelToNew[blk.blkToSkel[child.s].idx]};
+                    ogdf::node nB{tls_pe_skelToNew[blk.blkToSkel[child.t].idx]};
 
                     if (dir == 1)
                     {
@@ -1500,25 +1807,33 @@ namespace solver
 
                     if (nA == nU && nB == nV)
                     {
-                        localOutDeg[nA] += child.localOutS;
-                        localInDeg[nA] += child.localInS;
+                        tls_pe_localOutDeg[nA.idx] += child.localOutS;
+                        tls_pe_localInDeg[nA.idx] += child.localInS;
 
-                        localOutDeg[nB] += child.localOutT;
-                        localInDeg[nB] += child.localInT;
+                        tls_pe_localOutDeg[nB.idx] += child.localOutT;
+                        tls_pe_localInDeg[nB.idx] += child.localInT;
                     }
                     else
                     {
-                        localOutDeg[nB] += child.localOutT;
-                        localInDeg[nB] += child.localInT;
+                        tls_pe_localOutDeg[nB.idx] += child.localOutT;
+                        tls_pe_localInDeg[nB.idx] += child.localInT;
 
-                        localOutDeg[nA] += child.localOutS;
-                        localInDeg[nA] += child.localInS;
+                        tls_pe_localOutDeg[nA.idx] += child.localOutS;
+                        tls_pe_localInDeg[nA.idx] += child.localInS;
                     }
 
                     state.acyclic &= child.acyclic;
                     state.globalSourceSink |= child.globalSourceSink;
                     state.hasLeakage |= child.hasLeakage;
                 }
+
+                BF_INSTR(
+                auto __pe_tC_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_B_build_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        __pe_tC_start - __pe_tB_start).count(),
+                    std::memory_order_relaxed);
+                )
 
                 // Direct ST/TS computation(only happens in P nodes)
                 if (spqr.typeOf(B) == SPQRTree::NodeType::PNode)
@@ -1575,25 +1890,40 @@ namespace solver
                 //     }
                 // }
 
+                BF_INSTR(
+                auto __pe_tD_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_C_pnode_extra_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        __pe_tD_start - __pe_tC_start).count(),
+                    std::memory_order_relaxed);
+                )
+
                 for (ogdf::node nV : newGraph.nodes)
                 {
-                    ogdf::node sV = newToSkel[nV];
-                    ogdf::node bV = skel.original(sV);
-                    ogdf::node gV = mapNewToGlobal(nV);
+                    ogdf::node bV = skel.original(ogdf::node{tls_pe_newToSkel[nV.idx]});
 
                     if (bV == state.s || bV == state.t)
                         continue;
 
-                    if (globIn[gV] != localInDeg[nV] || globOut[gV] != localOutDeg[nV])
+                    if (globIn[bV] != tls_pe_localInDeg[nV.idx] ||
+                        globOut[bV] != tls_pe_localOutDeg[nV.idx])
                     {
                         state.hasLeakage = true;
                     }
 
-                    if (globIn[gV] == 0 || globOut[gV] == 0)
+                    if (globIn[bV] == 0 || globOut[bV] == 0)
                     {
                         state.globalSourceSink = true;
                     }
                 }
+
+                BF_INSTR(
+                auto __pe_tE_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_D_leakage_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        __pe_tE_start - __pe_tD_start).count(),
+                    std::memory_order_relaxed);
+                )
 
                 // state.localInS = localInDeg[mapGlobalToNew(state.s)];
                 // state.localOutS = localOutDeg[mapGlobalToNew(state.s)];
@@ -1601,11 +1931,11 @@ namespace solver
                 // state.localInT = localInDeg[mapGlobalToNew(state.t)];
                 // state.localOutT = localOutDeg[mapGlobalToNew(state.t)];
 
-                state.localInS = localInDeg[nS];
-                state.localOutS = localOutDeg[nS];
+                state.localInS = tls_pe_localInDeg[nS.idx];
+                state.localOutS = tls_pe_localOutDeg[nS.idx];
 
-                state.localInT = localInDeg[nT];
-                state.localOutT = localOutDeg[nT];
+                state.localInT = tls_pe_localInDeg[nT.idx];
+                state.localOutT = tls_pe_localOutDeg[nT.idx];
 
                 if (state.acyclic)
                     state.acyclic &= isAcyclic(newGraph);
@@ -1627,256 +1957,217 @@ namespace solver
                     node_dp[A].outgoingLeakageCount++;
                     node_dp[A].lastLeakageNode = B;
                 }
+
+                BF_INSTR(
+                auto __pe_tE_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_E_acyclic_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        __pe_tE_end - __pe_tE_start).count(),
+                    std::memory_order_relaxed);
+                )
             }
 
             void processNode(node curr_node, EdgeArray<EdgeDP> &edge_dp, NodeArray<NodeDPState> &node_dp, const CcData &cc, BlockData &blk)
             {
-                // PROFILE_FUNCTION();
-                auto &C = ctx();
 
-                const ogdf::NodeArray<int> &globIn = C.inDeg;
-                const ogdf::NodeArray<int> &globOut = C.outDeg;
+                BF_INSTR(
+                profiling_patch::pn_total_calls.fetch_add(1, std::memory_order_relaxed);
+                auto __pn_tA_start = std::chrono::high_resolution_clock::now();
+                )
+
+                const ogdf::NodeArray<int> &globIn = blk.globIn;
+                const ogdf::NodeArray<int> &globOut = blk.globOut;
 
                 ogdf::node A = curr_node;
-
                 const auto &T = blk.spqr->tree();
-
                 NodeDPState curr_state = node_dp[A];
 
                 const StaticSPQRTree &spqr = *blk.spqr;
-
                 const Skeleton &skel = spqr.skeleton(A);
                 const auto &skelGraph = skel.getGraph();
+                const uint32_t nSkel      = skelGraph.numberOfNodes();
+                const uint32_t nSkelEdges = skelGraph.numberOfEdges();
 
-                // Building new graph with correct orientation of virtual edges
                 Graph newGraph;
 
-                NodeArray<node> skelToNew(skelGraph, nullptr);
-                for (node v : skelGraph.nodes)
-                    skelToNew[v] = newGraph.newNode();
-                NodeArray<node> newToSkel(newGraph, nullptr);
-                for (node v : skelGraph.nodes)
-                    newToSkel[skelToNew[v]] = v;
+                thread_local std::vector<uint32_t>                tls_pn_skelToNew;
+                thread_local std::vector<uint32_t>                tls_pn_newToSkel;
+                thread_local std::vector<int>                     tls_pn_localInDeg;
+                thread_local std::vector<int>                     tls_pn_localOutDeg;
+                thread_local std::vector<char>                    tls_pn_isSrcSink;
+                thread_local std::vector<char>                    tls_pn_isLeaking;
+                thread_local std::vector<char>                    tls_pn_isVirtual;
+                thread_local std::vector<SPQRsolve::EdgeDPState*> tls_pn_edgeToDp;
+                thread_local std::vector<SPQRsolve::EdgeDPState*> tls_pn_edgeToDpR;
+                thread_local std::vector<ogdf::node>              tls_pn_edgeChild;
+                thread_local std::vector<ogdf::edge>              tls_pn_virtualEdges;
 
-                for (ogdf::node h : skelGraph.nodes)
-                {
+                if (tls_pn_skelToNew.size()  < nSkel)      tls_pn_skelToNew.resize(nSkel);
+                if (tls_pn_newToSkel.size()  < nSkel)      tls_pn_newToSkel.resize(nSkel);
+                if (tls_pn_localInDeg.size() < nSkel)      tls_pn_localInDeg.resize(nSkel);
+                if (tls_pn_localOutDeg.size()< nSkel)      tls_pn_localOutDeg.resize(nSkel);
+                if (tls_pn_isSrcSink.size()  < nSkel)      tls_pn_isSrcSink.resize(nSkel);
+                if (tls_pn_isLeaking.size()  < nSkel)      tls_pn_isLeaking.resize(nSkel);
+                if (tls_pn_isVirtual.size()  < nSkelEdges) tls_pn_isVirtual.resize(nSkelEdges);
+                if (tls_pn_edgeToDp.size()   < nSkelEdges) tls_pn_edgeToDp.resize(nSkelEdges);
+                if (tls_pn_edgeToDpR.size()  < nSkelEdges) tls_pn_edgeToDpR.resize(nSkelEdges);
+                if (tls_pn_edgeChild.size()  < nSkelEdges) tls_pn_edgeChild.resize(nSkelEdges);
+
+                std::fill_n(tls_pn_localInDeg.begin(),  nSkel, 0);
+                std::fill_n(tls_pn_localOutDeg.begin(), nSkel, 0);
+                std::fill_n(tls_pn_isSrcSink.begin(),   nSkel, (char)0);
+                std::fill_n(tls_pn_isLeaking.begin(),   nSkel, (char)0);
+                std::fill_n(tls_pn_isVirtual.begin(),   nSkelEdges, (char)0);
+                std::fill_n(tls_pn_edgeToDp.begin(),    nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
+                std::fill_n(tls_pn_edgeToDpR.begin(),   nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
+                std::fill_n(tls_pn_edgeChild.begin(),   nSkelEdges, ogdf::node{});
+                tls_pn_virtualEdges.clear();
+
+                for (uint32_t i = 0; i < nSkel; ++i) {
+                    ogdf::node vNew = newGraph.newNode();
+                    tls_pn_skelToNew[i] = vNew.idx;
+                }
+                for (uint32_t i = 0; i < nSkel; ++i) {
+                    tls_pn_newToSkel[tls_pn_skelToNew[i]] = i;
+                }
+
+                for (ogdf::node h : skelGraph.nodes) {
                     ogdf::node vB = skel.original(h);
                     blk.blkToSkel[vB] = h;
                 }
 
-                NodeArray<int> localInDeg(newGraph, 0), localOutDeg(newGraph, 0);
-
-                NodeArray<bool> isSourceSink(newGraph, false);
                 int localSourceSinkCount = 0;
-
-                NodeArray<bool> isLeaking(newGraph, false);
                 int localLeakageCount = 0;
 
-                EdgeArray<bool> isVirtual(newGraph, false);
-                EdgeArray<EdgeDPState *> edgeToDp(newGraph, nullptr);
-                EdgeArray<EdgeDPState *> edgeToDpR(newGraph, nullptr);
-                EdgeArray<node> edgeChild(newGraph, nullptr);
-
-                std::vector<edge> virtualEdges;
-
-                // auto mapGlobalToNew = [&](ogdf::node vG) -> ogdf::node {
-                //     // global -> component
-                //     ogdf::node vComp = cc.toCopy[vG];
-                //     if (!vComp) return nullptr;
-                //     // component -> block
-                //     ogdf::node vBlk  = cc.toBlk[vComp];
-                //     if (!vBlk)  return nullptr;
-                //     // block -> skeleton
-                //     ogdf::node vSkel = blk.blkToSkel[vBlk];
-                //     if (!vSkel) return nullptr;
-
-                //     return skelToNew[vSkel];
-                // };
-
-                auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node
-                {
+                auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node {
                     ogdf::node sV = blk.blkToSkel[bV];
-                    ogdf::node nV = skelToNew[sV];
-                    return nV;
+                    return ogdf::node{tls_pn_skelToNew[sV.idx]};
                 };
 
-                auto mapNewToGlobal = [&](ogdf::node vN) -> ogdf::node
-                {
-                    if (!vN)
-                        return nullptr;
-                    ogdf::node vSkel = newToSkel[vN];
-                    if (!vSkel)
-                        return nullptr;
-                    ogdf::node vBlk = skel.original(vSkel);
-                    if (!vBlk)
-                        return nullptr;
-                    ogdf::node vCc = blk.toCc[vBlk];
-                    if (!vCc)
-                        return nullptr;
-                    return cc.toOrig[vCc];
-                };
+                BF_INSTR(
+                auto __pn_tA_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_A_setup_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tA_end - __pn_tA_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tB_start = __pn_tA_end;
+                )
 
-                auto printDegrees = [&]()
-                {
-                    for (node vN : newGraph.nodes)
-                    {
-                        node vG = mapNewToGlobal(vN);
+                for (edge e : skelGraph.edges) {
+                    node u = skelGraph.source(e);
+                    node v = skelGraph.target(e);
+
+                    ogdf::node nU{tls_pn_skelToNew[u.idx]};
+                    ogdf::node nV{tls_pn_skelToNew[v.idx]};
+
+                    if (!skel.isVirtual(e)) {
+                        auto newEdge = newGraph.newEdge(nU, nV);
+                        tls_pn_localOutDeg[nU.idx]++;
+                        tls_pn_localInDeg [nV.idx]++;
+                        continue;
                     }
-                };
 
-                // Building new graph
-                {
-                    // PROFILE_BLOCK("processNode:: build oriented local graph");
-                    for (edge e : skelGraph.edges)
-                    {
-                        node u = skelGraph.source(e);
-                        node v = skelGraph.target(e);
+                    auto B = skel.twinTreeNode(e);
+                    edge treeE = blk.skel2tree.at(e);
+                    OGDF_ASSERT(treeE != nullptr);
 
-                        node nU = skelToNew[u];
-                        node nV = skelToNew[v];
+                    SPQRsolve::EdgeDPState *child =
+                        (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
+                    SPQRsolve::EdgeDPState *edgeToUpdate =
+                        (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
+                    int dir = child->getDirection();
 
-                        if (!skel.isVirtual(e))
-                        {
-                            auto newEdge = newGraph.newEdge(nU, nV);
+                    ogdf::node nS = mapBlockToNew(child->s);
+                    ogdf::node nT = mapBlockToNew(child->t);
 
-                            isVirtual[newEdge] = false;
+                    edge newEdge;
+                    if (dir == 1 || dir == 0) {
+                        newEdge = newGraph.newEdge(nS, nT);
+                    } else /* dir == -1 */ {
+                        newEdge = newGraph.newEdge(nT, nS);
+                    }
+                    tls_pn_isVirtual[newEdge.idx] = (char)1;
+                    tls_pn_edgeToDp[newEdge.idx]  = edgeToUpdate;
+                    tls_pn_edgeToDpR[newEdge.idx] = child;
+                    tls_pn_edgeChild[newEdge.idx] = B;
+                    tls_pn_virtualEdges.push_back(newEdge);
 
-                            localOutDeg[nU]++;
-                            localInDeg[nV]++;
-
-                            continue;
-                        }
-
-                        auto B = skel.twinTreeNode(e);
-
-                        edge treeE = blk.skel2tree.at(e);
-                        OGDF_ASSERT(treeE != nullptr);
-
-                        EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
-                        EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
-                        int dir = child->getDirection();
-
-                        // ogdf::node nS = mapGlobalToNew(child->s);
-                        // ogdf::node nT = mapGlobalToNew(child->t);
-
-                        ogdf::node nS = mapBlockToNew(child->s);
-                        ogdf::node nT = mapBlockToNew(child->t);
-
-                        edge newEdge = nullptr;
-
-                        if (dir == 1 || dir == 0)
-                        {
-                            newEdge = newGraph.newEdge(nS, nT);
-
-                            isVirtual[newEdge] = true;
-
-                            virtualEdges.push_back(newEdge);
-
-                            edgeToDp[newEdge] = edgeToUpdate;
-                            edgeToDpR[newEdge] = child;
-                            edgeChild[newEdge] = B;
-                        }
-                        else if (dir == -1)
-                        {
-                            newEdge = newGraph.newEdge(nT, nS);
-
-                            isVirtual[newEdge] = true;
-
-                            virtualEdges.push_back(newEdge);
-
-                            edgeToDpR[newEdge] = child;
-                            edgeToDp[newEdge] = edgeToUpdate;
-                            edgeChild[newEdge] = B;
-                        }
-                        else
-                        {
-                            newEdge = newGraph.newEdge(nS, nT);
-                            isVirtual[newEdge] = true;
-
-                            virtualEdges.push_back(newEdge);
-
-                            edgeChild[newEdge] = B;
-                            edgeToDpR[newEdge] = child;
-
-                            edgeToDp[newEdge] = edgeToUpdate;
-                        }
-
-                        if (nS == nU && nT == nV)
-                        {
-                            localOutDeg[nS] += child->localOutS;
-                            localInDeg[nS] += child->localInS;
-
-                            localOutDeg[nT] += child->localOutT;
-                            localInDeg[nT] += child->localInT;
-                        }
-                        else
-                        {
-                            localOutDeg[nT] += child->localOutT;
-                            localInDeg[nT] += child->localInT;
-
-                            localOutDeg[nS] += child->localOutS;
-                            localInDeg[nS] += child->localInS;
-                        }
+                    if (nS == nU && nT == nV) {
+                        tls_pn_localOutDeg[nS.idx] += child->localOutS;
+                        tls_pn_localInDeg [nS.idx] += child->localInS;
+                        tls_pn_localOutDeg[nT.idx] += child->localOutT;
+                        tls_pn_localInDeg [nT.idx] += child->localInT;
+                    } else {
+                        tls_pn_localOutDeg[nT.idx] += child->localOutT;
+                        tls_pn_localInDeg [nT.idx] += child->localInT;
+                        tls_pn_localOutDeg[nS.idx] += child->localOutS;
+                        tls_pn_localInDeg [nS.idx] += child->localInS;
                     }
                 }
 
-                {
-                    // PROFILE_BLOCK("processNode:: mark source/sink and leakage");
-                    for (node vN : newGraph.nodes)
-                    {
-                        node vG = mapNewToGlobal(vN);
-                        // node vB = skel.original(newToSkel[vN]);
-                        if (globIn[vG] == 0 || globOut[vG] == 0)
-                        {
-                            localSourceSinkCount++;
-                            isSourceSink[vN] = true;
-                        }
+                BF_INSTR(
+                auto __pn_tB_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_B_build_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tB_end - __pn_tB_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tC_start = __pn_tB_end;
+                )
+                if (tls_pn_virtualEdges.empty()) {
+                    BF_INSTR(profiling_patch::pn_fastpath_calls.fetch_add(1, std::memory_order_relaxed);)
+                    return;
+                }
 
-                        if (globIn[vG] != localInDeg[vN] || globOut[vG] != localOutDeg[vN])
-                        {
-                            localLeakageCount++;
-                            isLeaking[vN] = true;
-                        }
+                for (node vN : newGraph.nodes) {
+                    node vB = skel.original(ogdf::node{tls_pn_newToSkel[vN.idx]});
+                    if (globIn[vB] == 0 || globOut[vB] == 0) {
+                        localSourceSinkCount++;
+                        tls_pn_isSrcSink[vN.idx] = (char)1;
+                    }
+                    if (globIn[vB]  != tls_pn_localInDeg [vN.idx] ||
+                        globOut[vB] != tls_pn_localOutDeg[vN.idx])
+                    {
+                        localLeakageCount++;
+                        tls_pn_isLeaking[vN.idx] = (char)1;
                     }
                 }
 
-                // calculating ingoing dp states of direct st and ts edges in P node
+                BF_INSTR(
+                auto __pn_tC_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_C_mark_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tC_end - __pn_tC_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tD_start = __pn_tC_end;
+                )
+
+                // Same semantics and early-return as the original.
                 if (spqr.typeOf(A) == StaticSPQRTree::NodeType::PNode)
                 {
-                    // PROFILE_BLOCK("processNode:: P-node direct edge analysis");
                     node pole0Blk = nullptr, pole1Blk = nullptr;
-                    {
-                        auto it = skelGraph.nodes.begin();
-                        if (it != skelGraph.nodes.end())
-                            pole0Blk = skel.original(*it++);
-                        if (it != skelGraph.nodes.end())
-                            pole1Blk = skel.original(*it);
+                    if (nSkel >= 1) pole0Blk = skel.original(ogdf::node{0u});
+                    if (nSkel >= 2) pole1Blk = skel.original(ogdf::node{1u});
+
+                    if (!pole0Blk || !pole1Blk) {
+                        BF_INSTR(
+                        auto __pn_t_early = std::chrono::high_resolution_clock::now();
+                        profiling_patch::pn_D_pnode_ns.fetch_add(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_t_early - __pn_tD_start).count(),
+                            std::memory_order_relaxed);
+                        profiling_patch::pn_pnode_early_returns.fetch_add(1, std::memory_order_relaxed);
+                        )
+                        return;
                     }
 
-                    if (!pole0Blk || !pole1Blk)
-                        return;
-
-                    node gPole0 = cc.toOrig[blk.toCc[pole0Blk]];
-                    node gPole1 = cc.toOrig[blk.toCc[pole1Blk]];
-
                     int cnt01 = 0, cnt10 = 0;
-                    for (edge e : skelGraph.edges)
-                    {
-                        if (!skel.isVirtual(e))
-                        {
-                            node uG = mapNewToGlobal(skelToNew[skelGraph.source(e)]);
-                            node vG = mapNewToGlobal(skelToNew[skelGraph.target(e)]);
-                            if (uG == gPole0 && vG == gPole1)
-                                ++cnt01;
-                            else if (uG == gPole1 && vG == gPole0)
-                                ++cnt10;
+                    for (edge e : skelGraph.edges) {
+                        if (!skel.isVirtual(e)) {
+                            node bU = skel.original(skelGraph.source(e));
+                            node bV = skel.original(skelGraph.target(e));
+                            if      (bU == pole0Blk && bV == pole1Blk) ++cnt01;
+                            else if (bU == pole1Blk && bV == pole0Blk) ++cnt10;
                         }
                     }
 
-                    for (edge e : skelGraph.edges)
-                    {
-                        if (skel.isVirtual(e))
-                        {
+                    for (edge e : skelGraph.edges) {
+                        if (skel.isVirtual(e)) {
                             node B = skel.twinTreeNode(e);
                             edge treeE = blk.skel2tree.at(e);
 
@@ -1884,13 +2175,10 @@ namespace solver
                                 (B == blk.parent(A) ? edge_dp[treeE].down
                                                     : edge_dp[treeE].up);
 
-                            if (st.s == pole0Blk && st.t == pole1Blk)
-                            {
+                            if (st.s == pole0Blk && st.t == pole1Blk) {
                                 st.directST |= (cnt01 > 0);
                                 st.directTS |= (cnt10 > 0);
-                            }
-                            else if (st.s == pole1Blk && st.t == pole0Blk)
-                            {
+                            } else if (st.s == pole1Blk && st.t == pole0Blk) {
                                 st.directST |= (cnt10 > 0);
                                 st.directTS |= (cnt01 > 0);
                             }
@@ -1898,287 +2186,228 @@ namespace solver
                     }
                 }
 
-                // Computing acyclicity
+                BF_INSTR(
+                auto __pn_tD_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_D_pnode_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tD_end - __pn_tD_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tE_start = __pn_tD_end;
+                )
+
                 if (curr_state.outgoingCyclesCount >= 2)
                 {
-                    // PROFILE_BLOCK("processNode:: acyclicity - multi-outgoing case");
-                    for (edge e : virtualEdges)
-                    {
-                        if (edgeToDp[e]->acyclic)
-                        {
-                            node_dp[edgeChild[e]].outgoingCyclesCount++;
-                            node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                    BF_INSTR(profiling_patch::pn_E1_calls.fetch_add(1, std::memory_order_relaxed);)
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (tls_pn_edgeToDp[e.idx]->acyclic) {
+                            node_dp[tls_pn_edgeChild[e.idx]].outgoingCyclesCount++;
+                            node_dp[tls_pn_edgeChild[e.idx]].lastCycleNode = curr_node;
                         }
-                        edgeToDp[e]->acyclic &= false;
+                        tls_pn_edgeToDp[e.idx]->acyclic &= false;
                     }
                 }
                 else if (node_dp[curr_node].outgoingCyclesCount == 1)
                 {
-                    // PROFILE_BLOCK("processNode:: acyclicity - single-outgoing case");
-                    for (edge e : virtualEdges)
-                    {
-                        if (edgeChild[e] != curr_state.lastCycleNode)
-                        {
-                            if (edgeToDp[e]->acyclic)
-                            {
-                                node_dp[edgeChild[e]].outgoingCyclesCount++;
-                                node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                    BF_INSTR(profiling_patch::pn_E2_calls.fetch_add(1, std::memory_order_relaxed);)
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (tls_pn_edgeChild[e.idx] != curr_state.lastCycleNode) {
+                            if (tls_pn_edgeToDp[e.idx]->acyclic) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingCyclesCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastCycleNode = curr_node;
                             }
-                            edgeToDp[e]->acyclic &= false;
-                        }
-                        else
-                        {
+                            tls_pn_edgeToDp[e.idx]->acyclic &= false;
+                        } else {
                             node nU = newGraph.source(e);
                             node nV = newGraph.target(e);
-                            auto *st = edgeToDp[e];
-                            auto *ts = edgeToDpR[e];
-                            auto child = edgeChild[e];
+                            auto *st = tls_pn_edgeToDp[e.idx];
+                            auto *ts = tls_pn_edgeToDpR[e.idx];
+                            auto child = tls_pn_edgeChild[e.idx];
                             bool acyclic = false;
 
                             newGraph.delEdge(e);
                             acyclic = isAcyclic(newGraph);
 
                             edge eRest = newGraph.newEdge(nU, nV);
-                            isVirtual[eRest] = true;
-                            edgeToDp[eRest] = st;
-                            edgeToDpR[eRest] = ts;
-                            edgeChild[eRest] = child;
 
-                            if (edgeToDp[eRest]->acyclic && !acyclic)
-                            {
-                                node_dp[edgeChild[eRest]].outgoingCyclesCount++;
-                                node_dp[edgeChild[eRest]].lastCycleNode = curr_node;
+                            if (eRest.idx >= tls_pn_isVirtual.size()) {
+                                const uint32_t __pn_newSz = eRest.idx + 1;
+                                tls_pn_isVirtual.resize(__pn_newSz, (char)0);
+                                tls_pn_edgeToDp.resize(__pn_newSz, (SPQRsolve::EdgeDPState*)nullptr);
+                                tls_pn_edgeToDpR.resize(__pn_newSz, (SPQRsolve::EdgeDPState*)nullptr);
+                                tls_pn_edgeChild.resize(__pn_newSz, ogdf::node{});
                             }
 
-                            edgeToDp[eRest]->acyclic &= acyclic;
+                            tls_pn_isVirtual[eRest.idx] = (char)1;
+                            tls_pn_edgeToDp[eRest.idx]  = st;
+                            tls_pn_edgeToDpR[eRest.idx] = ts;
+                            tls_pn_edgeChild[eRest.idx] = child;
+
+                            if (tls_pn_edgeToDp[eRest.idx]->acyclic && !acyclic) {
+                                node_dp[tls_pn_edgeChild[eRest.idx]].outgoingCyclesCount++;
+                                node_dp[tls_pn_edgeChild[eRest.idx]].lastCycleNode = curr_node;
+                            }
+                            tls_pn_edgeToDp[eRest.idx]->acyclic &= acyclic;
                         }
                     }
                 }
                 else
                 {
-                    // PROFILE_BLOCK("processNode:: acyclicity - FAS baseline");
+                    BF_INSTR(profiling_patch::pn_E3_calls.fetch_add(1, std::memory_order_relaxed);)
 
                     FeedbackArcSet FAS(newGraph);
-                    std::vector<edge> fas = FAS.run();
-                    // find_feedback_arcs(newGraph, fas, toRemove);
+                    thread_local std::vector<edge> tls_pn_fasResult;
+                    tls_pn_fasResult.clear();
+                    const bool __pn_isAcyclic = FAS.run_or_acyclic(tls_pn_fasResult);
 
-                    EdgeArray<bool> isFas(newGraph, 0);
-                    for (edge e : fas)
-                        isFas[e] = true;
+                    if (__pn_isAcyclic) {
+                        BF_INSTR(
+                        profiling_patch::pn_E3_fas_dag_skipped.fetch_add(
+                            1, std::memory_order_relaxed);
+                        )
+                    } else {
+                        thread_local std::vector<char> tls_pn_isFas;
+                        const uint32_t nNewEdges = newGraph.numberOfEdges();
+                        if (tls_pn_isFas.size() < nNewEdges) tls_pn_isFas.resize(nNewEdges);
+                        std::fill_n(tls_pn_isFas.begin(), nNewEdges, (char)0);
+                        for (edge e : tls_pn_fasResult) tls_pn_isFas[e.idx] = (char)1;
 
-                    for (edge e : virtualEdges)
-                    {
-
-                        if (edgeToDp[e]->acyclic && !isFas[e])
-                        {
-                            node_dp[edgeChild[e]].outgoingCyclesCount++;
-                            node_dp[edgeChild[e]].lastCycleNode = curr_node;
+                        for (edge e : tls_pn_virtualEdges) {
+                            if (tls_pn_edgeToDp[e.idx]->acyclic && !tls_pn_isFas[e.idx]) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingCyclesCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastCycleNode = curr_node;
+                            }
+                            tls_pn_edgeToDp[e.idx]->acyclic &= (bool)tls_pn_isFas[e.idx];
                         }
-
-                        edgeToDp[e]->acyclic &= isFas[e];
                     }
-
-                    // NodeArray<int> comp(newGraph);
-                    // int sccs = strongComponents(newGraph, comp);
-
-                    // std::vector<int> size(sccs, 0);
-                    // for (node v : newGraph.nodes) ++size[comp[v]];
-
-                    // int trivial = 0, nonTrivial = 0, ntIdx = -1;
-
-                    // for (int i = 0; i < sccs; ++i) {
-                    //     if (size[i] > 1) { ++nonTrivial; ntIdx = i; }
-                    //     else ++trivial;
-                    // }
-
-                    // if (nonTrivial >= 2){
-                    //     for (edge e : virtualEdges) {
-                    //         if(edgeToDp[e]->acyclic) {
-                    //             node_dp[edgeChild[e]].outgoingCyclesCount++;
-                    //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                    //         }
-
-                    //         edgeToDp[e]->acyclic &= false;
-                    //     }
-                    // } else if (nonTrivial == 1) {
-                    //     // std::vector<node> toRemove;
-                    //     // for (node v : newGraph.nodes)
-                    //     //     if (comp[v] != ntIdx) toRemove.push_back(v);
-
-                    //     FeedbackArcSet FAS(newGraph);
-                    //     std::vector<edge> fas = FAS.run();
-                    //     // find_feedback_arcs(newGraph, fas, toRemove);
-
-                    //     EdgeArray<bool> isFas(newGraph, 0);
-                    //     for (edge e : fas) isFas[e] = true;
-
-                    //     for (edge e : virtualEdges) {
-
-                    //         if(edgeToDp[e]->acyclic && !isFas[e]) {
-                    //             node_dp[edgeChild[e]].outgoingCyclesCount++;
-                    //             node_dp[edgeChild[e]].lastCycleNode = curr_node;
-                    //         }
-
-                    //         edgeToDp[e]->acyclic &= isFas[e];
-                    //     }
-                    // }
                 }
 
-                // computing global sources/sinks
+                BF_INSTR(auto __pn_tE_end = std::chrono::high_resolution_clock::now();)
                 {
-                    // PROFILE_BLOCK("processNode:: compute global source/sink");
-                    if (curr_state.outgoingSourceSinkCount >= 2)
-                    {
-                        // all ingoing have source
-                        for (edge e : virtualEdges)
-                        {
-                            if (!edgeToDp[e]->globalSourceSink)
-                            {
-                                node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                            }
-
-                            edgeToDp[e]->globalSourceSink |= true;
-                        }
-                    }
-                    else if (curr_state.outgoingSourceSinkCount == 1)
-                    {
-                        for (edge e : virtualEdges)
-                        {
-                            // if(!isVirtual[e]) continue;
-                            if (edgeChild[e] != curr_state.lastSourceSinkNode)
-                            {
-                                if (!edgeToDp[e]->globalSourceSink)
-                                {
-                                    node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                    node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                                }
-
-                                edgeToDp[e]->globalSourceSink |= true;
-                            }
-                            else
-                            {
-                                node vN = newGraph.source(e), uN = newGraph.target(e);
-                                if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount)
-                                {
-                                    if (!edgeToDp[e]->globalSourceSink)
-                                    {
-                                        node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                        node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
-                                    }
-
-                                    edgeToDp[e]->globalSourceSink |= true;
-                                }
-                            }
-                        }
-                    }
+                    BF_INSTR(
+                    auto __pn_dE = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        __pn_tE_end - __pn_tE_start).count();
+                    )
+                    BF_INSTR(
+                    if (curr_state.outgoingCyclesCount >= 2)
+                        profiling_patch::pn_E1_branch_ns.fetch_add(__pn_dE, std::memory_order_relaxed);
+                    else if (curr_state.outgoingCyclesCount == 1)
+                        profiling_patch::pn_E2_branch_ns.fetch_add(__pn_dE, std::memory_order_relaxed);
                     else
-                    {
-                        for (edge e : virtualEdges)
-                        {
-                            // if(!isVirtual[e]) continue;
+                        profiling_patch::pn_E3_branch_ns.fetch_add(__pn_dE, std::memory_order_relaxed);
+                    )
+                }
+                BF_INSTR(auto __pn_tF_start = __pn_tE_end;)
+
+                if (curr_state.outgoingSourceSinkCount >= 2) {
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (!tls_pn_edgeToDp[e.idx]->globalSourceSink) {
+                            node_dp[tls_pn_edgeChild[e.idx]].outgoingSourceSinkCount++;
+                            node_dp[tls_pn_edgeChild[e.idx]].lastSourceSinkNode = curr_node;
+                        }
+                        tls_pn_edgeToDp[e.idx]->globalSourceSink |= true;
+                    }
+                } else if (curr_state.outgoingSourceSinkCount == 1) {
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (tls_pn_edgeChild[e.idx] != curr_state.lastSourceSinkNode) {
+                            if (!tls_pn_edgeToDp[e.idx]->globalSourceSink) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingSourceSinkCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastSourceSinkNode = curr_node;
+                            }
+                            tls_pn_edgeToDp[e.idx]->globalSourceSink |= true;
+                        } else {
                             node vN = newGraph.source(e), uN = newGraph.target(e);
-                            if ((int)isSourceSink[vN] + (int)isSourceSink[uN] < localSourceSinkCount)
-                            {
-                                if (!edgeToDp[e]->globalSourceSink)
-                                {
-                                    node_dp[edgeChild[e]].outgoingSourceSinkCount++;
-                                    node_dp[edgeChild[e]].lastSourceSinkNode = curr_node;
+                            if ((int)tls_pn_isSrcSink[vN.idx] + (int)tls_pn_isSrcSink[uN.idx] < localSourceSinkCount) {
+                                if (!tls_pn_edgeToDp[e.idx]->globalSourceSink) {
+                                    node_dp[tls_pn_edgeChild[e.idx]].outgoingSourceSinkCount++;
+                                    node_dp[tls_pn_edgeChild[e.idx]].lastSourceSinkNode = curr_node;
                                 }
-
-                                edgeToDp[e]->globalSourceSink |= true;
+                                tls_pn_edgeToDp[e.idx]->globalSourceSink |= true;
                             }
+                        }
+                    }
+                } else {
+                    for (edge e : tls_pn_virtualEdges) {
+                        node vN = newGraph.source(e), uN = newGraph.target(e);
+                        if ((int)tls_pn_isSrcSink[vN.idx] + (int)tls_pn_isSrcSink[uN.idx] < localSourceSinkCount) {
+                            if (!tls_pn_edgeToDp[e.idx]->globalSourceSink) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingSourceSinkCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastSourceSinkNode = curr_node;
+                            }
+                            tls_pn_edgeToDp[e.idx]->globalSourceSink |= true;
                         }
                     }
                 }
 
-                // computing leakage
-                {
-                    // PROFILE_BLOCK("processNode:: compute leakage");
-                    if (curr_state.outgoingLeakageCount >= 2)
-                    {
-                        for (edge e : virtualEdges)
-                        {
-                            // if(!isVirtual[e]) continue;
+                BF_INSTR(
+                auto __pn_tF_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_F_gss_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tF_end - __pn_tF_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tG_start = __pn_tF_end;
+                )
 
-                            if (!edgeToDp[e]->hasLeakage)
-                            {
-                                node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                            }
-
-                            edgeToDp[e]->hasLeakage |= true;
+                if (curr_state.outgoingLeakageCount >= 2) {
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (!tls_pn_edgeToDp[e.idx]->hasLeakage) {
+                            node_dp[tls_pn_edgeChild[e.idx]].outgoingLeakageCount++;
+                            node_dp[tls_pn_edgeChild[e.idx]].lastLeakageNode = curr_node;
                         }
+                        tls_pn_edgeToDp[e.idx]->hasLeakage |= true;
                     }
-                    else if (curr_state.outgoingLeakageCount == 1)
-                    {
-                        for (edge e : virtualEdges)
-                        {
-                            // if(!isVirtual[e]) continue;
-
-                            if (edgeChild[e] != curr_state.lastLeakageNode)
-                            {
-                                if (!edgeToDp[e]->hasLeakage)
-                                {
-                                    node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                    node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                                }
-                                edgeToDp[e]->hasLeakage |= true;
+                } else if (curr_state.outgoingLeakageCount == 1) {
+                    for (edge e : tls_pn_virtualEdges) {
+                        if (tls_pn_edgeChild[e.idx] != curr_state.lastLeakageNode) {
+                            if (!tls_pn_edgeToDp[e.idx]->hasLeakage) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingLeakageCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastLeakageNode = curr_node;
                             }
-                            else
-                            {
-                                node vN = newGraph.source(e), uN = newGraph.target(e);
-                                if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount)
-                                {
-                                    if (!edgeToDp[e]->hasLeakage)
-                                    {
-                                        node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                        node_dp[edgeChild[e]].lastLeakageNode = curr_node;
-                                    }
-                                    edgeToDp[e]->hasLeakage |= true;
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        for (edge e : virtualEdges)
-                        {
-                            // if(!isVirtual[e]) continue;
-
+                            tls_pn_edgeToDp[e.idx]->hasLeakage |= true;
+                        } else {
                             node vN = newGraph.source(e), uN = newGraph.target(e);
-                            if ((int)isLeaking[vN] + (int)isLeaking[uN] < localLeakageCount)
-                            {
-                                if (!edgeToDp[e]->hasLeakage)
-                                {
-                                    node_dp[edgeChild[e]].outgoingLeakageCount++;
-                                    node_dp[edgeChild[e]].lastLeakageNode = curr_node;
+                            if ((int)tls_pn_isLeaking[vN.idx] + (int)tls_pn_isLeaking[uN.idx] < localLeakageCount) {
+                                if (!tls_pn_edgeToDp[e.idx]->hasLeakage) {
+                                    node_dp[tls_pn_edgeChild[e.idx]].outgoingLeakageCount++;
+                                    node_dp[tls_pn_edgeChild[e.idx]].lastLeakageNode = curr_node;
                                 }
-                                edgeToDp[e]->hasLeakage |= true;
+                                tls_pn_edgeToDp[e.idx]->hasLeakage |= true;
                             }
+                        }
+                    }
+                } else {
+                    for (edge e : tls_pn_virtualEdges) {
+                        node vN = newGraph.source(e), uN = newGraph.target(e);
+                        if ((int)tls_pn_isLeaking[vN.idx] + (int)tls_pn_isLeaking[uN.idx] < localLeakageCount) {
+                            if (!tls_pn_edgeToDp[e.idx]->hasLeakage) {
+                                node_dp[tls_pn_edgeChild[e.idx]].outgoingLeakageCount++;
+                                node_dp[tls_pn_edgeChild[e.idx]].lastLeakageNode = curr_node;
+                            }
+                            tls_pn_edgeToDp[e.idx]->hasLeakage |= true;
                         }
                     }
                 }
 
-                // updating local degrees of poles of states going into A
-                {
-                    // PROFILE_BLOCK("processNode:: update DP local degrees at poles");
-                    for (edge e : virtualEdges)
-                    {
-                        // if(!isVirtual[e]) continue;
-                        node vN = newGraph.source(e);
-                        node uN = newGraph.target(e);
+                BF_INSTR(
+                auto __pn_tG_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_G_leak_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tG_end - __pn_tG_start).count(),
+                    std::memory_order_relaxed);
+                auto __pn_tH_start = __pn_tG_end;
+                )
 
-                        EdgeDPState *BA = edgeToDp[e];
-                        EdgeDPState *AB = edgeToDpR[e];
+                for (edge e : tls_pn_virtualEdges) {
+                    SPQRsolve::EdgeDPState *BA = tls_pn_edgeToDp[e.idx];
+                    SPQRsolve::EdgeDPState *AB = tls_pn_edgeToDpR[e.idx];
 
-                        BA->localInS = localInDeg[mapBlockToNew(BA->s)] - AB->localInS;
-                        BA->localInT = localInDeg[mapBlockToNew(BA->t)] - AB->localInT;
-
-                        BA->localOutS = localOutDeg[mapBlockToNew(BA->s)] - AB->localOutS;
-                        BA->localOutT = localOutDeg[mapBlockToNew(BA->t)] - AB->localOutT;
-                    }
+                    BA->localInS  = tls_pn_localInDeg [mapBlockToNew(BA->s).idx] - AB->localInS;
+                    BA->localInT  = tls_pn_localInDeg [mapBlockToNew(BA->t).idx] - AB->localInT;
+                    BA->localOutS = tls_pn_localOutDeg[mapBlockToNew(BA->s).idx] - AB->localOutS;
+                    BA->localOutT = tls_pn_localOutDeg[mapBlockToNew(BA->t).idx] - AB->localOutT;
                 }
+                BF_INSTR(
+                auto __pn_tH_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_H_poles_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tH_end - __pn_tH_start).count(),
+                    std::memory_order_relaxed);
+                )
             }
 
             void tryBubblePNodeGrouping(
@@ -2232,7 +2461,7 @@ namespace solver
 
                     T.forEachAdj(A, [&](node /*other*/, edge e) {
                         // std::cout << T.source(e) << " -> " << T.target(e) << std::endl;
-                        auto &state = (T.source(e) == A ? edge_dp[e].down : edge_dp[e].up);
+                        const auto &state = stateLeavingNode(edge_dp, T, blk, A, e);
                         // directST = (state.s == s ? state.directST : state.directTS);
                         // directTS = (state.s == s ? state.directTS : state.directST);
 
@@ -2290,7 +2519,7 @@ namespace solver
                     good &= goodS == goodT;
                     good &= goodS.size() > 0;
 
-                    good &= (localOutSSum == ctx().outDeg[cc.toOrig[blk.toCc[bS]]] && localInTSum == ctx().inDeg[cc.toOrig[blk.toCc[bT]]]);
+                    good &= (localOutSSum == blk.globOut[bS] && localInTSum == blk.globIn[bT]);
 
                     // std::cout << "localOutSSum: " << localOutSSum << ", localInTSum: " << localInTSum << std::endl;
 
@@ -2316,6 +2545,9 @@ namespace solver
                            bool swap,
                            bool additionalCheck)
             {
+                if (!curr.s || !curr.t || !back.s || !back.t)
+                    return;
+
                 node S = swap ? blk.toOrig[curr.t] : blk.toOrig[curr.s];
                 node T = swap ? blk.toOrig[curr.s] : blk.toOrig[curr.t];
 
@@ -2413,6 +2645,8 @@ namespace solver
                 bool acyclic = curr.acyclic;
                 bool noLeakage = !curr.hasLeakage;
                 bool noGSource = !curr.globalSourceSink;
+                const int globOutS = swap ? blk.globOut[curr.t] : blk.globOut[curr.s];
+                const int globInT = swap ? blk.globIn[curr.s] : blk.globIn[curr.t];
 
                 if (
                     !additionalCheck &&
@@ -2422,8 +2656,8 @@ namespace solver
                     backGood &&
                     outS > 0 &&
                     inT > 0 &&
-                    ctx().outDeg[S] == outS &&
-                    ctx().inDeg[T] == inT &&
+                    globOutS == outS &&
+                    globInT == inT &&
                     !ctx().isEntry[S] &&
                     !ctx().isExit[T])
                 {
@@ -2455,6 +2689,9 @@ namespace solver
 
                 for (edge e : T.edges)
                 {
+                    const ogdf::node parent = parentOnTreeEdge(T, blk, e);
+                    const ogdf::node child = childOnTreeEdge(T, blk, e);
+
                     // std::cout << "CHECKING FOR " << T.source(e) << " " << T.target(e) << std::endl;
                     const EdgeDPState &down = edge_dp[e].down;
                     const EdgeDPState &up = edge_dp[e].up;
@@ -2463,14 +2700,16 @@ namespace solver
                     //     std::cout << "DOWN" << std::endl;
                     bool additionalCheck;
 
-                    additionalCheck = (blk.spqr->typeOf(T.source(e)) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(T.target(e)) == SPQRTree::NodeType::SNode);
+                    additionalCheck = (blk.spqr->typeOf(parent) == SPQRTree::NodeType::PNode &&
+                                       blk.spqr->typeOf(child) == SPQRTree::NodeType::SNode);
                     tryBubble(down, up, blk, cc, false, additionalCheck);
                     tryBubble(down, up, blk, cc, true, additionalCheck);
                     // }
 
                     // if(blk.spqr->typeOf(T.source(e)) != SPQRTree::NodeType::SNode) {
                     // std::cout << "UP" << std::endl;
-                    additionalCheck = (blk.spqr->typeOf(T.target(e)) == SPQRTree::NodeType::PNode && blk.spqr->typeOf(T.source(e)) == SPQRTree::NodeType::SNode);
+                    additionalCheck = (blk.spqr->typeOf(child) == SPQRTree::NodeType::PNode &&
+                                       blk.spqr->typeOf(parent) == SPQRTree::NodeType::SNode);
 
                     tryBubble(up, down, blk, cc, false, additionalCheck);
                     tryBubble(up, down, blk, cc, true, additionalCheck);
@@ -2494,16 +2733,14 @@ namespace solver
                 return;
             }
 
-            auto &C = ctx();
             const Graph &G = *blk.Gblk;
 
             node src = nullptr, snk = nullptr;
 
             for (node v : G.nodes)
             {
-                node vG = blk.toOrig[v];
                 int inL = blk.inDeg[v], outL = blk.outDeg[v];
-                int inG = C.inDeg[vG], outG = C.outDeg[vG];
+                int inG = blk.globIn[v], outG = blk.globOut[v];
 
                 bool isSrc = (inL == 0 && outL == outG);
                 bool isSnk = (outL == 0 && inL == inG);
@@ -2583,21 +2820,86 @@ namespace solver
             std::vector<ogdf::node> nodeOrder;
             std::vector<ogdf::edge> edgeOrder;
 
-            SPQRsolve::dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder);
+            SPQRsolve::dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder, blk.parent, blk.root);
 
             blk.blkToSkel.init(*blk.Gblk, nullptr);
 
-            for (auto e : edgeOrder)
             {
-                SPQRsolve::processEdge(e, dp, node_dp, cc, blk);
+                BF_INSTR(auto __t0_ph1 = std::chrono::high_resolution_clock::now();)
+                for (auto e : edgeOrder)
+                {
+                    SPQRsolve::processEdge(e, dp, node_dp, cc, blk);
+                }
+                BF_INSTR(
+                auto __t1_ph1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase1_edge_dp_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__t1_ph1 - __t0_ph1).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase1_calls.fetch_add(1, std::memory_order_relaxed);
+                )
             }
 
-            for (auto v : nodeOrder)
+            NodeArray<unsigned char> phase2Prune(T, (unsigned char)SPQRsolve::P2None);
+
             {
-                SPQRsolve::processNode(v, dp, node_dp, cc, blk);
+                BF_INSTR(auto __t0_ph2 = std::chrono::high_resolution_clock::now();)
+                for (auto v : nodeOrder)
+                {
+                    const unsigned char mask = phase2Prune[v];
+
+                    if (mask == SPQRsolve::P2None)
+                    {
+                        BF_INSTR(profiling_patch::phase2_full_count.fetch_add(1, std::memory_order_relaxed);)
+                        SPQRsolve::processNode(v, dp, node_dp, cc, blk);
+                    }
+                    else
+                    {
+                        BF_INSTR(profiling_patch::phase2_light_count.fetch_add(1, std::memory_order_relaxed);)
+                        BF_INSTR(
+                        if (mask & SPQRsolve::P2Tip)
+                            profiling_patch::phase2_pruned_tip.fetch_add(1, std::memory_order_relaxed);
+                        )
+                        BF_INSTR(
+                        if (mask & SPQRsolve::P2Cycle)
+                            profiling_patch::phase2_pruned_cycle.fetch_add(1, std::memory_order_relaxed);
+                        )
+                        BF_INSTR(
+                        if ((mask & SPQRsolve::P2Tip) && (mask & SPQRsolve::P2Cycle))
+                            profiling_patch::phase2_pruned_both.fetch_add(1, std::memory_order_relaxed);
+                        )
+                        SPQRsolve::processNodePrunedLight(v, dp, blk, mask);
+                    }
+
+                    T.forEachAdj(v, [&](ogdf::node child, ogdf::edge te) {
+                        if (child == blk.parent[v])
+                            return;
+
+                        const unsigned char childMask =
+                            (unsigned char)(mask | SPQRsolve::pruneMaskFromState(dp[te].up));
+
+                        phase2Prune[child] = childMask;
+                    });
+                }
+                BF_INSTR(
+                auto __t1_ph2 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase2_node_dp_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__t1_ph2 - __t0_ph2).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase2_calls.fetch_add(1, std::memory_order_relaxed);
+                )
             }
 
-            SPQRsolve::collectSuperbubbles(cc, blk, dp, node_dp);
+            {
+                BF_INSTR(auto __t0_ph3 = std::chrono::high_resolution_clock::now();)
+                SPQRsolve::collectSuperbubbles(cc, blk, dp, node_dp);
+                BF_INSTR(
+                auto __t1_ph3 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase3_collect_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__t1_ph3 - __t0_ph3).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase3_calls.fetch_add(1, std::memory_order_relaxed);
+                )
+            }
         }
 
         void findMiniSuperbubbles()
@@ -2787,17 +3089,9 @@ namespace solver
                 }
                 const auto &T = blk.spqr->tree();
                 blk.skel2tree.reserve(2 * T.edges.size());
-                blk.parent.init(T, nullptr);
-
-                node root = blk.spqr->rootNode();
-                blk.parent[root] = root;
 
                 for (edge te : T.edges)
                 {
-                    node u = T.source(te);
-                    node v = T.target(te);
-                    blk.parent[v] = u;
-
                     if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
                     {
                         blk.skel2tree[eSrc] = te;
@@ -2807,6 +3101,8 @@ namespace solver
                         blk.skel2tree[eTgt] = te;
                     }
                 }
+
+                rootSPQRTreeForDP(blk);
             }
         }
 
@@ -3000,6 +3296,25 @@ namespace solver
 
                 if (blk->Gblk && blk->Gblk->numberOfNodes() >= 3)
                 {
+                    BF_INSTR(
+                    {
+                        uint64_t blk_ss = 0;
+                        uint64_t v_count = 0;
+                        for (ogdf::node vB : blk->Gblk->nodes) {
+                            ++v_count;
+                            if (blk->globIn[vB] == 0 || blk->globOut[vB] == 0) ++blk_ss;
+                        }
+                        tip_diag_spqr_blocks.fetch_add(1, std::memory_order_relaxed);
+                        tip_diag_spqr_verts.fetch_add(v_count, std::memory_order_relaxed);
+                        tip_diag_internal_ss.fetch_add(blk_ss, std::memory_order_relaxed);
+                        if (blk_ss > 0)
+                            tip_diag_blocks_with_ss.fetch_add(1, std::memory_order_relaxed);
+                        uint64_t prev = tip_diag_max_ss_one_block.load(std::memory_order_relaxed);
+                        while (blk_ss > prev &&
+                               !tip_diag_max_ss_one_block.compare_exchange_weak(
+                                   prev, blk_ss, std::memory_order_relaxed)) {}
+                    }
+                    )
                     solveSPQR(*blk, *w.cc);
                 }
                 checkBlockByCutVertices(*blk, *w.cc);
@@ -3301,13 +3616,179 @@ namespace solver
                     }
                 }
             }
+
+
+            BF_INSTR(
+            {
+                const uint64_t b  = tip_diag_spqr_blocks.load();
+                const uint64_t v  = tip_diag_spqr_verts.load();
+                const uint64_t ss = tip_diag_internal_ss.load();
+                const uint64_t bs = tip_diag_blocks_with_ss.load();
+                const uint64_t mx = tip_diag_max_ss_one_block.load();
+                std::cout << "\n[tip-diag] SPQR-eligible blocks: " << b
+                            << ", verts: " << v
+                            << ", source/sink verts: " << ss
+                            << " (" << (v ? 100.0 * ss / v : 0.0) << "%)"
+                            << ", blocks with >=1: " << bs
+                            << " (" << (b ? 100.0 * bs / b : 0.0) << "%)"
+                            << ", max in one block: " << mx << "\n";
+            }
+            )
         }
+
+        #ifdef BUBBLEFINDER_INSTRUMENT
+                static void printPatch1Profiling()
+                {
+                    namespace pp = profiling_patch;
+                
+                    constexpr double NS_TO_MS = 1e-6;
+                    const auto pct = [](double v, double total) {
+                        return total > 0.0 ? (100.0 * v / total) : 0.0;
+                    };
+                
+                    const uint64_t n_blocks = pp::blocks_with_spqr.load();
+                    const uint64_t n_tnodes = pp::total_tree_nodes.load();
+                    const uint64_t n_pe = pp::pe_total_calls.load();
+                    const uint64_t n_pn_full = pp::phase2_full_count.load();
+                    const uint64_t n_pn_light = pp::phase2_light_count.load();
+                    const uint64_t n_pn_total = n_pn_full + n_pn_light;
+                
+                    const double t_p1 = pp::phase1_edge_dp_time_ns.load() * NS_TO_MS;
+                    const double t_p2 = pp::phase2_node_dp_time_ns.load() * NS_TO_MS;
+                    const double t_p3 = pp::phase3_collect_time_ns.load() * NS_TO_MS;
+                    const double t_phases = t_p1 + t_p2 + t_p3;
+                
+                    auto &os = std::cout;
+                    auto old_flags = os.flags();
+                    auto old_precision = os.precision();
+                
+                    auto p3 = [&]() -> std::ostream& { os << std::fixed << std::setprecision(3); return os; };
+                    auto p1 = [&]() -> std::ostream& { os << std::fixed << std::setprecision(1); return os; };
+                
+                    p3() << "\nSPQR solver profile\n"
+                        << n_blocks << " blocks, " << n_tnodes << " tree nodes (avg ";
+                    p1() << (n_blocks ? (double)n_tnodes / (double)n_blocks : 0.0)
+                        << "/block).\n";
+                
+                    p3() << "\nPhases:\n"
+                        << "  1  edge DP   (processEdge)          " << t_p1 << " ms (";
+                    p1() << pct(t_p1, t_phases) << "%) / " << n_pe << " calls\n";
+                    p3() << "  2  node DP   (processNode)          " << t_p2 << " ms (";
+                    p1() << pct(t_p2, t_phases) << "%) / " << n_pn_total << " calls ("
+                        << n_pn_full << " full, " << n_pn_light << " pruned)\n";
+                    p3() << "  3  collect   (collectSuperbubbles)  " << t_p3 << " ms (";
+                    p1() << pct(t_p3, t_phases) << "%)\n";
+                
+                    if (n_pn_total > 0) {
+                        const uint64_t both     = pp::phase2_pruned_both.load();
+                        const uint64_t only_src = pp::phase2_pruned_tip.load()   - both;
+                        const uint64_t only_cyc = pp::phase2_pruned_cycle.load() - both;
+                        os << "\nPhase 2 pruning: " << n_pn_light << "/" << n_pn_total << " (";
+                        p1() << pct((double)n_pn_light, (double)n_pn_total) << "%)";
+                        os << " " << only_src << " by source/sink ancestor, "
+                        << only_cyc << " by cycle, " << both << " by both.\n";
+                    }
+                
+                    if (n_blocks > 0) {
+                        const uint64_t scanned = pp::reroot_spqr_nodes_scanned.load();
+                        p3() << "\nRoot selection (chooseSPQRRootForPruning): "
+                            << (pp::reroot_time_ns.load() * NS_TO_MS) << " ms total. "
+                            << pp::reroot_marked_found.load() << "/" << n_blocks
+                            << " blocks found marked, "
+                            << pp::reroot_fallback.load() << " fell back. "
+                            << scanned << " skeletons scanned overall (avg ";
+                        p1() << ((double)scanned / (double)n_blocks) << "/block).\n";
+                    }
+                
+                    auto row = [&](const char *label, double t, double sum) {
+                        os << "  " << label;
+                        p3() << t << " ms (";
+                        p1() << pct(t, sum) << "%)\n";
+                    };
+                
+                    if (n_pe > 0) {
+                        const double tA = pp::pe_A_setup_ns.load()* NS_TO_MS;
+                        const double tB = pp::pe_B_build_ns.load() * NS_TO_MS;
+                        const double tC = pp::pe_C_pnode_extra_ns.load() * NS_TO_MS;
+                        const double tD = pp::pe_D_leakage_ns.load() * NS_TO_MS;
+                        const double tE = pp::pe_E_acyclic_ns.load()* NS_TO_MS;
+                        const double sum = tA + tB + tC + tD + tE;
+                        os << "\nprocessEdge: " << n_pe << " calls, total ";
+                        p3() << sum << " ms, ";
+                        p1() << ((sum * 1000.0) / (double)n_pe) << " us avg\n";
+                        row("setup            ", tA, sum);
+                        row("build + child DP ", tB, sum);
+                        row("P-node extras    ", tC, sum);
+                        row("leakage          ", tD, sum);
+                        row("acyclicity       ", tE, sum);
+                    }
+                
+                    if (n_pn_full > 0) {
+                        const double tA = pp::pn_A_setup_ns.load()* NS_TO_MS;
+                        const double tB = pp::pn_B_build_ns.load()* NS_TO_MS;
+                        const double tC = pp::pn_C_mark_ns.load() * NS_TO_MS;
+                        const double tD = pp::pn_D_pnode_ns.load()* NS_TO_MS;
+                        const double tE1= pp::pn_E1_branch_ns.load() * NS_TO_MS;
+                        const double tE2 = pp::pn_E2_branch_ns.load() * NS_TO_MS;
+                        const double tE3 = pp::pn_E3_branch_ns.load() * NS_TO_MS;
+                        const double tF = pp::pn_F_gss_ns.load() * NS_TO_MS;
+                        const double tG = pp::pn_G_leak_ns.load() * NS_TO_MS;
+                        const double tH = pp::pn_H_poles_ns.load() * NS_TO_MS;
+                        const double tE = tE1 + tE2 + tE3;
+                        const double sum = tA + tB + tC + tD + tE + tF + tG + tH;
+                        const uint64_t n_e1 = pp::pn_E1_calls.load();
+                        const uint64_t n_e2 = pp::pn_E2_calls.load();
+                        const uint64_t n_e3 = pp::pn_E3_calls.load();
+                
+                        os << "\nprocessNode: " << n_pn_full << " full calls, "
+                        << pp::pn_pnode_early_returns.load()
+                        << " P-node early returns, total ";
+                        p3() << sum << " ms\n";
+                        row("setup            ", tA, sum);
+                        row("build            ", tB, sum);
+                        row("mark src/sink    ", tC, sum);
+                        row("P-node directST  ", tD, sum);
+                        row("acyclicity check ", tE, sum);
+                        os << "    full FAS run on newGraph:           " << n_e3 << " calls";
+                        if (n_e3 > 0) {
+                            os << " (";
+                            p3() << tE3 << " ms, ";
+                            p1() << ((tE3 * 1000.0) / (double)n_e3) << " us avg)";
+                        }
+                        os << "\n    shortcut (1 child has cycle):       " << n_e2 << " calls";
+                        if (n_e2 > 0) { os << " ("; p3() << tE2 << " ms)"; }
+                        os << "\n    shortcut (>=2 children have cycle): " << n_e1 << " calls";
+                        if (n_e1 > 0) { os << " ("; p3() << tE1 << " ms)"; }
+                        os << "\n";
+                        row("source/sink prop ", tF, sum);
+                        row("leakage prop     ", tG, sum);
+                        row("pole fixup       ", tH, sum);
+                    }
+                
+                    const uint64_t n_pn_fast = pp::pn_fastpath_calls.load();
+                    const uint64_t n_e3_total = pp::pn_E3_calls.load();
+                    const uint64_t n_e3_skip  = pp::pn_E3_fas_dag_skipped.load();
+                    if (n_pn_full > 0 || n_e3_total > 0) {
+                        if (n_e3_total > 0) {
+                            os << " FAS skipped on DAG " << n_e3_skip << "/" << n_e3_total << " (";
+                            p1() << pct((double)n_e3_skip, (double)n_e3_total) << "%)";
+                        }
+                        os << ".\n";
+                    }
+                    os << std::endl;
+                
+                    os.precision(old_precision);
+                    os.flags(old_flags);
+                }
+        #endif  // BUBBLEFINDER_INSTRUMENT
+ 
 
         void solve()
         {
             TIME_BLOCK("Finding superbubbles in blocks");
             findMiniSuperbubbles();
             solveStreaming();
+            BF_INSTR(printPatch1Profiling();)
         }
     }
 
@@ -3498,6 +3979,41 @@ namespace solver
                           << " E=" << g_cnt_E.load()
                           << std::endl;
             }
+
+        
+            #ifdef BUBBLEFINDER_INSTRUMENT
+                        namespace profiling_patch
+                        {
+                            std::atomic<uint64_t> blocks_with_spqr{0};
+                            std::atomic<uint64_t> total_tree_nodes{0};
+
+                            std::atomic<uint64_t> phase1_edge_dp_time_ns{0};
+                            std::atomic<uint64_t> phase2_node_dp_time_ns{0};
+                            std::atomic<uint64_t> phase3_solve_time_ns{0};
+                            std::atomic<uint64_t> phase4_caseE_time_ns{0};
+                            std::atomic<uint64_t> phase1_calls{0};
+                            std::atomic<uint64_t> phase2_calls{0};
+                            std::atomic<uint64_t> phase3_calls{0};
+                            std::atomic<uint64_t> phase4_calls{0};
+
+                            std::atomic<uint64_t> p3_solveS_ns{0};
+                            std::atomic<uint64_t> p3_solveP_ns{0};
+                            std::atomic<uint64_t> p3_solveRR_ns{0};
+                            std::atomic<uint64_t> p3_solveS_calls{0};
+                            std::atomic<uint64_t> p3_solveP_calls{0};
+                            std::atomic<uint64_t> p3_solveRR_calls{0};
+
+                            std::atomic<uint64_t> pn_total_calls{0};
+                            std::atomic<uint64_t> pn_fastpath_calls{0};
+                            std::atomic<uint64_t> pn_A_setup_ns{0};
+                            std::atomic<uint64_t> pn_B_build_ns{0};
+                            std::atomic<uint64_t> pn_C_propagate_ns{0};
+
+                            std::atomic<uint64_t> pe_total_calls{0};
+                            std::atomic<uint64_t> pe_A_setup_ns{0};
+                            std::atomic<uint64_t> pe_B_build_ns{0};
+                        }
+            #endif
 
         }
 
@@ -3793,6 +4309,11 @@ namespace solver
                              const CcData &cc,
                              BlockData &blk)
             {
+                BF_INSTR(
+                profiling_patch::pe_total_calls.fetch_add(1, std::memory_order_relaxed);
+                auto __pe_tA_start = std::chrono::high_resolution_clock::now();
+                )
+
                 auto &C = ctx();
 
                 EdgeDPState &state = dp[curr_edge].down;
@@ -3861,6 +4382,13 @@ namespace solver
                         break;
                     }
                 }
+
+                BF_INSTR(
+                auto __pe_tB_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_A_setup_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pe_tB_start - __pe_tA_start).count(),
+                    std::memory_order_relaxed);
+                )
 
                 for (ogdf::edge e : skelGraph.edges)
                 {
@@ -3952,6 +4480,13 @@ namespace solver
                         state.localMinusT += child.localMinusS;
                     }
                 }
+            
+                BF_INSTR(
+                auto __pe_tB_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pe_B_build_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pe_tB_end - __pe_tB_start).count(),
+                    std::memory_order_relaxed);
+                )
             }
 
             void processNode(ogdf::node curr_node,
@@ -3959,129 +4494,119 @@ namespace solver
                              const CcData & /*cc*/,
                              BlockData &blk)
             {
+                BF_INSTR(
+                profiling_patch::pn_total_calls.fetch_add(1, std::memory_order_relaxed);
+                auto __pn_tA_start = std::chrono::high_resolution_clock::now();
+                )
+
                 auto& C = ctx();
                 ogdf::node A = curr_node;
                 const StaticSPQRTree &spqr = *blk.spqr;
                 const Skeleton &skel = spqr.skeleton(A);
-                const auto &skelG = skel.getGraph();
+                const uint32_t nSkel = skel.numberOfNodes();
 
-                Graph newGraph;
+                struct VirtEdgeRef { EdgeDPState *toUpdate; EdgeDPState *opposite; };
+                thread_local std::vector<int> tls_localPlusDeg;
+                thread_local std::vector<int> tls_localMinusDeg;
+                thread_local std::vector<VirtEdgeRef> tls_virtualEdges;
 
-                NodeArray<node> skelToNew(skelG, nullptr);
-                for (node v : skelG.nodes)
-                    skelToNew[v] = newGraph.newNode();
+                if (tls_localPlusDeg.size() < nSkel) {
+                    tls_localPlusDeg.resize(nSkel);
+                    tls_localMinusDeg.resize(nSkel);
+                }
+                std::fill_n(tls_localPlusDeg.begin(),  nSkel, 0);
+                std::fill_n(tls_localMinusDeg.begin(), nSkel, 0);
+                tls_virtualEdges.clear();
 
-                NodeArray<node> newToSkel(newGraph, nullptr);
-                for (node v : skelG.nodes)
-                    newToSkel[skelToNew[v]] = v;
-
-                for (ogdf::node h : skelG.nodes)
-                {
+                for (uint32_t i = 0; i < nSkel; ++i) {
+                    ogdf::node h{i};
                     ogdf::node vB = skel.original(h);
                     blk.blkToSkel[vB] = h;
                 }
 
-                NodeArray<int> localPlusDeg(newGraph, 0);
-                NodeArray<int> localMinusDeg(newGraph, 0);
+                BF_INSTR(
+                auto __pn_tB_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_A_setup_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tB_start - __pn_tA_start).count(),
+                    std::memory_order_relaxed);
+                )
 
-                EdgeArray<bool> isVirtual(newGraph, false);
-                EdgeArray<EdgeDPState *> edgeToDp(newGraph, nullptr);
-                EdgeArray<EdgeDPState *> edgeToDpR(newGraph, nullptr);
-                EdgeArray<node> edgeChild(newGraph, nullptr);
+                const ogdf::node parent_of_A = blk.parent(A);
 
-                std::vector<edge> virtualEdges;
-
-                auto mapBlockToNew = [&](ogdf::node bV) -> ogdf::node
-                {
-                    ogdf::node sV = blk.blkToSkel[bV];
-                    ogdf::node nV = skelToNew[sV];
-                    return nV;
-                };
-
-                for (edge e : skelG.edges)
-                {
-                    node u = skelG.source(e);
-                    node v = skelG.target(e);
-
-                    ogdf::node uBlk = skel.original(u);
-                    ogdf::node vBlk = skel.original(v);
-
-                    ogdf::node uG = blk.nodeToOrig[uBlk];
-                    ogdf::node vG = blk.nodeToOrig[vBlk];
-
-                    node nU = skelToNew[u];
-                    node nV = skelToNew[v];
-
-                    if (!skel.isVirtual(e))
-                    {
+                skel.forEachEdge([&](ogdf::edge e, ogdf::node u, ogdf::node v) {
+                    if (!skel.isVirtual(e)) {
                         ogdf::edge eG = blk.edgeToOrig[skel.realEdge(e)];
-                        uG = C.G.source(eG);
-                        vG = C.G.target(eG);
+                        ogdf::node uG = C.G.source(eG);
+                        ogdf::node vG = C.G.target(eG);
 
-                        auto newEdge = newGraph.newEdge(nU, nV);
-                        isVirtual[newEdge] = false;
-
-                        if (blk.nodeToOrig[skel.original(newToSkel[nU])] == uG)
-                        {
-                            localPlusDeg[nU] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                            localMinusDeg[nU] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                            localPlusDeg[nV] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                            localMinusDeg[nV] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
+                        ogdf::node uOrig = blk.nodeToOrig[skel.original(u)];
+                        if (uOrig == uG) {
+                            tls_localPlusDeg [u.idx] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            tls_localMinusDeg[u.idx] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
+                            tls_localPlusDeg [v.idx] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            tls_localMinusDeg[v.idx] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
+                        } else {
+                            tls_localPlusDeg [u.idx] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
+                            tls_localMinusDeg[u.idx] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
+                            tls_localPlusDeg [v.idx] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
+                            tls_localMinusDeg[v.idx] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
                         }
-                        else
-                        {
-                            localPlusDeg[nU] += (getNodeEdgeType(vG, eG) == EdgePartType::PLUS);
-                            localMinusDeg[nU] += (getNodeEdgeType(vG, eG) == EdgePartType::MINUS);
-                            localPlusDeg[nV] += (getNodeEdgeType(uG, eG) == EdgePartType::PLUS);
-                            localMinusDeg[nV] += (getNodeEdgeType(uG, eG) == EdgePartType::MINUS);
-                        }
-                        continue;
+                        return;
                     }
 
+                    // Virtual edge.
                     auto B = skel.twinTreeNode(e);
-                    edge treeE = blk.skel2tree.at(e);
+                    ogdf::edge treeE = blk.skel2tree.at(e);
                     OGDF_ASSERT(treeE != nullptr);
 
-                    EdgeDPState *child = (B == blk.parent(A) ? &edge_dp[treeE].up : &edge_dp[treeE].down);
-                    EdgeDPState *edgeToUpdate = (B == blk.parent(A) ? &edge_dp[treeE].down : &edge_dp[treeE].up);
+                    EdgeDPState *child    = (B == parent_of_A ? &edge_dp[treeE].up   : &edge_dp[treeE].down);
+                    EdgeDPState *toUpdate = (B == parent_of_A ? &edge_dp[treeE].down : &edge_dp[treeE].up);
 
-                    ogdf::node nS = mapBlockToNew(child->s);
-                    ogdf::node nT = mapBlockToNew(child->t);
 
-                    edge newEdge = newGraph.newEdge(nS, nT);
-                    isVirtual[newEdge] = true;
+                    ogdf::node nS = blk.blkToSkel[child->s];
+                    ogdf::node nT = blk.blkToSkel[child->t];
 
-                    virtualEdges.push_back(newEdge);
-                    edgeToDp[newEdge] = edgeToUpdate;
-                    edgeToDpR[newEdge] = child;
-                    edgeChild[newEdge] = B;
+                    tls_virtualEdges.push_back({toUpdate, child});
 
-                    if (nS == nU && nT == nV)
-                    {
-                        localMinusDeg[nS] += child->localMinusT;
-                        localPlusDeg[nS] += child->localPlusT;
-                        localMinusDeg[nT] += child->localMinusS;
-                        localPlusDeg[nT] += child->localPlusS;
+                    if (nS == u && nT == v) {
+                        tls_localMinusDeg[nS.idx] += child->localMinusT;
+                        tls_localPlusDeg [nS.idx] += child->localPlusT;
+                        tls_localMinusDeg[nT.idx] += child->localMinusS;
+                        tls_localPlusDeg [nT.idx] += child->localPlusS;
+                    } else {
+                        tls_localMinusDeg[nS.idx] += child->localMinusS;
+                        tls_localPlusDeg [nS.idx] += child->localPlusS;
+                        tls_localMinusDeg[nT.idx] += child->localMinusT;
+                        tls_localPlusDeg [nT.idx] += child->localPlusT;
                     }
-                    else
-                    {
-                        localMinusDeg[nS] += child->localMinusS;
-                        localPlusDeg[nS] += child->localPlusS;
-                        localMinusDeg[nT] += child->localMinusT;
-                        localPlusDeg[nT] += child->localPlusT;
-                    }
+                });
+
+                BF_INSTR(
+                auto __pn_tC_start = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_B_build_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tC_start - __pn_tB_start).count(),
+                    std::memory_order_relaxed);
+                )
+
+                for (const auto &ve : tls_virtualEdges) {
+                    EdgeDPState *BA = ve.toUpdate;
+                    EdgeDPState *AB = ve.opposite;
+
+                    ogdf::node sH = blk.blkToSkel[BA->s];
+                    ogdf::node tH = blk.blkToSkel[BA->t];
+
+                    BA->localPlusS  = tls_localPlusDeg [sH.idx] - AB->localPlusS;
+                    BA->localPlusT  = tls_localPlusDeg [tH.idx] - AB->localPlusT;
+                    BA->localMinusS = tls_localMinusDeg[sH.idx] - AB->localMinusS;
+                    BA->localMinusT = tls_localMinusDeg[tH.idx] - AB->localMinusT;
                 }
 
-                for (edge e : virtualEdges)
-                {
-                    EdgeDPState *BA = edgeToDp[e];
-                    EdgeDPState *AB = edgeToDpR[e];
-
-                    BA->localPlusS = localPlusDeg[mapBlockToNew(BA->s)] - AB->localPlusS;
-                    BA->localPlusT = localPlusDeg[mapBlockToNew(BA->t)] - AB->localPlusT;
-                    BA->localMinusS = localMinusDeg[mapBlockToNew(BA->s)] - AB->localMinusS;
-                    BA->localMinusT = localMinusDeg[mapBlockToNew(BA->t)] - AB->localMinusT;
-                }
+                BF_INSTR(
+                auto __pn_tC_end = std::chrono::high_resolution_clock::now();
+                profiling_patch::pn_C_propagate_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__pn_tC_end - __pn_tC_start).count(),
+                    std::memory_order_relaxed);
+                )
             }
 
             void solveS(ogdf::node sNode,
@@ -4091,104 +4616,133 @@ namespace solver
                         const CcData &cc)
             {
                 const Skeleton &skel = blk.spqr->skeleton(sNode);
-                const auto &skelG = skel.getGraph();
-                const auto &T = blk.spqr->tree();
+                const uint32_t nSkel = skel.numberOfNodes();
+                const uint32_t nEdges = skel.numberOfEdges();
 
-                std::vector<ogdf::node> nodesInOrderGcc;
-                std::vector<ogdf::node> nodesInOrderSkel;
+                if (nSkel == 0 || nEdges == 0) return;
 
-                std::unordered_map<uint32_t, EdgeDPState *> skelToState;
-                skelToState.reserve(8);
+                struct AdjE   { uint32_t neighbor; uint32_t edge; };
+                struct StateRef { uint32_t treeIdx; EdgeDPState *state; };
 
-                std::vector<ogdf::edge> adjEdgesG;
-                std::vector<adjEntry> adjEntriesSkel;
+                thread_local std::vector<AdjE> tls_adj0;
+                thread_local std::vector<AdjE> tls_adj1;
+                thread_local std::vector<uint8_t> tls_adjCount;
+                thread_local std::vector<StateRef> tls_skelToState;
+                thread_local std::vector<ogdf::node> tls_nodesInOrderGcc;
+                thread_local std::vector<ogdf::node> tls_nodesInOrderSkel;
+                thread_local std::vector<ogdf::edge> tls_adjEdgesG;
+                thread_local std::vector<adjEntry> tls_adjEntriesSkel;
+                thread_local std::vector<std::string> tls_res;
 
-                for (edge e : skelG.edges)
-                {
-                    if (!skel.isVirtual(e))
-                        continue;
-                    auto B = skel.twinTreeNode(e);
-                    edge treeE = blk.skel2tree.at(e);
-
-                    EdgeDPState *child = (B == blk.parent(sNode) ? &dp[treeE].up : &dp[treeE].down);
-                    skelToState[treeE.idx] = child;
+                if (tls_adj0.size() < nSkel) {
+                    tls_adj0.resize(nSkel);
+                    tls_adj1.resize(nSkel);
+                    tls_adjCount.resize(nSkel);
                 }
+                std::fill_n(tls_adjCount.begin(), nSkel, 0);
+                tls_skelToState.clear();
+                tls_nodesInOrderGcc.clear();
+                tls_nodesInOrderSkel.clear();
+                tls_adjEdgesG.clear();
+                tls_adjEntriesSkel.clear();
+                tls_res.clear();
 
-                {
-                    node firstNode = skelG.firstNode();
-                    node secondNode = nullptr;
-                    skelG.forEachAdj(firstNode, [&](node neighbor, edge) {
-                        if (!secondNode) secondNode = neighbor;
-                    });
-                    if (secondNode)
-                    {
-                        ogdf::node u = firstNode;
-                        ogdf::node prev = secondNode;
-
-                        while (true)
-                        {
-                            nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
-                            nodesInOrderSkel.push_back(u);
-
-                            ogdf::node nextU = nullptr;
-                            ogdf::edge nextE = nullptr;
-                            bool closing = false;
-                            ogdf::edge closingEdge = nullptr;
-
-                            skelG.forEachAdj(u, [&](ogdf::node neighbor, ogdf::edge e) {
-                                if (neighbor == prev)
-                                    return;
-                                if (neighbor == firstNode && u != firstNode)
-                                {
-                                    closing = true;
-                                    closingEdge = e;
-                                    return;
-                                }
-                                if (neighbor == firstNode || neighbor == prev)
-                                    return;
-
-                                nextU = neighbor;
-                                nextE = e;
-                            });
-
-                            if (closing)
-                            {
-                                if (skel.realEdge(closingEdge))
-                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(closingEdge)]);
-                                else
-                                    adjEdgesG.push_back(nullptr);
-                                adjEntriesSkel.push_back(adjEntry{firstNode, closingEdge});
-                                break;
-                            }
-
-                            if (!nextU)
-                                break;
-
-                            if (skel.realEdge(nextE))
-                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(nextE)]);
-                            else
-                                adjEdgesG.push_back(nullptr);
-                            adjEntriesSkel.push_back(adjEntry{nextU, nextE});
-
-                            prev = u;
-                            u = nextU;
-                        }
+                const ogdf::node parent_of_S = blk.parent(sNode);
+                skel.forEachEdge([&](ogdf::edge e, ogdf::node u, ogdf::node v) {
+                    if (tls_adjCount[u.idx] == 0) {
+                        tls_adj0[u.idx] = {v.idx, e.idx};
+                        tls_adjCount[u.idx] = 1;
+                    } else if (tls_adjCount[u.idx] == 1) {
+                        tls_adj1[u.idx] = {v.idx, e.idx};
+                        tls_adjCount[u.idx] = 2;
                     }
+                    if (tls_adjCount[v.idx] == 0) {
+                        tls_adj0[v.idx] = {u.idx, e.idx};
+                        tls_adjCount[v.idx] = 1;
+                    } else if (tls_adjCount[v.idx] == 1) {
+                        tls_adj1[v.idx] = {u.idx, e.idx};
+                        tls_adjCount[v.idx] = 2;
+                    }
+
+                    if (skel.isVirtual(e)) {
+                        ogdf::node B = skel.twinTreeNode(e);
+                        ogdf::edge treeE = blk.skel2tree.at(e);
+                        EdgeDPState *child = (B == parent_of_S ? &dp[treeE].up : &dp[treeE].down);
+                        tls_skelToState.push_back({treeE.idx, child});
+                    }
+                });
+
+                auto findState = [&](uint32_t treeIdx) -> EdgeDPState* {
+                    for (const auto &sr : tls_skelToState) {
+                        if (sr.treeIdx == treeIdx) return sr.state;
+                    }
+                    return nullptr; 
+                };
+
+                if (tls_adjCount[0] == 0) return;
+
+                const uint32_t firstNode_idx = 0;
+                const uint32_t secondNode_idx = tls_adj0[0].neighbor;
+
+                uint32_t u_idx = firstNode_idx;
+                uint32_t prev_idx = secondNode_idx;
+
+                while (true) {
+                    const ogdf::node u_node{u_idx};
+                    tls_nodesInOrderGcc.push_back(blk.toCc[skel.original(u_node)]);
+                    tls_nodesInOrderSkel.push_back(u_node);
+
+                    uint32_t nextU_idx = UINT32_MAX;
+                    uint32_t nextE_idx = UINT32_MAX;
+                    bool closing = false;
+                    uint32_t closingEdge_idx = UINT32_MAX;
+
+                    const uint8_t cnt = tls_adjCount[u_idx];
+                    for (uint8_t i = 0; i < cnt; ++i) {
+                        const AdjE &ae = (i == 0) ? tls_adj0[u_idx] : tls_adj1[u_idx];
+                        if (ae.neighbor == prev_idx) continue;
+                        if (ae.neighbor == firstNode_idx && u_idx != firstNode_idx) {
+                            closing = true;
+                            closingEdge_idx = ae.edge;
+                            break;
+                        }
+                        if (ae.neighbor == firstNode_idx || ae.neighbor == prev_idx) continue;
+                        nextU_idx = ae.neighbor;
+                        nextE_idx = ae.edge;
+                    }
+
+                    if (closing) {
+                        ogdf::edge ce{closingEdge_idx};
+                        ogdf::edge real = skel.realEdge(ce);
+                        tls_adjEdgesG.push_back(real ? blk.edgeToOrig[real] : ogdf::edge{nullptr});
+                        tls_adjEntriesSkel.push_back(adjEntry{ogdf::node{firstNode_idx}, ce});
+                        break;
+                    }
+
+                    if (nextU_idx == UINT32_MAX) break;
+
+                    ogdf::edge ne{nextE_idx};
+                    ogdf::edge real = skel.realEdge(ne);
+                    tls_adjEdgesG.push_back(real ? blk.edgeToOrig[real] : ogdf::edge{nullptr});
+                    tls_adjEntriesSkel.push_back(adjEntry{ogdf::node{nextU_idx}, ne});
+
+                    prev_idx = u_idx;
+                    u_idx = nextU_idx;
                 }
 
-                std::vector<bool> cuts(nodesInOrderGcc.size(), false);
-                std::vector<std::string> res;
+                const size_t nNodes = tls_nodesInOrderGcc.size();
+                if (nNodes == 0 || tls_adjEntriesSkel.empty()) return;
 
-                for (size_t i = 0; i < nodesInOrderGcc.size(); ++i)
-                {
-                    auto uGcc = nodesInOrderGcc[i];
+                auto &C = ctx();
+                const size_t nAdj = tls_adjEntriesSkel.size();
 
-                    std::vector<edge> adjEdgesSkelLoc = {
-                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) % adjEntriesSkel.size()].theEdge(),
-                        adjEntriesSkel[i].theEdge()};
-                    std::vector<ogdf::edge> adjEdgesGLoc = {
-                        adjEdgesG[(i + adjEdgesG.size() - 1) % adjEdgesG.size()],
-                        adjEdgesG[i]};
+                for (size_t i = 0; i < nNodes; ++i) {
+                    const ogdf::node uGcc = tls_nodesInOrderGcc[i];
+                    const size_t prevIdx = (i + nAdj - 1) % nAdj;
+                    const ogdf::edge eSkel0 = tls_adjEntriesSkel[prevIdx].theEdge();
+                    const ogdf::edge eSkel1 = tls_adjEntriesSkel[i].theEdge();
+                    const ogdf::edge eG0 = tls_adjEdgesG[prevIdx];
+                    const ogdf::edge eG1 = tls_adjEdgesG[i];
 
                     bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) ||
                                       (!cc.isCutNode[uGcc]));
@@ -4196,52 +4750,33 @@ namespace solver
                     EdgePartType t0 = EdgePartType::NONE;
                     EdgePartType t1 = EdgePartType::NONE;
 
-                    if (!skel.isVirtual(adjEdgesSkelLoc[0]))
-                    {
-                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
-                    }
-                    else
-                    {
-                        edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
-                        EdgeDPState *state0 = skelToState.at(treeE0.idx);
-                        if (blk.toCc[state0->s] == uGcc)
-                        {
-                            if (state0->localMinusS == 0 && state0->localPlusS > 0)
-                                t0 = EdgePartType::PLUS;
-                            else if (state0->localMinusS > 0 && state0->localPlusS == 0)
-                                t0 = EdgePartType::MINUS;
-                        }
-                        else
-                        {
-                            if (state0->localMinusT == 0 && state0->localPlusT > 0)
-                                t0 = EdgePartType::PLUS;
-                            else if (state0->localMinusT > 0 && state0->localPlusT == 0)
-                                t0 = EdgePartType::MINUS;
+                    // edge 0
+                    if (!skel.isVirtual(eSkel0)) {
+                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG0);
+                    } else {
+                        ogdf::edge treeE0 = blk.skel2tree.at(eSkel0);
+                        EdgeDPState *state0 = findState(treeE0.idx);
+                        if (blk.toCc[state0->s] == uGcc) {
+                            if (state0->localMinusS == 0 && state0->localPlusS > 0) t0 = EdgePartType::PLUS;
+                            else if (state0->localMinusS > 0 && state0->localPlusS == 0) t0 = EdgePartType::MINUS;
+                        } else {
+                            if (state0->localMinusT == 0 && state0->localPlusT > 0) t0 = EdgePartType::PLUS;
+                            else if (state0->localMinusT > 0 && state0->localPlusT == 0) t0 = EdgePartType::MINUS;
                         }
                     }
 
                     // edge 1
-                    if (!skel.isVirtual(adjEdgesSkelLoc[1]))
-                    {
-                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
-                    }
-                    else
-                    {
-                        edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
-                        EdgeDPState *state1 = skelToState.at(treeE1.idx);
-                        if (blk.toCc[state1->s] == uGcc)
-                        {
-                            if (state1->localMinusS == 0 && state1->localPlusS > 0)
-                                t1 = EdgePartType::PLUS;
-                            else if (state1->localMinusS > 0 && state1->localPlusS == 0)
-                                t1 = EdgePartType::MINUS;
-                        }
-                        else
-                        {
-                            if (state1->localMinusT == 0 && state1->localPlusT > 0)
-                                t1 = EdgePartType::PLUS;
-                            else if (state1->localMinusT > 0 && state1->localPlusT == 0)
-                                t1 = EdgePartType::MINUS;
+                    if (!skel.isVirtual(eSkel1)) {
+                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG1);
+                    } else {
+                        ogdf::edge treeE1 = blk.skel2tree.at(eSkel1);
+                        EdgeDPState *state1 = findState(treeE1.idx);
+                        if (blk.toCc[state1->s] == uGcc) {
+                            if (state1->localMinusS == 0 && state1->localPlusS > 0) t1 = EdgePartType::PLUS;
+                            else if (state1->localMinusS > 0 && state1->localPlusS == 0) t1 = EdgePartType::MINUS;
+                        } else {
+                            if (state1->localMinusT == 0 && state1->localPlusT > 0) t1 = EdgePartType::PLUS;
+                            else if (state1->localMinusT > 0 && state1->localPlusT == 0) t1 = EdgePartType::MINUS;
                         }
                     }
 
@@ -4249,63 +4784,51 @@ namespace solver
                                   t1 != EdgePartType::NONE &&
                                   t0 != t1);
 
-                    if (nodeIsCut)
-                    {
-                        if (node_dp[sNode].GccCuts_last3.size() < 3)
-                            node_dp[sNode].GccCuts_last3.push_back(uGcc);
+                    if (!nodeIsCut) continue;
 
-                        if (!skel.isVirtual(adjEdgesSkelLoc[0]))
-                        {
-                            EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                    if (node_dp[sNode].GccCuts_last3.size() < 3)
+                        node_dp[sNode].GccCuts_last3.push_back(uGcc);
+
+                    // Label for edge 0
+                    if (!skel.isVirtual(eSkel0)) {
+                        EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG0);
+                        tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                           (tt0 == EdgePartType::PLUS ? "+" : "-"));
-                        }
-                        else
-                        {
-                            edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
-                            EdgeDPState *state0 = skelToState.at(treeE0.idx);
-                            if (uGcc == blk.toCc[state0->s])
-                            {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                    } else {
+                        ogdf::edge treeE0 = blk.skel2tree.at(eSkel0);
+                        EdgeDPState *state0 = findState(treeE0.idx);
+                        if (uGcc == blk.toCc[state0->s]) {
+                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                               (state0->localPlusS > 0 ? "+" : "-"));
-                            }
-                            else
-                            {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                        } else {
+                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                               (state0->localPlusT > 0 ? "+" : "-"));
-                            }
                         }
+                    }
 
-                        if (!skel.isVirtual(adjEdgesSkelLoc[1]))
-                        {
-                            EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
-                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                    // Label for edge 1
+                    if (!skel.isVirtual(eSkel1)) {
+                        EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG1);
+                        tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                           (tt1 == EdgePartType::PLUS ? "+" : "-"));
-                        }
-                        else
-                        {
-                            edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
-                            EdgeDPState *state1 = skelToState.at(treeE1.idx);
-                            if (uGcc == blk.toCc[state1->s])
-                            {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                    } else {
+                        ogdf::edge treeE1 = blk.skel2tree.at(eSkel1);
+                        EdgeDPState *state1 = findState(treeE1.idx);
+                        if (uGcc == blk.toCc[state1->s]) {
+                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                               (state1->localPlusS > 0 ? "+" : "-"));
-                            }
-                            else
-                            {
-                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                        } else {
+                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
                                               (state1->localPlusT > 0 ? "+" : "-"));
-                            }
                         }
                     }
                 }
 
-                OGDF_ASSERT(res.size() % 2 == 0);
-                if (res.size() > 2)
-                {
-                    for (size_t i = 1; i < res.size(); i += 2)
-                    {
-                        std::vector<std::string> v = {res[i], res[(i + 1) % res.size()]};
+                OGDF_ASSERT(tls_res.size() % 2 == 0);
+                if (tls_res.size() > 2) {
+                    const size_t nRes = tls_res.size();
+                    for (size_t i = 1; i < nRes; i += 2) {
+                        std::vector<std::string> v = {tls_res[i], tls_res[(i + 1) % nRes]};
                         addSnarlTagged("S", std::move(v));
                     }
                 }
@@ -4681,41 +5204,58 @@ namespace solver
                      << " |T.edges|=" << T.numberOfEdges() << "\n";
 
                 // 1) S-nodes
-                for (node tNode : T.nodes)
                 {
-                    auto tType = blk.spqr->typeOf(tNode);
-                    if (tType == StaticSPQRTree::NodeType::SNode)
-                    {
-                        VLOG << "[DEBUG][solveNodes] S-node idx=" << tNode.index()
-                             << " -> solveS()\n";
+                BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                for (node tNode : T.nodes) {
+                    if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::SNode) {
+                        BF_INSTR(profiling_patch::p3_solveS_calls.fetch_add(1, std::memory_order_relaxed);)
                         solveS(tNode, node_dp, edge_dp, blk, cc);
                     }
                 }
+                BF_INSTR(
+                auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::p3_solveS_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                    std::memory_order_relaxed);
+                )
+                }
 
                 // 2) P-nodes
-                for (node tNode : T.nodes)
                 {
-                    auto tType = blk.spqr->typeOf(tNode);
-                    if (tType == StaticSPQRTree::NodeType::PNode)
-                    {
-                        VLOG << "[DEBUG][solveNodes] P-node idx=" << tNode.index()
-                             << " -> solveP()\n";
+                BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                for (node tNode : T.nodes) {
+                    if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::PNode) {
+                        BF_INSTR(profiling_patch::p3_solveP_calls.fetch_add(1, std::memory_order_relaxed);)
                         solveP(tNode, node_dp, edge_dp, blk, cc);
                     }
                 }
+                BF_INSTR(
+                auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::p3_solveP_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                    std::memory_order_relaxed);
+                )
+                }
 
-                // 3) R-R edges
-                for (edge e : T.edges)
+              // 3) R-R edges
                 {
+                BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                for (edge e : T.edges) {
                     auto srcT = blk.spqr->typeOf(T.source(e));
                     auto dstT = blk.spqr->typeOf(T.target(e));
                     if (srcT == SPQRTree::NodeType::RNode &&
                         dstT == SPQRTree::NodeType::RNode)
                     {
-                        VLOG << "[DEBUG][solveNodes] R-R edge idx=" << e.idx
-                             << " -> solveRR()\n";
+                        BF_INSTR(profiling_patch::p3_solveRR_calls.fetch_add(1, std::memory_order_relaxed);)
                         solveRR(e, node_dp, edge_dp, blk, cc);
                     }
+                }
+                BF_INSTR(
+                auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::p3_solveRR_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                    std::memory_order_relaxed);
+                )
                 }
 
                 VLOG << "[DEBUG][solveNodes] end\n";
@@ -4732,7 +5272,11 @@ namespace solver
                 auto &C = ctx();
                 const auto &T = blk.spqr->tree();
 
-                // DP on the edges of the SPQR tree
+                BF_INSTR(
+                profiling_patch::blocks_with_spqr.fetch_add(1, std::memory_order_relaxed);
+                profiling_patch::total_tree_nodes.fetch_add(T.numberOfNodes(), std::memory_order_relaxed);
+                )
+
                 ogdf::EdgeArray<EdgeDP> edge_dp(T);
                 ogdf::NodeArray<NodeDPState> node_dp(T);
 
@@ -4743,86 +5287,98 @@ namespace solver
 
                 blk.blkToSkel.init(*blk.Gblk, nullptr);
 
-                // Down phase on the edges
+                {
+                BF_INSTR(auto __sp_t0 = std::chrono::high_resolution_clock::now();)
                 for (ogdf::edge e : edgeOrder)
                 {
                     processEdge(e, edge_dp, cc, blk);
                 }
+                BF_INSTR(
+                auto __sp_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase1_edge_dp_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase1_calls.fetch_add(1, std::memory_order_relaxed);
+                )
+                }
 
-                // Local “node” phase on each node of the tree
+                {
+                BF_INSTR(auto __sp_t0 = std::chrono::high_resolution_clock::now();)
                 for (ogdf::node v : nodeOrder)
                 {
                     processNode(v, edge_dp, cc, blk);
                 }
-
-                // Resolution of S/P/RR snarls
-                solveNodes(node_dp, edge_dp, blk, cc);
-
-                // Pre-calculation: for each vertex of the block, list of S-nodes
-                // in which it appears (to filter case B of Prop. 3.16).
-                ogdf::NodeArray<std::vector<ogdf::node>> vertexInSnodes(*blk.Gblk);
-                for (ogdf::node vB : blk.Gblk->nodes)
-                {
-                    vertexInSnodes[vB].clear();
+                BF_INSTR(
+                auto __sp_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase2_node_dp_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase2_calls.fetch_add(1, std::memory_order_relaxed);
+                )
                 }
 
-                for (ogdf::node mu : T.nodes)
                 {
+                BF_INSTR(auto __sp_t0 = std::chrono::high_resolution_clock::now();)
+                solveNodes(node_dp, edge_dp, blk, cc);
+                BF_INSTR(
+                auto __sp_t1 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase3_solve_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase3_calls.fetch_add(1, std::memory_order_relaxed);
+                )
+                }
+
+                BF_INSTR(auto __sp_t0_p4 = std::chrono::high_resolution_clock::now();)
+
+                thread_local std::vector<std::vector<ogdf::node>> tls_vertexInSnodes;
+                thread_local std::vector<uint32_t> tls_vertexInSnodes_dirty;
+
+                for (uint32_t idx : tls_vertexInSnodes_dirty) {
+                    tls_vertexInSnodes[idx].clear();
+                }
+                tls_vertexInSnodes_dirty.clear();
+
+                const size_t nBlkNodes = blk.Gblk->numberOfNodes();
+                if (tls_vertexInSnodes.size() < nBlkNodes) {
+                    tls_vertexInSnodes.resize(nBlkNodes);
+                }
+
+                for (ogdf::node mu : T.nodes) {
                     if (blk.spqr->typeOf(mu) != ogdf::StaticSPQRTree::NodeType::SNode)
                         continue;
-                    const ogdf::Skeleton &skel = blk.spqr->skeleton(mu);
-                    const auto &skelG = skel.getGraph();
-                    for (ogdf::node vSk : skelG.nodes)
-                    {
-                        ogdf::node vB = skel.original(vSk);
-                        vertexInSnodes[vB].push_back(mu);
+                    const ogdf::Skeleton &skel_p4 = blk.spqr->skeleton(mu);
+                    const uint32_t nSkel_p4 = skel_p4.numberOfNodes();
+                    for (uint32_t i = 0; i < nSkel_p4; ++i) {
+                        ogdf::node vBlk = skel_p4.original(ogdf::node{i});
+                        if (tls_vertexInSnodes[vBlk.idx].empty()) {
+                            tls_vertexInSnodes_dirty.push_back(vBlk.idx);
+                        }
+                        tls_vertexInSnodes[vBlk.idx].push_back(mu);
                     }
                 }
 
-                auto shareSnode = [&](ogdf::node aB, ogdf::node bB) -> bool
-                {
-                    const auto &La = vertexInSnodes[aB];
-                    const auto &Lb = vertexInSnodes[bB];
-                    if (La.empty() || Lb.empty())
-                        return false;
-                    // Naive intersection, but the lists are very small in practice [TO OPTIMIZE ?]
-                    for (ogdf::node x : La)
-                    {
-                        for (ogdf::node y : Lb)
-                        {
-                            if (x == y)
-                                return true;
+                auto shareSnode = [&](ogdf::node aB, ogdf::node bB) -> bool {
+                    const auto &La = tls_vertexInSnodes[aB.idx];
+                    const auto &Lb = tls_vertexInSnodes[bB.idx];
+                    if (La.empty() || Lb.empty()) return false;
+                    for (ogdf::node x : La) {
+                        for (ogdf::node y : Lb) {
+                            if (x == y) return true;
                         }
                     }
                     return false;
                 };
 
-                // Test “dangling” relative to the current block
-                auto hasDanglingOutside = [&](ogdf::node vGcc)
-                {
-                    if (!cc.isCutNode[vGcc])
-                        return false;
-                    if (cc.badCutCount[vGcc] >= 2)
-                        return true;
+                auto hasDanglingOutside = [&](ogdf::node vGcc) {
+                    if (!cc.isCutNode[vGcc]) return false;
+                    if (cc.badCutCount[vGcc] >= 2) return true;
                     if (cc.badCutCount[vGcc] == 1 && cc.lastBad[vGcc] != blk.bNode)
                         return true;
                     return false;
                 };
 
-                // ----------------------
-                // Case E: single-edge snarls
-                // ----------------------
-                std::vector<ogdf::edge> edgesSorted;
-                edgesSorted.reserve(blk.Gblk->numberOfEdges());
-                for (ogdf::edge eB : blk.Gblk->edges)
-                    edgesSorted.push_back(eB);
-
-                std::sort(edgesSorted.begin(), edgesSorted.end(),
-                          [](ogdf::edge a, ogdf::edge b)
-                          { return a.idx < b.idx; });
-
-                for (ogdf::edge eB : edgesSorted)
-                {
+                for (ogdf::edge eB : blk.Gblk->edges) {
                     ogdf::edge eG = blk.edgeToOrig[eB];
 
                     ogdf::node uB = blk.Gblk->source(eB);
@@ -4834,64 +5390,45 @@ namespace solver
                     ogdf::node uG = cc.nodeToOrig[uGcc];
                     ogdf::node vG = cc.nodeToOrig[vGcc];
 
-                    // We ignore edges incident to _trash
                     if (C.node2name[uG] == "_trash" || C.node2name[vG] == "_trash")
                         continue;
 
-                    // We want two non-tips in this block
                     if (cc.isTip[uGcc] || cc.isTip[vGcc])
                         continue;
 
-                    // No dangling blocks outside this block
                     if (hasDanglingOutside(uGcc) || hasDanglingOutside(vGcc))
                         continue;
 
-                    // Sign of this edge in the original graph
-                    EdgePartType edgeSignU = getNodeEdgeType(uG, eG); // sign to u
-                    EdgePartType edgeSignV = getNodeEdgeType(vG, eG); // sign to v
+                    EdgePartType edgeSignU = getNodeEdgeType(uG, eG);
+                    EdgePartType edgeSignV = getNodeEdgeType(vG, eG);
 
-                    auto flipSign = [](EdgePartType t)
-                    {
+                    auto flipSign = [](EdgePartType t) {
                         return (t == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS);
                     };
 
-                    auto check_one_vertex = [&](ogdf::node vB,
-                                                EdgePartType sign,   
-                                                EdgePartType eSign) { 
-                        int totPlus = blk.blkDegPlus[vB];
-                        int totMinus = blk.blkDegMinus[vB];
-
-                        if (sign == EdgePartType::PLUS)
-                        {
-                            if (eSign == EdgePartType::PLUS)
-                            {
-                                // Case A: e = {u+, ...}, others must be -
-                                int othersPlus = totPlus - 1;
+                    auto check_one_vertex = [&](ogdf::node vNode,
+                                                EdgePartType sign,
+                                                EdgePartType eSign) {
+                        int totPlus  = blk.blkDegPlus[vNode];
+                        int totMinus = blk.blkDegMinus[vNode];
+                        if (sign == EdgePartType::PLUS) {
+                            if (eSign == EdgePartType::PLUS) {
+                                int othersPlus  = totPlus - 1;
                                 int othersMinus = totMinus;
                                 return (othersPlus == 0 && othersMinus > 0);
-                            }
-                            else
-                            {
-                                // Case B: e = {u-, ...}, others must be +
-                                int othersPlus = totPlus;
+                            } else {
+                                int othersPlus  = totPlus;
                                 int othersMinus = totMinus - 1;
                                 return (othersMinus == 0 && othersPlus > 0);
                             }
-                        }
-                        else
-                        { // sign == MINUS
-                            if (eSign == EdgePartType::MINUS)
-                            {
-                                // Case A: e = {u-, ...}, others must be +
+                        } else {
+                            if (eSign == EdgePartType::MINUS) {
                                 int othersMinus = totMinus - 1;
-                                int othersPlus = totPlus;
+                                int othersPlus  = totPlus;
                                 return (othersMinus == 0 && othersPlus > 0);
-                            }
-                            else
-                            {
-                                // Case B: e = {u+, ...}, others must be -
+                            } else {
                                 int othersMinus = totMinus;
-                                int othersPlus = totPlus - 1;
+                                int othersPlus  = totPlus - 1;
                                 return (othersPlus == 0 && othersMinus > 0);
                             }
                         }
@@ -4899,27 +5436,29 @@ namespace solver
 
                     auto testCandidate = [&](EdgePartType signU,
                                              EdgePartType signV,
-                                             bool isFlipCase)
-                    {
+                                             bool isFlipCase) {
                         if (isFlipCase && shareSnode(uB, vB))
                             return;
-
                         if (!check_one_vertex(uB, signU, edgeSignU))
                             return;
                         if (!check_one_vertex(vB, signV, edgeSignV))
                             return;
-
-                        std::string s =
-                            C.node2name[uG] + (signU == EdgePartType::PLUS ? "+" : "-");
-                        std::string t =
-                            C.node2name[vG] + (signV == EdgePartType::PLUS ? "+" : "-");
-
+                        std::string s = C.node2name[uG] + (signU == EdgePartType::PLUS ? "+" : "-");
+                        std::string t = C.node2name[vG] + (signV == EdgePartType::PLUS ? "+" : "-");
                         addSnarlTagged("E", {s, t});
                     };
 
                     testCandidate(edgeSignU, edgeSignV, false);
                     testCandidate(flipSign(edgeSignU), flipSign(edgeSignV), true);
                 }
+
+                BF_INSTR(
+                auto __sp_t1_p4 = std::chrono::high_resolution_clock::now();
+                profiling_patch::phase4_caseE_time_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1_p4 - __sp_t0_p4).count(),
+                    std::memory_order_relaxed);
+                profiling_patch::phase4_calls.fetch_add(1, std::memory_order_relaxed);
+                )
             }
 
         }
@@ -5729,6 +6268,106 @@ namespace solver
             return nullptr;
         }
 
+        #ifdef BUBBLEFINDER_INSTRUMENT
+        static void printSnarlsProfiling()
+        {
+            namespace pp = profiling_patch;
+
+            constexpr double NS_TO_MS = 1e-6;
+            const auto pct = [](double v, double total) {
+                return total > 0.0 ? (100.0 * v / total) : 0.0;
+            };
+
+            const uint64_t n_blocks = pp::blocks_with_spqr.load();
+            const uint64_t n_tnodes = pp::total_tree_nodes.load();
+            const uint64_t n_pe = pp::pe_total_calls.load();
+            const uint64_t n_pn = pp::pn_total_calls.load();
+
+            const double t_p1 = pp::phase1_edge_dp_time_ns.load() * NS_TO_MS;
+            const double t_p2 = pp::phase2_node_dp_time_ns.load() * NS_TO_MS;
+            const double t_p3 = pp::phase3_solve_time_ns.load() * NS_TO_MS;
+            const double t_p4 = pp::phase4_caseE_time_ns.load() * NS_TO_MS;
+            const double t_phases = t_p1 + t_p2 + t_p3 + t_p4;
+
+            auto &os = std::cout;
+            auto old_flags = os.flags();
+            auto old_precision = os.precision();
+
+            auto p3 = [&]() -> std::ostream& { os << std::fixed << std::setprecision(3); return os; };
+            auto p1 = [&]() -> std::ostream& { os << std::fixed << std::setprecision(1); return os; };
+
+            p3() << "\nSnarls SPQR solver profile\n"
+                 << n_blocks << " blocks, " << n_tnodes << " tree nodes (avg ";
+            p1() << (n_blocks ? (double)n_tnodes / (double)n_blocks : 0.0) << "/block).\n";
+
+            p3() << "\nPhases:\n"
+                 << "  1  edge DP   (processEdge)            " << t_p1 << " ms (";
+            p1() << pct(t_p1, t_phases) << "%) / " << n_pe << " calls\n";
+            p3() << "  2  node DP   (processNode)            " << t_p2 << " ms (";
+            p1() << pct(t_p2, t_phases) << "%) / " << n_pn << " calls\n";
+            p3() << "  3  solve     (solveS/solveP/solveRR)  " << t_p3 << " ms (";
+            p1() << pct(t_p3, t_phases) << "%)\n";
+            p3() << "  4  case E    (single-edge snarls)     " << t_p4 << " ms (";
+            p1() << pct(t_p4, t_phases) << "%)\n";
+
+            auto row = [&](const char *label, double t, double sum) {
+                os << "  " << label;
+                p3() << t << " ms (";
+                p1() << pct(t, sum) << "%)\n";
+            };
+
+            if (n_pe > 0) {
+                const double tA = pp::pe_A_setup_ns.load() * NS_TO_MS;
+                const double tB = pp::pe_B_build_ns.load() * NS_TO_MS;
+                const double sum = tA + tB;
+                os << "\nprocessEdge: " << n_pe << " calls, total ";
+                p3() << sum << " ms, ";
+                p1() << ((sum * 1000.0) / (double)n_pe) << " us avg\n";
+                row("setup            ", tA, sum);
+                row("build + child DP ", tB, sum);
+            }
+
+            if (n_pn > 0) {
+                const double tA = pp::pn_A_setup_ns.load() * NS_TO_MS;
+                const double tB = pp::pn_B_build_ns.load() * NS_TO_MS;
+                const double tC = pp::pn_C_propagate_ns.load() * NS_TO_MS;
+                const double sum = tA + tB + tC;
+                os << "\nprocessNode: " << n_pn << " calls, total ";
+                p3() << sum << " ms, ";
+                p1() << ((sum * 1000.0) / (double)n_pn) << " us avg\n";
+                row("setup            ", tA, sum);
+                row("build            ", tB, sum);
+                row("propagate degrees", tC, sum);
+            }
+
+            {
+                const uint64_t s_calls  = pp::p3_solveS_calls.load();
+                const uint64_t p_calls  = pp::p3_solveP_calls.load();
+                const uint64_t rr_calls = pp::p3_solveRR_calls.load();
+                const double s_ms  = pp::p3_solveS_ns.load()  * NS_TO_MS;
+                const double p_ms  = pp::p3_solveP_ns.load()  * NS_TO_MS;
+                const double rr_ms = pp::p3_solveRR_ns.load() * NS_TO_MS;
+                const double sum   = s_ms + p_ms + rr_ms;
+                if (sum > 0.0) {
+                    os << "\nPhase 3 breakdown: total ";
+                    p3() << sum << " ms\n";
+                    os << "  solveS  " << s_calls  << " calls (";
+                    p3() << s_ms  << " ms, "; p1() << pct(s_ms,  sum) << "%)\n";
+                    os << "  solveP  " << p_calls  << " calls (";
+                    p3() << p_ms  << " ms, "; p1() << pct(p_ms,  sum) << "%)\n";
+                    os << "  solveRR " << rr_calls << " calls (";
+                    p3() << rr_ms << " ms, "; p1() << pct(rr_ms, sum) << "%)\n";
+                }
+            }
+
+            os << std::endl;
+
+            os.precision(old_precision);
+            os.flags(old_flags);
+        }
+        #endif
+
+
         void solve()
         {
             std::cout << "Finding snarls...\n";
@@ -5835,6 +6474,21 @@ namespace solver
                 }
 
                 {
+                    for (auto &cc_ptr : components) {
+                        if (!cc_ptr || !cc_ptr->Gcc) continue;
+                        const size_t n = cc_ptr->Gcc->numberOfNodes();
+                        if (n == 0) continue;
+                        const ogdf::node last{static_cast<uint32_t>(n - 1)};
+                        (void)cc_ptr->isTip[last];
+                        (void)cc_ptr->isCutNode[last];
+                        (void)cc_ptr->isGoodCutNode[last];
+                        (void)cc_ptr->lastBad[last];
+                        (void)cc_ptr->badCutCount[last];
+                        (void)cc_ptr->nodeToOrig[last];
+                        (void)cc_ptr->degPlus[last];
+                        (void)cc_ptr->degMinus[last];
+                    }
+
                     MARK_SCOPE_MEM("sn/phase/bcTrees");
 
                     size_t numThreads = std::thread::hardware_concurrency();
@@ -6121,13 +6775,12 @@ namespace solver
             print_phase("I/O", g_stats_io);
             print_phase("BUILD", g_stats_build);
             print_phase("LOGIC", g_stats_logic);
+        
+            BF_INSTR(printSnarlsProfiling();)
         }
 
         void output_spqr_tree_only()
         {
-
-            // Progress logging goes to stderr to avoid corrupting the .spqr output
-            // when writing to stdout.
             std::cerr << "[spqr-tree] Writing SPQR-tree representation of the graph\n";
 
             auto &C = ctx();
@@ -6160,7 +6813,6 @@ namespace solver
 
             std::ostream &out = *out_ptr;
 
-            // Write header (v0.4)
             out << "H v0.4 https://github.com/sebschmi/SPQR-tree-file-format\n";
 
 
@@ -7638,9 +8290,6 @@ namespace solver
     }
 
 }
-
-
-
 
 
 int main(int argc, char **argv)
