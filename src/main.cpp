@@ -4503,23 +4503,27 @@ namespace solver
                 ogdf::node A = curr_node;
                 const StaticSPQRTree &spqr = *blk.spqr;
                 const Skeleton &skel = spqr.skeleton(A);
-                const uint32_t nSkel = skel.numberOfNodes();
+                const auto &skelG = skel.getGraph();
 
                 struct VirtEdgeRef { EdgeDPState *toUpdate; EdgeDPState *opposite; };
                 thread_local std::vector<int> tls_localPlusDeg;
                 thread_local std::vector<int> tls_localMinusDeg;
                 thread_local std::vector<VirtEdgeRef> tls_virtualEdges;
 
-                if (tls_localPlusDeg.size() < nSkel) {
-                    tls_localPlusDeg.resize(nSkel);
-                    tls_localMinusDeg.resize(nSkel);
+                uint32_t nSkelMax = 0;
+                for (ogdf::node h : skelG.nodes) {
+                    if (h.idx + 1 > nSkelMax) nSkelMax = h.idx + 1;
                 }
-                std::fill_n(tls_localPlusDeg.begin(),  nSkel, 0);
-                std::fill_n(tls_localMinusDeg.begin(), nSkel, 0);
+
+                if (tls_localPlusDeg.size() < nSkelMax) {
+                    tls_localPlusDeg.resize(nSkelMax);
+                    tls_localMinusDeg.resize(nSkelMax);
+                }
                 tls_virtualEdges.clear();
 
-                for (uint32_t i = 0; i < nSkel; ++i) {
-                    ogdf::node h{i};
+                for (ogdf::node h : skelG.nodes) {
+                    tls_localPlusDeg [h.idx] = 0;
+                    tls_localMinusDeg[h.idx] = 0;
                     ogdf::node vB = skel.original(h);
                     blk.blkToSkel[vB] = h;
                 }
@@ -4616,133 +4620,104 @@ namespace solver
                         const CcData &cc)
             {
                 const Skeleton &skel = blk.spqr->skeleton(sNode);
-                const uint32_t nSkel = skel.numberOfNodes();
-                const uint32_t nEdges = skel.numberOfEdges();
+                const auto &skelG = skel.getGraph();
+                const auto &T = blk.spqr->tree();
 
-                if (nSkel == 0 || nEdges == 0) return;
+                std::vector<ogdf::node> nodesInOrderGcc;
+                std::vector<ogdf::node> nodesInOrderSkel;
 
-                struct AdjE   { uint32_t neighbor; uint32_t edge; };
-                struct StateRef { uint32_t treeIdx; EdgeDPState *state; };
+                std::unordered_map<uint32_t, EdgeDPState *> skelToState;
+                skelToState.reserve(8);
 
-                thread_local std::vector<AdjE> tls_adj0;
-                thread_local std::vector<AdjE> tls_adj1;
-                thread_local std::vector<uint8_t> tls_adjCount;
-                thread_local std::vector<StateRef> tls_skelToState;
-                thread_local std::vector<ogdf::node> tls_nodesInOrderGcc;
-                thread_local std::vector<ogdf::node> tls_nodesInOrderSkel;
-                thread_local std::vector<ogdf::edge> tls_adjEdgesG;
-                thread_local std::vector<adjEntry> tls_adjEntriesSkel;
-                thread_local std::vector<std::string> tls_res;
+                std::vector<ogdf::edge> adjEdgesG;
+                std::vector<adjEntry> adjEntriesSkel;
 
-                if (tls_adj0.size() < nSkel) {
-                    tls_adj0.resize(nSkel);
-                    tls_adj1.resize(nSkel);
-                    tls_adjCount.resize(nSkel);
+                for (edge e : skelG.edges)
+                {
+                    if (!skel.isVirtual(e))
+                        continue;
+                    auto B = skel.twinTreeNode(e);
+                    edge treeE = blk.skel2tree.at(e);
+
+                    EdgeDPState *child = (B == blk.parent(sNode) ? &dp[treeE].up : &dp[treeE].down);
+                    skelToState[treeE.idx] = child;
                 }
-                std::fill_n(tls_adjCount.begin(), nSkel, 0);
-                tls_skelToState.clear();
-                tls_nodesInOrderGcc.clear();
-                tls_nodesInOrderSkel.clear();
-                tls_adjEdgesG.clear();
-                tls_adjEntriesSkel.clear();
-                tls_res.clear();
 
-                const ogdf::node parent_of_S = blk.parent(sNode);
-                skel.forEachEdge([&](ogdf::edge e, ogdf::node u, ogdf::node v) {
-                    if (tls_adjCount[u.idx] == 0) {
-                        tls_adj0[u.idx] = {v.idx, e.idx};
-                        tls_adjCount[u.idx] = 1;
-                    } else if (tls_adjCount[u.idx] == 1) {
-                        tls_adj1[u.idx] = {v.idx, e.idx};
-                        tls_adjCount[u.idx] = 2;
-                    }
-                    if (tls_adjCount[v.idx] == 0) {
-                        tls_adj0[v.idx] = {u.idx, e.idx};
-                        tls_adjCount[v.idx] = 1;
-                    } else if (tls_adjCount[v.idx] == 1) {
-                        tls_adj1[v.idx] = {u.idx, e.idx};
-                        tls_adjCount[v.idx] = 2;
-                    }
+                {
+                    node firstNode = skelG.firstNode();
+                    node secondNode = nullptr;
+                    skelG.forEachAdj(firstNode, [&](node neighbor, edge) {
+                        if (!secondNode) secondNode = neighbor;
+                    });
+                    if (secondNode)
+                    {
+                        ogdf::node u = firstNode;
+                        ogdf::node prev = secondNode;
 
-                    if (skel.isVirtual(e)) {
-                        ogdf::node B = skel.twinTreeNode(e);
-                        ogdf::edge treeE = blk.skel2tree.at(e);
-                        EdgeDPState *child = (B == parent_of_S ? &dp[treeE].up : &dp[treeE].down);
-                        tls_skelToState.push_back({treeE.idx, child});
-                    }
-                });
+                        while (true)
+                        {
+                            nodesInOrderGcc.push_back(blk.toCc[skel.original(u)]);
+                            nodesInOrderSkel.push_back(u);
 
-                auto findState = [&](uint32_t treeIdx) -> EdgeDPState* {
-                    for (const auto &sr : tls_skelToState) {
-                        if (sr.treeIdx == treeIdx) return sr.state;
-                    }
-                    return nullptr; 
-                };
+                            ogdf::node nextU = nullptr;
+                            ogdf::edge nextE = nullptr;
+                            bool closing = false;
+                            ogdf::edge closingEdge = nullptr;
 
-                if (tls_adjCount[0] == 0) return;
+                            skelG.forEachAdj(u, [&](ogdf::node neighbor, ogdf::edge e) {
+                                if (neighbor == prev)
+                                    return;
+                                if (neighbor == firstNode && u != firstNode)
+                                {
+                                    closing = true;
+                                    closingEdge = e;
+                                    return;
+                                }
+                                if (neighbor == firstNode || neighbor == prev)
+                                    return;
 
-                const uint32_t firstNode_idx = 0;
-                const uint32_t secondNode_idx = tls_adj0[0].neighbor;
+                                nextU = neighbor;
+                                nextE = e;
+                            });
 
-                uint32_t u_idx = firstNode_idx;
-                uint32_t prev_idx = secondNode_idx;
+                            if (closing)
+                            {
+                                if (skel.realEdge(closingEdge))
+                                    adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(closingEdge)]);
+                                else
+                                    adjEdgesG.push_back(nullptr);
+                                adjEntriesSkel.push_back(adjEntry{firstNode, closingEdge});
+                                break;
+                            }
 
-                while (true) {
-                    const ogdf::node u_node{u_idx};
-                    tls_nodesInOrderGcc.push_back(blk.toCc[skel.original(u_node)]);
-                    tls_nodesInOrderSkel.push_back(u_node);
+                            if (!nextU)
+                                break;
 
-                    uint32_t nextU_idx = UINT32_MAX;
-                    uint32_t nextE_idx = UINT32_MAX;
-                    bool closing = false;
-                    uint32_t closingEdge_idx = UINT32_MAX;
+                            if (skel.realEdge(nextE))
+                                adjEdgesG.push_back(blk.edgeToOrig[skel.realEdge(nextE)]);
+                            else
+                                adjEdgesG.push_back(nullptr);
+                            adjEntriesSkel.push_back(adjEntry{nextU, nextE});
 
-                    const uint8_t cnt = tls_adjCount[u_idx];
-                    for (uint8_t i = 0; i < cnt; ++i) {
-                        const AdjE &ae = (i == 0) ? tls_adj0[u_idx] : tls_adj1[u_idx];
-                        if (ae.neighbor == prev_idx) continue;
-                        if (ae.neighbor == firstNode_idx && u_idx != firstNode_idx) {
-                            closing = true;
-                            closingEdge_idx = ae.edge;
-                            break;
+                            prev = u;
+                            u = nextU;
                         }
-                        if (ae.neighbor == firstNode_idx || ae.neighbor == prev_idx) continue;
-                        nextU_idx = ae.neighbor;
-                        nextE_idx = ae.edge;
                     }
-
-                    if (closing) {
-                        ogdf::edge ce{closingEdge_idx};
-                        ogdf::edge real = skel.realEdge(ce);
-                        tls_adjEdgesG.push_back(real ? blk.edgeToOrig[real] : ogdf::edge{nullptr});
-                        tls_adjEntriesSkel.push_back(adjEntry{ogdf::node{firstNode_idx}, ce});
-                        break;
-                    }
-
-                    if (nextU_idx == UINT32_MAX) break;
-
-                    ogdf::edge ne{nextE_idx};
-                    ogdf::edge real = skel.realEdge(ne);
-                    tls_adjEdgesG.push_back(real ? blk.edgeToOrig[real] : ogdf::edge{nullptr});
-                    tls_adjEntriesSkel.push_back(adjEntry{ogdf::node{nextU_idx}, ne});
-
-                    prev_idx = u_idx;
-                    u_idx = nextU_idx;
                 }
 
-                const size_t nNodes = tls_nodesInOrderGcc.size();
-                if (nNodes == 0 || tls_adjEntriesSkel.empty()) return;
+                std::vector<bool> cuts(nodesInOrderGcc.size(), false);
+                std::vector<std::string> res;
 
-                auto &C = ctx();
-                const size_t nAdj = tls_adjEntriesSkel.size();
+                for (size_t i = 0; i < nodesInOrderGcc.size(); ++i)
+                {
+                    auto uGcc = nodesInOrderGcc[i];
 
-                for (size_t i = 0; i < nNodes; ++i) {
-                    const ogdf::node uGcc = tls_nodesInOrderGcc[i];
-                    const size_t prevIdx = (i + nAdj - 1) % nAdj;
-                    const ogdf::edge eSkel0 = tls_adjEntriesSkel[prevIdx].theEdge();
-                    const ogdf::edge eSkel1 = tls_adjEntriesSkel[i].theEdge();
-                    const ogdf::edge eG0 = tls_adjEdgesG[prevIdx];
-                    const ogdf::edge eG1 = tls_adjEdgesG[i];
+                    std::vector<edge> adjEdgesSkelLoc = {
+                        adjEntriesSkel[(i + adjEntriesSkel.size() - 1) % adjEntriesSkel.size()].theEdge(),
+                        adjEntriesSkel[i].theEdge()};
+                    std::vector<ogdf::edge> adjEdgesGLoc = {
+                        adjEdgesG[(i + adjEdgesG.size() - 1) % adjEdgesG.size()],
+                        adjEdgesG[i]};
 
                     bool nodeIsCut = ((cc.isCutNode[uGcc] && cc.badCutCount[uGcc] == 1) ||
                                       (!cc.isCutNode[uGcc]));
@@ -4750,33 +4725,52 @@ namespace solver
                     EdgePartType t0 = EdgePartType::NONE;
                     EdgePartType t1 = EdgePartType::NONE;
 
-                    // edge 0
-                    if (!skel.isVirtual(eSkel0)) {
-                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG0);
-                    } else {
-                        ogdf::edge treeE0 = blk.skel2tree.at(eSkel0);
-                        EdgeDPState *state0 = findState(treeE0.idx);
-                        if (blk.toCc[state0->s] == uGcc) {
-                            if (state0->localMinusS == 0 && state0->localPlusS > 0) t0 = EdgePartType::PLUS;
-                            else if (state0->localMinusS > 0 && state0->localPlusS == 0) t0 = EdgePartType::MINUS;
-                        } else {
-                            if (state0->localMinusT == 0 && state0->localPlusT > 0) t0 = EdgePartType::PLUS;
-                            else if (state0->localMinusT > 0 && state0->localPlusT == 0) t0 = EdgePartType::MINUS;
+                    if (!skel.isVirtual(adjEdgesSkelLoc[0]))
+                    {
+                        t0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
+                    }
+                    else
+                    {
+                        edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
+                        EdgeDPState *state0 = skelToState.at(treeE0.idx);
+                        if (blk.toCc[state0->s] == uGcc)
+                        {
+                            if (state0->localMinusS == 0 && state0->localPlusS > 0)
+                                t0 = EdgePartType::PLUS;
+                            else if (state0->localMinusS > 0 && state0->localPlusS == 0)
+                                t0 = EdgePartType::MINUS;
+                        }
+                        else
+                        {
+                            if (state0->localMinusT == 0 && state0->localPlusT > 0)
+                                t0 = EdgePartType::PLUS;
+                            else if (state0->localMinusT > 0 && state0->localPlusT == 0)
+                                t0 = EdgePartType::MINUS;
                         }
                     }
 
                     // edge 1
-                    if (!skel.isVirtual(eSkel1)) {
-                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG1);
-                    } else {
-                        ogdf::edge treeE1 = blk.skel2tree.at(eSkel1);
-                        EdgeDPState *state1 = findState(treeE1.idx);
-                        if (blk.toCc[state1->s] == uGcc) {
-                            if (state1->localMinusS == 0 && state1->localPlusS > 0) t1 = EdgePartType::PLUS;
-                            else if (state1->localMinusS > 0 && state1->localPlusS == 0) t1 = EdgePartType::MINUS;
-                        } else {
-                            if (state1->localMinusT == 0 && state1->localPlusT > 0) t1 = EdgePartType::PLUS;
-                            else if (state1->localMinusT > 0 && state1->localPlusT == 0) t1 = EdgePartType::MINUS;
+                    if (!skel.isVirtual(adjEdgesSkelLoc[1]))
+                    {
+                        t1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
+                    }
+                    else
+                    {
+                        edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
+                        EdgeDPState *state1 = skelToState.at(treeE1.idx);
+                        if (blk.toCc[state1->s] == uGcc)
+                        {
+                            if (state1->localMinusS == 0 && state1->localPlusS > 0)
+                                t1 = EdgePartType::PLUS;
+                            else if (state1->localMinusS > 0 && state1->localPlusS == 0)
+                                t1 = EdgePartType::MINUS;
+                        }
+                        else
+                        {
+                            if (state1->localMinusT == 0 && state1->localPlusT > 0)
+                                t1 = EdgePartType::PLUS;
+                            else if (state1->localMinusT > 0 && state1->localPlusT == 0)
+                                t1 = EdgePartType::MINUS;
                         }
                     }
 
@@ -4784,51 +4778,63 @@ namespace solver
                                   t1 != EdgePartType::NONE &&
                                   t0 != t1);
 
-                    if (!nodeIsCut) continue;
+                    if (nodeIsCut)
+                    {
+                        if (node_dp[sNode].GccCuts_last3.size() < 3)
+                            node_dp[sNode].GccCuts_last3.push_back(uGcc);
 
-                    if (node_dp[sNode].GccCuts_last3.size() < 3)
-                        node_dp[sNode].GccCuts_last3.push_back(uGcc);
-
-                    // Label for edge 0
-                    if (!skel.isVirtual(eSkel0)) {
-                        EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG0);
-                        tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
+                        if (!skel.isVirtual(adjEdgesSkelLoc[0]))
+                        {
+                            EdgePartType tt0 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[0]);
+                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
                                           (tt0 == EdgePartType::PLUS ? "+" : "-"));
-                    } else {
-                        ogdf::edge treeE0 = blk.skel2tree.at(eSkel0);
-                        EdgeDPState *state0 = findState(treeE0.idx);
-                        if (uGcc == blk.toCc[state0->s]) {
-                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
-                                              (state0->localPlusS > 0 ? "+" : "-"));
-                        } else {
-                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
-                                              (state0->localPlusT > 0 ? "+" : "-"));
                         }
-                    }
+                        else
+                        {
+                            edge treeE0 = blk.skel2tree.at(adjEdgesSkelLoc[0]);
+                            EdgeDPState *state0 = skelToState.at(treeE0.idx);
+                            if (uGcc == blk.toCc[state0->s])
+                            {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state0->localPlusS > 0 ? "+" : "-"));
+                            }
+                            else
+                            {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
+                                              (state0->localPlusT > 0 ? "+" : "-"));
+                            }
+                        }
 
-                    // Label for edge 1
-                    if (!skel.isVirtual(eSkel1)) {
-                        EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], eG1);
-                        tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
+                        if (!skel.isVirtual(adjEdgesSkelLoc[1]))
+                        {
+                            EdgePartType tt1 = getNodeEdgeType(cc.nodeToOrig[uGcc], adjEdgesGLoc[1]);
+                            res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
                                           (tt1 == EdgePartType::PLUS ? "+" : "-"));
-                    } else {
-                        ogdf::edge treeE1 = blk.skel2tree.at(eSkel1);
-                        EdgeDPState *state1 = findState(treeE1.idx);
-                        if (uGcc == blk.toCc[state1->s]) {
-                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
+                        }
+                        else
+                        {
+                            edge treeE1 = blk.skel2tree.at(adjEdgesSkelLoc[1]);
+                            EdgeDPState *state1 = skelToState.at(treeE1.idx);
+                            if (uGcc == blk.toCc[state1->s])
+                            {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
                                               (state1->localPlusS > 0 ? "+" : "-"));
-                        } else {
-                            tls_res.push_back(C.node2name[cc.nodeToOrig[uGcc]] +
+                            }
+                            else
+                            {
+                                res.push_back(ctx().node2name[cc.nodeToOrig[uGcc]] +
                                               (state1->localPlusT > 0 ? "+" : "-"));
+                            }
                         }
                     }
                 }
 
-                OGDF_ASSERT(tls_res.size() % 2 == 0);
-                if (tls_res.size() > 2) {
-                    const size_t nRes = tls_res.size();
-                    for (size_t i = 1; i < nRes; i += 2) {
-                        std::vector<std::string> v = {tls_res[i], tls_res[(i + 1) % nRes]};
+                OGDF_ASSERT(res.size() % 2 == 0);
+                if (res.size() > 2)
+                {
+                    for (size_t i = 1; i < res.size(); i += 2)
+                    {
+                        std::vector<std::string> v = {res[i], res[(i + 1) % res.size()]};
                         addSnarlTagged("S", std::move(v));
                     }
                 }
@@ -5348,9 +5354,9 @@ namespace solver
                     if (blk.spqr->typeOf(mu) != ogdf::StaticSPQRTree::NodeType::SNode)
                         continue;
                     const ogdf::Skeleton &skel_p4 = blk.spqr->skeleton(mu);
-                    const uint32_t nSkel_p4 = skel_p4.numberOfNodes();
-                    for (uint32_t i = 0; i < nSkel_p4; ++i) {
-                        ogdf::node vBlk = skel_p4.original(ogdf::node{i});
+                    const auto &skelG_p4 = skel_p4.getGraph();
+                    for (ogdf::node vSk : skelG_p4.nodes) {
+                        ogdf::node vBlk = skel_p4.original(vSk);
                         if (tls_vertexInSnodes[vBlk.idx].empty()) {
                             tls_vertexInSnodes_dirty.push_back(vBlk.idx);
                         }
@@ -5362,10 +5368,25 @@ namespace solver
                     const auto &La = tls_vertexInSnodes[aB.idx];
                     const auto &Lb = tls_vertexInSnodes[bB.idx];
                     if (La.empty() || Lb.empty()) return false;
-                    for (ogdf::node x : La) {
-                        for (ogdf::node y : Lb) {
-                            if (x == y) return true;
+
+                    const auto &Small = (La.size() <= Lb.size()) ? La : Lb;
+                    const auto &Big   = (La.size() <= Lb.size()) ? Lb : La;
+
+                    if (Small.size() <= 4) {
+                        for (ogdf::node x : Small) {
+                            for (ogdf::node y : Big) {
+                                if (x == y) return true;
+                            }
                         }
+                        return false;
+                    }
+
+                    thread_local std::unordered_set<int> tls_share_set;
+                    tls_share_set.clear();
+                    tls_share_set.reserve(Big.size());
+                    for (ogdf::node y : Big) tls_share_set.insert(y.idx);
+                    for (ogdf::node x : Small) {
+                        if (tls_share_set.count(x.idx)) return true;
                     }
                     return false;
                 };
