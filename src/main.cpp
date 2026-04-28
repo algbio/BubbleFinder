@@ -1,5 +1,9 @@
 #include "util/ogdf_all.hpp"
 
+#if defined(BF_HAVE_OPENMP) && BF_HAVE_OPENMP
+    #include <omp.h>
+#endif
+
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -3794,6 +3798,29 @@ namespace solver
 
     namespace snarls
     {
+        #if defined(BF_HAVE_OPENMP) && BF_HAVE_OPENMP
+            #define BF_OMP_PRAGMA(x) _Pragma(#x)
+        #else
+            static inline int omp_get_num_threads() { return 1; }
+            static inline int omp_get_max_threads() { return 1; }
+            static inline int omp_get_thread_num() { return 0; }
+            static inline bool omp_in_parallel() { return false; }
+            #define BF_OMP_PRAGMA(x) 
+        #endif
+
+        struct IntraPlan
+        {
+            bool critical = false;
+            uint64_t quantum = 1;
+            int numThreads = 1;
+            std::atomic<int> *activeIntraTaskloops = nullptr;
+        };
+
+        static inline uint64_t bf_ceil_div(uint64_t a, uint64_t b)
+        {
+            return b == 0 ? 0 : (a + b - 1) / b;
+        }
+
         static inline uint64_t nowMicros()
         {
             using namespace std::chrono;
@@ -5168,7 +5195,6 @@ namespace solver
                 if (pole1DownType == pole1UpType)
                     return;
 
-                // Snarl for the “down” state
                 {
                     std::string s =
                         C.node2name[cc.nodeToOrig[pole0Gcc]] +
@@ -5180,8 +5206,6 @@ namespace solver
                     std::vector<std::string> v = {s, t};
                     addSnarlTagged("RR", std::move(v));
                 }
-
-                // Snarl for the "up" state
                 {
                     std::string s =
                         C.node2name[cc.nodeToOrig[pole0Gcc]] +
@@ -5195,10 +5219,25 @@ namespace solver
                 }
             }
 
+            static inline uint64_t bf_choose_num_tasks(uint64_t n_iters,
+                                                       uint64_t loop_weight,
+                                                       const IntraPlan &plan)
+            {
+
+                const uint64_t raw = bf_ceil_div(loop_weight, plan.quantum);
+                if (raw < 2 || n_iters < 2 || plan.numThreads <= 1)
+                    return 0; 
+
+                uint64_t target = std::max<uint64_t>(raw, 2ULL * static_cast<uint64_t>(plan.numThreads));
+                target = std::min<uint64_t>(target, n_iters);
+                return target;
+            }
+
             void solveNodes(NodeArray<SPQRsolve::NodeDPState> &node_dp,
                             ogdf::EdgeArray<EdgeDP> &edge_dp,
                             BlockData &blk,
-                            const CcData &cc)
+                            const CcData &cc,
+                            IntraPlan &plan)
             {
                 PROFILE_FUNCTION();
                 if (!blk.spqr)
@@ -5209,15 +5248,104 @@ namespace solver
                 VLOG << "[DEBUG][solveNodes] start, |T.nodes|=" << T.numberOfNodes()
                      << " |T.edges|=" << T.numberOfEdges() << "\n";
 
-                // 1) S-nodes
+                if (!plan.critical)
+                {
+                    // 1) S-nodes
+                    {
+                    BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                    for (node tNode : T.nodes) {
+                        if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::SNode) {
+                            BF_INSTR(profiling_patch::p3_solveS_calls.fetch_add(1, std::memory_order_relaxed);)
+                            solveS(tNode, node_dp, edge_dp, blk, cc);
+                        }
+                    }
+                    BF_INSTR(
+                    auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                    profiling_patch::p3_solveS_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                        std::memory_order_relaxed);
+                    )
+                    }
+
+                    // 2) P-nodes
+                    {
+                    BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                    for (node tNode : T.nodes) {
+                        if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::PNode) {
+                            BF_INSTR(profiling_patch::p3_solveP_calls.fetch_add(1, std::memory_order_relaxed);)
+                            solveP(tNode, node_dp, edge_dp, blk, cc);
+                        }
+                    }
+                    BF_INSTR(
+                    auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                    profiling_patch::p3_solveP_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                        std::memory_order_relaxed);
+                    )
+                    }
+
+                    // 3) R-R edges
+                    {
+                    BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
+                    for (edge e : T.edges) {
+                        auto srcT = blk.spqr->typeOf(T.source(e));
+                        auto dstT = blk.spqr->typeOf(T.target(e));
+                        if (srcT == SPQRTree::NodeType::RNode &&
+                            dstT == SPQRTree::NodeType::RNode)
+                        {
+                            BF_INSTR(profiling_patch::p3_solveRR_calls.fetch_add(1, std::memory_order_relaxed);)
+                            solveRR(e, node_dp, edge_dp, blk, cc);
+                        }
+                    }
+                    BF_INSTR(
+                    auto __sn_t1 = std::chrono::high_resolution_clock::now();
+                    profiling_patch::p3_solveRR_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
+                        std::memory_order_relaxed);
+                    )
+                    }
+
+                    VLOG << "[DEBUG][solveNodes] end (serial path)\n";
+                    return;
+                }
+
+                std::vector<node> sNodes;
+                std::vector<node> pNodes;
+                sNodes.reserve(T.numberOfNodes());
+                pNodes.reserve(T.numberOfNodes() / 4 + 1);
+                for (node tNode : T.nodes) {
+                    auto ty = blk.spqr->typeOf(tNode);
+                    if (ty == StaticSPQRTree::NodeType::SNode)      sNodes.push_back(tNode);
+                    else if (ty == StaticSPQRTree::NodeType::PNode) pNodes.push_back(tNode);
+                }
+
+                BF_INSTR(profiling_patch::p3_solveS_calls.fetch_add(sNodes.size(), std::memory_order_relaxed);)
+                BF_INSTR(profiling_patch::p3_solveP_calls.fetch_add(pNodes.size(), std::memory_order_relaxed);)
+
+                // 1) S-nodes 
                 {
                 BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
-                for (node tNode : T.nodes) {
-                    if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::SNode) {
-                        BF_INSTR(profiling_patch::p3_solveS_calls.fetch_add(1, std::memory_order_relaxed);)
-                        solveS(tNode, node_dp, edge_dp, blk, cc);
+
+                const uint64_t n = sNodes.size();
+                const uint64_t W = T.numberOfNodes();
+                const uint64_t nT = bf_choose_num_tasks(n, W, plan);
+
+                if (nT == 0) {
+                    for (size_t i = 0; i < sNodes.size(); ++i)
+                        solveS(sNodes[i], node_dp, edge_dp, blk, cc);
+                } else {
+                    if (plan.activeIntraTaskloops)
+                        plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
+
+                    BF_OMP_PRAGMA(omp taskloop num_tasks(nT) default(shared))
+                    for (long long i = 0; i < static_cast<long long>(sNodes.size()); ++i) {
+                        solveS(sNodes[i], node_dp, edge_dp, blk, cc);
                     }
+
+                    if (plan.activeIntraTaskloops)
+                        plan.activeIntraTaskloops->fetch_sub(1, std::memory_order_relaxed);
                 }
+
                 BF_INSTR(
                 auto __sn_t1 = std::chrono::high_resolution_clock::now();
                 profiling_patch::p3_solveS_ns.fetch_add(
@@ -5226,15 +5354,30 @@ namespace solver
                 )
                 }
 
-                // 2) P-nodes
                 {
                 BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
-                for (node tNode : T.nodes) {
-                    if (blk.spqr->typeOf(tNode) == StaticSPQRTree::NodeType::PNode) {
-                        BF_INSTR(profiling_patch::p3_solveP_calls.fetch_add(1, std::memory_order_relaxed);)
-                        solveP(tNode, node_dp, edge_dp, blk, cc);
+
+                const uint64_t n = pNodes.size();
+
+                const uint64_t W   = T.numberOfNodes();
+                const uint64_t nT  = bf_choose_num_tasks(n, W, plan);
+
+                if (nT == 0) {
+                    for (size_t i = 0; i < pNodes.size(); ++i)
+                        solveP(pNodes[i], node_dp, edge_dp, blk, cc);
+                } else {
+                    if (plan.activeIntraTaskloops)
+                        plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
+
+                    BF_OMP_PRAGMA(omp taskloop num_tasks(nT) default(shared))
+                    for (long long i = 0; i < static_cast<long long>(pNodes.size()); ++i) {
+                        solveP(pNodes[i], node_dp, edge_dp, blk, cc);
                     }
+
+                    if (plan.activeIntraTaskloops)
+                        plan.activeIntraTaskloops->fetch_sub(1, std::memory_order_relaxed);
                 }
+
                 BF_INSTR(
                 auto __sn_t1 = std::chrono::high_resolution_clock::now();
                 profiling_patch::p3_solveP_ns.fetch_add(
@@ -5243,7 +5386,6 @@ namespace solver
                 )
                 }
 
-              // 3) R-R edges
                 {
                 BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
                 for (edge e : T.edges) {
@@ -5264,9 +5406,9 @@ namespace solver
                 )
                 }
 
-                VLOG << "[DEBUG][solveNodes] end\n";
+                VLOG << "[DEBUG][solveNodes] end (parallel path)\n";
             }
-            void solveSPQR(BlockData &blk, const CcData &cc)
+            void solveSPQR(BlockData &blk, const CcData &cc, IntraPlan &plan)
             {
                 PROFILE_FUNCTION();
 
@@ -5325,7 +5467,7 @@ namespace solver
 
                 {
                 BF_INSTR(auto __sp_t0 = std::chrono::high_resolution_clock::now();)
-                solveNodes(node_dp, edge_dp, blk, cc);
+                solveNodes(node_dp, edge_dp, blk, cc, plan);
                 BF_INSTR(
                 auto __sp_t1 = std::chrono::high_resolution_clock::now();
                 profiling_patch::phase3_solve_time_ns.fetch_add(
@@ -5337,18 +5479,29 @@ namespace solver
 
                 BF_INSTR(auto __sp_t0_p4 = std::chrono::high_resolution_clock::now();)
 
+                std::vector<std::vector<ogdf::node>> block_vertexInSnodes; 
+                std::vector<std::vector<ogdf::node>> *vertexInSnodes_ptr = nullptr;
+
                 thread_local std::vector<std::vector<ogdf::node>> tls_vertexInSnodes;
                 thread_local std::vector<uint32_t> tls_vertexInSnodes_dirty;
 
-                for (uint32_t idx : tls_vertexInSnodes_dirty) {
-                    tls_vertexInSnodes[idx].clear();
-                }
-                tls_vertexInSnodes_dirty.clear();
-
                 const size_t nBlkNodes = blk.Gblk->numberOfNodes();
-                if (tls_vertexInSnodes.size() < nBlkNodes) {
-                    tls_vertexInSnodes.resize(nBlkNodes);
+
+                if (plan.critical) {
+                    block_vertexInSnodes.resize(nBlkNodes);
+                    vertexInSnodes_ptr = &block_vertexInSnodes;
+                } else {
+                    for (uint32_t idx : tls_vertexInSnodes_dirty) {
+                        tls_vertexInSnodes[idx].clear();
+                    }
+                    tls_vertexInSnodes_dirty.clear();
+                    if (tls_vertexInSnodes.size() < nBlkNodes) {
+                        tls_vertexInSnodes.resize(nBlkNodes);
+                    }
+                    vertexInSnodes_ptr = &tls_vertexInSnodes;
                 }
+
+                std::vector<std::vector<ogdf::node>> &vertexInSnodes = *vertexInSnodes_ptr;
 
                 for (ogdf::node mu : T.nodes) {
                     if (blk.spqr->typeOf(mu) != ogdf::StaticSPQRTree::NodeType::SNode)
@@ -5357,16 +5510,16 @@ namespace solver
                     const auto &skelG_p4 = skel_p4.getGraph();
                     for (ogdf::node vSk : skelG_p4.nodes) {
                         ogdf::node vBlk = skel_p4.original(vSk);
-                        if (tls_vertexInSnodes[vBlk.idx].empty()) {
+                        if (!plan.critical && vertexInSnodes[vBlk.idx].empty()) {
                             tls_vertexInSnodes_dirty.push_back(vBlk.idx);
                         }
-                        tls_vertexInSnodes[vBlk.idx].push_back(mu);
+                        vertexInSnodes[vBlk.idx].push_back(mu);
                     }
                 }
 
                 auto shareSnode = [&](ogdf::node aB, ogdf::node bB) -> bool {
-                    const auto &La = tls_vertexInSnodes[aB.idx];
-                    const auto &Lb = tls_vertexInSnodes[bB.idx];
+                    const auto &La = vertexInSnodes[aB.idx];
+                    const auto &Lb = vertexInSnodes[bB.idx];
                     if (La.empty() || Lb.empty()) return false;
 
                     const auto &Small = (La.size() <= Lb.size()) ? La : Lb;
@@ -5381,12 +5534,11 @@ namespace solver
                         return false;
                     }
 
-                    thread_local std::unordered_set<int> tls_share_set;
-                    tls_share_set.clear();
-                    tls_share_set.reserve(Big.size());
-                    for (ogdf::node y : Big) tls_share_set.insert(y.idx);
+                    std::unordered_set<int> share_set;
+                    share_set.reserve(Big.size());
+                    for (ogdf::node y : Big) share_set.insert(y.idx);
                     for (ogdf::node x : Small) {
-                        if (tls_share_set.count(x.idx)) return true;
+                        if (share_set.count(x.idx)) return true;
                     }
                     return false;
                 };
@@ -5399,7 +5551,11 @@ namespace solver
                     return false;
                 };
 
-                for (ogdf::edge eB : blk.Gblk->edges) {
+                auto flipSign = [](EdgePartType t) {
+                    return (t == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS);
+                };
+
+                auto caseE_body = [&](ogdf::edge eB) {
                     ogdf::edge eG = blk.edgeToOrig[eB];
 
                     ogdf::node uB = blk.Gblk->source(eB);
@@ -5412,20 +5568,16 @@ namespace solver
                     ogdf::node vG = cc.nodeToOrig[vGcc];
 
                     if (C.node2name[uG] == "_trash" || C.node2name[vG] == "_trash")
-                        continue;
+                        return;
 
                     if (cc.isTip[uGcc] || cc.isTip[vGcc])
-                        continue;
+                        return;
 
                     if (hasDanglingOutside(uGcc) || hasDanglingOutside(vGcc))
-                        continue;
+                        return;
 
                     EdgePartType edgeSignU = getNodeEdgeType(uG, eG);
                     EdgePartType edgeSignV = getNodeEdgeType(vG, eG);
-
-                    auto flipSign = [](EdgePartType t) {
-                        return (t == EdgePartType::PLUS ? EdgePartType::MINUS : EdgePartType::PLUS);
-                    };
 
                     auto check_one_vertex = [&](ogdf::node vNode,
                                                 EdgePartType sign,
@@ -5471,6 +5623,37 @@ namespace solver
 
                     testCandidate(edgeSignU, edgeSignV, false);
                     testCandidate(flipSign(edgeSignU), flipSign(edgeSignV), true);
+                };
+
+                if (!plan.critical) {
+                    for (ogdf::edge eB : blk.Gblk->edges) {
+                        caseE_body(eB);
+                    }
+                } else {
+                    std::vector<ogdf::edge> blockEdges;
+                    blockEdges.reserve(blk.Gblk->numberOfEdges());
+                    for (ogdf::edge eB : blk.Gblk->edges)
+                        blockEdges.push_back(eB);
+
+                    const uint64_t n = blockEdges.size();
+                    const uint64_t W = blk.Gblk->numberOfEdges();
+                    const uint64_t nT = bf_choose_num_tasks(n, W, plan);
+
+                    if (nT == 0) {
+                        for (size_t i = 0; i < blockEdges.size(); ++i)
+                            caseE_body(blockEdges[i]);
+                    } else {
+                        if (plan.activeIntraTaskloops)
+                            plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
+
+                        BF_OMP_PRAGMA(omp taskloop num_tasks(nT) default(shared))
+                        for (long long i = 0; i < static_cast<long long>(blockEdges.size()); ++i) {
+                            caseE_body(blockEdges[i]);
+                        }
+
+                        if (plan.activeIntraTaskloops)
+                            plan.activeIntraTaskloops->fetch_sub(1, std::memory_order_relaxed);
+                    }
                 }
 
                 BF_INSTR(
@@ -5882,6 +6065,11 @@ namespace solver
 
             std::unique_ptr<BlockData> blk;
 
+            uint64_t treeWeight = 0;
+            uint64_t edgeWeight = 0;
+            uint64_t logicWeight = 0;
+            bool critical = false;
+
             BlockPrep(CcData *cc_, ogdf::node b) : cc(cc_), bNode(b), blk(nullptr) {}
 
             BlockPrep() = default;
@@ -6201,6 +6389,11 @@ namespace solver
                         buildBlockData(blk, *(*blockPreps)[bid].cc);
                     }
 
+                    BlockPrep &prepRef = (*blockPreps)[bid];
+                    prepRef.treeWeight = (blk.spqr ? blk.spqr->tree().numberOfNodes() : 0);
+                    prepRef.edgeWeight = (blk.Gblk ? blk.Gblk->numberOfEdges() : 0);
+                    prepRef.logicWeight = prepRef.treeWeight + prepRef.edgeWeight;
+
                     ++processed;
                 }
 
@@ -6218,74 +6411,6 @@ namespace solver
             }
 
             std::cout << "Thread " << tid << " built " << processed << " blocks (SPQR build)\n";
-            return nullptr;
-        }
-
-        void *worker_block_solve(void *arg)
-        {
-            std::unique_ptr<ThreadBlocksArgs> targs(static_cast<ThreadBlocksArgs *>(arg));
-            size_t tid = targs->tid;
-            size_t numThreads = targs->numThreads;
-            size_t blocks = targs->blocks;
-            std::atomic<size_t> *nextIndex = targs->nextIndex;
-            std::vector<BlockPrep> *blockPreps = targs->blockPreps;
-
-            size_t chunkSize = 1;
-            size_t processed = 0;
-
-            std::vector<std::vector<std::string>> localSnarls;
-            tls_snarl_buffer = &localSnarls;
-
-            tls_spqr_seen_endpoint_pairs.clear();
-
-            while (true)
-            {
-                size_t startIndex, endIndex;
-                {
-                    startIndex = nextIndex->fetch_add(chunkSize, std::memory_order_relaxed);
-                    if (startIndex >= static_cast<size_t>(blocks))
-                        break;
-                    endIndex = std::min(startIndex + chunkSize, static_cast<size_t>(blocks));
-                }
-
-                auto chunkStart = std::chrono::high_resolution_clock::now();
-
-                for (size_t bid = startIndex; bid < endIndex; ++bid)
-                {
-                    BlockPrep &prep = (*blockPreps)[bid];
-                    if (!prep.blk)
-                        continue;
-                    BlockData &blk = *prep.blk;
-
-                    {
-                        if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3)
-                        {
-                            SPQRsolve::solveSPQR(blk, *prep.cc);
-                        }
-                    }
-
-                    prep.blk.reset();
-
-                    ++processed;
-                }
-
-                auto chunkEnd = std::chrono::high_resolution_clock::now();
-                auto chunkDuration = std::chrono::duration_cast<std::chrono::microseconds>(chunkEnd - chunkStart);
-
-                if (chunkDuration.count() < 1000)
-                {
-                    chunkSize = std::min(chunkSize * 2, static_cast<size_t>(blocks / numThreads));
-                }
-                else if (chunkDuration.count() > 5000)
-                {
-                    chunkSize = std::max(chunkSize / 2, static_cast<size_t>(1));
-                }
-            }
-
-            tls_snarl_buffer = nullptr;
-            flushThreadLocalSnarls(localSnarls);
-
-            std::cout << "Thread " << tid << " solved " << processed << " blocks (SPQR solve)\n";
             return nullptr;
         }
 
@@ -6718,60 +6843,131 @@ namespace solver
 
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, blockPreps.size(), numThreads});
+                    if (numThreads == 0) numThreads = 1;
 
-                    if (numThreads <= 1)
-                    {
-                        std::atomic<size_t> nextIndex{0};
-                        ThreadBlocksArgs *args = new ThreadBlocksArgs{
-                            0,
-                            1,
-                            blockPreps.size(),
-                            &nextIndex,
-                                                        &blockPreps};
-                        worker_block_solve(static_cast<void *>(args));
+                    const int P = static_cast<int>(numThreads);
+
+                    uint64_t W_total = 0;
+                    for (const auto &prep : blockPreps) {
+                        W_total += prep.logicWeight;
                     }
-                    else
+
+                    const uint64_t Q = std::max<uint64_t>(
+                        bf_ceil_div(W_total, static_cast<uint64_t>(P) * static_cast<uint64_t>(P)),
+                        1ULL);
+
+                    std::vector<size_t> hotBlocks;
+                    for (size_t bid = 0; bid < blockPreps.size(); ++bid) {
+                        const uint64_t W = blockPreps[bid].logicWeight;
+                        const __int128 lhs = static_cast<__int128>(W) * static_cast<__int128>(P);
+                        const __int128 rhs = static_cast<__int128>(W_total);
+                        const bool critical = (lhs > rhs);
+
+                        blockPreps[bid].critical = critical;
+                        if (critical) hotBlocks.push_back(bid);
+                    }
+
+                    std::sort(hotBlocks.begin(), hotBlocks.end(),
+                              [&](size_t a, size_t b) {
+                                  return blockPreps[a].logicWeight > blockPreps[b].logicWeight;
+                              });
+
+                    BF_INSTR(std::cout << "[snarls] inter/intra plan: "
+                              << "W_total=" << W_total
+                              << " P=" << P
+                              << " Q=" << Q
+                              << " hotBlocks=" << hotBlocks.size()
+                              << " (max W=" << (hotBlocks.empty() ? 0 : blockPreps[hotBlocks[0]].logicWeight)
+                              << ")\n";)
+
+                    auto isHotBlock = [&](size_t bid) -> bool {
+                        for (size_t h : hotBlocks)
+                            if (h == bid) return true;
+                        return false;
+                    };
+
+                    std::atomic<size_t> nextHot{0};
+                    std::atomic<size_t> nextNormal{0};
+                    std::atomic<int>    activeIntraTaskloops{0};
+
+                    const size_t nBlocks = blockPreps.size();
+
+                    BF_OMP_PRAGMA(omp parallel num_threads(P))
                     {
-                        std::vector<pthread_t> threads(numThreads);
+                        std::vector<std::vector<std::string>> localSnarls;
+                        tls_snarl_buffer = &localSnarls;
+                        tls_spqr_seen_endpoint_pairs.clear();
 
-                        std::atomic<size_t> nextIndex{0};
+                        size_t chunkSize = 1;
+                        size_t processed = 0;
+                        bool   hotDone   = hotBlocks.empty();
 
-                        for (size_t tid = 0; tid < numThreads; ++tid)
-                        {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            if (stackSize < kMinThreadStackSize)
-                                stackSize = kMinThreadStackSize;
-                            int err = pthread_attr_setstacksize(&attr, stackSize);
-                            if (err != 0)
-                            {
-                                std::cerr << "[Error] pthread_attr_setstacksize("
-                                          << stackSize << "): " << strerror(err) << std::endl;
+                        while (true) {
+                            if (!hotDone) {
+                                size_t h = nextHot.fetch_add(1, std::memory_order_relaxed);
+                                if (h < hotBlocks.size()) {
+                                    size_t bid = hotBlocks[h];
+                                    BlockPrep &prep = blockPreps[bid];
+                                    if (prep.blk) {
+                                        BlockData &blk = *prep.blk;
+                                        if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3) {
+                                            IntraPlan plan;
+                                            plan.critical = true;
+                                            plan.quantum = Q;
+                                            plan.numThreads = P;
+                                            plan.activeIntraTaskloops = &activeIntraTaskloops;
+                                            SPQRsolve::solveSPQR(blk, *prep.cc, plan);
+                                        }
+                                        prep.blk.reset();
+                                        ++processed;
+                                    }
+                                    continue;
+                                }
+                                hotDone = true;
                             }
 
-                            ThreadBlocksArgs *args = new ThreadBlocksArgs{
-                                tid,
-                                numThreads,
-                                blockPreps.size(),
-                                &nextIndex,
-                                                                &blockPreps};
+                            size_t startIndex = nextNormal.fetch_add(chunkSize, std::memory_order_relaxed);
+                            if (startIndex >= nBlocks) break;
+                            size_t endIndex = std::min(startIndex + chunkSize, nBlocks);
 
-                            int ret = pthread_create(&threads[tid], &attr, worker_block_solve, args);
-                            if (ret != 0)
-                            {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
+                            auto chunkStart = std::chrono::high_resolution_clock::now();
+
+                            for (size_t bid = startIndex; bid < endIndex; ++bid) {
+                                if (!hotBlocks.empty() && isHotBlock(bid))
+                                    continue;
+                                BlockPrep &prep = blockPreps[bid];
+                                if (!prep.blk) continue;
+                                BlockData &blk = *prep.blk;
+                                if (blk.Gblk && blk.Gblk->numberOfNodes() >= 3) {
+                                    IntraPlan plan;
+                                    plan.critical = false; 
+                                    plan.quantum = Q;
+                                    plan.numThreads = P;
+                                    plan.activeIntraTaskloops = &activeIntraTaskloops;
+                                    SPQRsolve::solveSPQR(blk, *prep.cc, plan);
+                                }
+                                prep.blk.reset();
+                                ++processed;
                             }
 
-                            pthread_attr_destroy(&attr);
+                            auto chunkEnd = std::chrono::high_resolution_clock::now();
+                            auto chunkDuration = std::chrono::duration_cast<std::chrono::microseconds>(
+                                                     chunkEnd - chunkStart);
+                            if (chunkDuration.count() < 1000) {
+                                chunkSize = std::min(chunkSize * 2, std::max<size_t>(1, nBlocks / numThreads));
+                            } else if (chunkDuration.count() > 5000) {
+                                chunkSize = std::max<size_t>(1, chunkSize / 2);
+                            }
+
+                            if (activeIntraTaskloops.load(std::memory_order_relaxed) > 0) {
+                                BF_OMP_PRAGMA(omp taskyield)
+                            }
                         }
 
-                        for (size_t tid = 0; tid < numThreads; ++tid)
-                        {
-                            pthread_join(threads[tid], nullptr);
-                        }
+                        BF_OMP_PRAGMA(omp barrier)
+
+                        tls_snarl_buffer = nullptr;
+                        flushThreadLocalSnarls(localSnarls);
                     }
                 }
             }

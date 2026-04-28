@@ -11,8 +11,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SB_NATIVE_OPTIMIZATIONS "Use -march=native in Release builds" ON)
-option(SB_ENABLE_SANITIZERS    "Enable ASan/UBSan (Debug)"           OFF)
-option(SB_ENABLE_LTO           "Enable Link Time Optimization"       ON)
+option(SB_ENABLE_SANITIZERS "Enable ASan/UBSan (Debug)" OFF)
+option(SB_ENABLE_LTO "Enable Link Time Optimization" ON)
 
 
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
@@ -282,6 +282,18 @@ target_link_libraries(BubbleFinder PRIVATE
     sbio sbutil
     ${SPQR_RUST_LIB}
     spdlog::spdlog_header_only)
+
+# Link OpenMP if available; the snarls solver uses #pragma omp for intra-block
+# parallelism (taskloops). When OpenMP is not found, the pragmas degrade to
+# no-ops and the code falls back to fully sequential intra-block execution.
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(BubbleFinder PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(BubbleFinder PRIVATE BF_HAVE_OPENMP=1)
+    message(STATUS "BubbleFinder: OpenMP enabled (intra-block parallelism active)")
+else()
+    target_compile_definitions(BubbleFinder PRIVATE BF_HAVE_OPENMP=0)
+    message(STATUS "BubbleFinder: OpenMP not found (intra-block parallelism disabled)")
+endif()
 
 set_target_properties(BubbleFinder PROPERTIES
     INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib"
