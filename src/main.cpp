@@ -3814,6 +3814,7 @@ namespace solver
             uint64_t quantum = 1;
             int numThreads = 1;
             std::atomic<int> *activeIntraTaskloops = nullptr;
+            size_t bid = static_cast<size_t>(-1);
         };
 
         static inline uint64_t bf_ceil_div(uint64_t a, uint64_t b)
@@ -4039,6 +4040,95 @@ namespace solver
                             std::atomic<uint64_t> pe_total_calls{0};
                             std::atomic<uint64_t> pe_A_setup_ns{0};
                             std::atomic<uint64_t> pe_B_build_ns{0};
+
+                            std::atomic<uint64_t> sub_alloc_dp_ns{0};
+                            std::atomic<uint64_t> sub_dfs_order_ns{0};
+                            std::atomic<uint64_t> sub_blktoskel_init_ns{0};
+                            std::atomic<uint64_t> sub_phase4_setup_ns{0};
+                            std::atomic<uint64_t> sub_phase4_caseE_body_ns{0};
+                            std::atomic<uint64_t> sub_levels_ns{0};
+                            std::atomic<uint64_t> sub_destruct_ns{0};
+                            std::atomic<uint64_t> sub_solveS_collect_ns{0};
+                            std::atomic<uint64_t> sub_caseE_collect_ns{0};
+
+                            std::atomic<uint64_t> taskloops_S_created{0};
+                            std::atomic<uint64_t> taskloops_P_created{0};
+                            std::atomic<uint64_t> taskloops_caseE_created{0};
+                            std::atomic<uint64_t> tasks_requested_S_total{0};
+                            std::atomic<uint64_t> tasks_requested_P_total{0};
+                            std::atomic<uint64_t> tasks_requested_caseE_total{0};
+
+                            std::atomic<uint64_t> taskloops_S_skipped{0};
+                            std::atomic<uint64_t> taskloops_P_skipped{0};
+                            std::atomic<uint64_t> taskloops_caseE_skipped{0};
+
+                            struct BlockTiming
+                            {
+                                size_t bid = static_cast<size_t>(-1);
+                                uint64_t logicWeight = 0;
+                                uint64_t blockNodes = 0;
+                                uint64_t blockEdges = 0;
+                                uint64_t spqrTreeNodes = 0;
+                                uint32_t spqrSCount = 0;
+                                uint32_t spqrPCount = 0;
+                                uint32_t spqrRCount = 0;
+                                uint32_t maxDepth = 0;
+                                uint32_t maxHeight = 0;
+                                uint64_t build_ns = 0;
+                                uint64_t solve_total_ns = 0;
+                                uint64_t sub_alloc_dp_ns = 0;
+                                uint64_t sub_dfs_order_ns = 0;
+                                uint64_t sub_blktoskel_init_ns = 0;
+                                uint64_t sub_levels_ns = 0;
+                                uint64_t phase1_ns = 0;
+                                uint64_t phase2_ns = 0;
+                                uint64_t phase3_ns = 0;
+                                uint64_t phase3_S_ns = 0;
+                                uint64_t phase3_P_ns = 0;
+                                uint64_t phase3_RR_ns = 0;
+                                uint64_t phase3_S_collect_ns = 0;
+                                uint64_t phase4_setup_ns = 0;
+                                uint64_t phase4_caseE_collect_ns = 0;
+                                uint64_t phase4_caseE_body_ns = 0;
+                                uint64_t destruct_ns = 0;
+                                bool critical = false;
+                                uint32_t taskloops_S_created = 0;
+                                uint32_t taskloops_P_created = 0;
+                                uint32_t taskloops_caseE_created = 0;
+                                uint64_t tasks_requested_S = 0;
+                                uint64_t tasks_requested_P = 0;
+                                uint64_t tasks_requested_caseE = 0;
+                                std::vector<uint64_t> widthByDepth;
+                                std::vector<uint64_t> widthByHeight;
+                            };
+
+                            inline std::vector<BlockTiming>& g_block_timings()
+                            {
+                                static std::vector<BlockTiming> v;
+                                return v;
+                            }
+
+                            inline std::mutex& g_block_timings_resize_mutex()
+                            {
+                                static std::mutex m;
+                                return m;
+                            }
+
+                            inline void reset_block_timings(size_t n)
+                            {
+                                std::lock_guard<std::mutex> lk(g_block_timings_resize_mutex());
+                                auto &v = g_block_timings();
+                                v.clear();
+                                v.resize(n);
+                                for (size_t i = 0; i < n; ++i) v[i].bid = i;
+                            }
+
+                            inline BlockTiming* try_get_block_timing(size_t bid)
+                            {
+                                auto &v = g_block_timings();
+                                if (bid >= v.size()) return nullptr;
+                                return &v[bid];
+                            }
                         }
             #endif
 
@@ -5250,7 +5340,8 @@ namespace solver
 
                 if (!plan.critical)
                 {
-                    // 1) S-nodes
+                    BF_INSTR(profiling_patch::BlockTiming *bt_nc = profiling_patch::try_get_block_timing(plan.bid);)
+
                     {
                     BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
                     for (node tNode : T.nodes) {
@@ -5261,13 +5352,13 @@ namespace solver
                     }
                     BF_INSTR(
                     auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                    profiling_patch::p3_solveS_ns.fetch_add(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                        std::memory_order_relaxed);
+                    uint64_t __dt_S = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                    profiling_patch::p3_solveS_ns.fetch_add(__dt_S, std::memory_order_relaxed);
+                    if (bt_nc) bt_nc->phase3_S_ns = __dt_S;
+                    profiling_patch::taskloops_S_skipped.fetch_add(1, std::memory_order_relaxed);
                     )
                     }
 
-                    // 2) P-nodes
                     {
                     BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
                     for (node tNode : T.nodes) {
@@ -5278,13 +5369,13 @@ namespace solver
                     }
                     BF_INSTR(
                     auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                    profiling_patch::p3_solveP_ns.fetch_add(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                        std::memory_order_relaxed);
+                    uint64_t __dt_P = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                    profiling_patch::p3_solveP_ns.fetch_add(__dt_P, std::memory_order_relaxed);
+                    if (bt_nc) bt_nc->phase3_P_ns = __dt_P;
+                    profiling_patch::taskloops_P_skipped.fetch_add(1, std::memory_order_relaxed);
                     )
                     }
 
-                    // 3) R-R edges
                     {
                     BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
                     for (edge e : T.edges) {
@@ -5299,9 +5390,9 @@ namespace solver
                     }
                     BF_INSTR(
                     auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                    profiling_patch::p3_solveRR_ns.fetch_add(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                        std::memory_order_relaxed);
+                    uint64_t __dt_RR = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                    profiling_patch::p3_solveRR_ns.fetch_add(__dt_RR, std::memory_order_relaxed);
+                    if (bt_nc) bt_nc->phase3_RR_ns = __dt_RR;
                     )
                     }
 
@@ -5313,16 +5404,24 @@ namespace solver
                 std::vector<node> pNodes;
                 sNodes.reserve(T.numberOfNodes());
                 pNodes.reserve(T.numberOfNodes() / 4 + 1);
+
+                BF_INSTR(auto __collect_t0 = std::chrono::high_resolution_clock::now();)
                 for (node tNode : T.nodes) {
                     auto ty = blk.spqr->typeOf(tNode);
                     if (ty == StaticSPQRTree::NodeType::SNode)      sNodes.push_back(tNode);
                     else if (ty == StaticSPQRTree::NodeType::PNode) pNodes.push_back(tNode);
                 }
+                BF_INSTR(
+                auto __collect_t1 = std::chrono::high_resolution_clock::now();
+                uint64_t __dt_collect = std::chrono::duration_cast<std::chrono::nanoseconds>(__collect_t1 - __collect_t0).count();
+                profiling_patch::sub_solveS_collect_ns.fetch_add(__dt_collect, std::memory_order_relaxed);
+                profiling_patch::BlockTiming *bt_sn = profiling_patch::try_get_block_timing(plan.bid);
+                if (bt_sn) bt_sn->phase3_S_collect_ns = __dt_collect;
+                )
 
                 BF_INSTR(profiling_patch::p3_solveS_calls.fetch_add(sNodes.size(), std::memory_order_relaxed);)
                 BF_INSTR(profiling_patch::p3_solveP_calls.fetch_add(pNodes.size(), std::memory_order_relaxed);)
 
-                // 1) S-nodes 
                 {
                 BF_INSTR(auto __sn_t0 = std::chrono::high_resolution_clock::now();)
 
@@ -5331,9 +5430,20 @@ namespace solver
                 const uint64_t nT = bf_choose_num_tasks(n, W, plan);
 
                 if (nT == 0) {
+                    BF_INSTR(
+                    profiling_patch::taskloops_S_skipped.fetch_add(1, std::memory_order_relaxed);
+                    )
                     for (size_t i = 0; i < sNodes.size(); ++i)
                         solveS(sNodes[i], node_dp, edge_dp, blk, cc);
                 } else {
+                    BF_INSTR(
+                    profiling_patch::taskloops_S_created.fetch_add(1, std::memory_order_relaxed);
+                    profiling_patch::tasks_requested_S_total.fetch_add(nT, std::memory_order_relaxed);
+                    if (bt_sn) {
+                        bt_sn->taskloops_S_created += 1;
+                        bt_sn->tasks_requested_S += nT;
+                    }
+                    )
                     if (plan.activeIntraTaskloops)
                         plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
 
@@ -5348,9 +5458,9 @@ namespace solver
 
                 BF_INSTR(
                 auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::p3_solveS_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_S = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                profiling_patch::p3_solveS_ns.fetch_add(__dt_S, std::memory_order_relaxed);
+                if (bt_sn) bt_sn->phase3_S_ns = __dt_S;
                 )
                 }
 
@@ -5363,9 +5473,20 @@ namespace solver
                 const uint64_t nT  = bf_choose_num_tasks(n, W, plan);
 
                 if (nT == 0) {
+                    BF_INSTR(
+                    profiling_patch::taskloops_P_skipped.fetch_add(1, std::memory_order_relaxed);
+                    )
                     for (size_t i = 0; i < pNodes.size(); ++i)
                         solveP(pNodes[i], node_dp, edge_dp, blk, cc);
                 } else {
+                    BF_INSTR(
+                    profiling_patch::taskloops_P_created.fetch_add(1, std::memory_order_relaxed);
+                    profiling_patch::tasks_requested_P_total.fetch_add(nT, std::memory_order_relaxed);
+                    if (bt_sn) {
+                        bt_sn->taskloops_P_created += 1;
+                        bt_sn->tasks_requested_P += nT;
+                    }
+                    )
                     if (plan.activeIntraTaskloops)
                         plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
 
@@ -5380,9 +5501,9 @@ namespace solver
 
                 BF_INSTR(
                 auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::p3_solveP_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_P = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                profiling_patch::p3_solveP_ns.fetch_add(__dt_P, std::memory_order_relaxed);
+                if (bt_sn) bt_sn->phase3_P_ns = __dt_P;
                 )
                 }
 
@@ -5400,9 +5521,9 @@ namespace solver
                 }
                 BF_INSTR(
                 auto __sn_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::p3_solveRR_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_RR = std::chrono::duration_cast<std::chrono::nanoseconds>(__sn_t1 - __sn_t0).count();
+                profiling_patch::p3_solveRR_ns.fetch_add(__dt_RR, std::memory_order_relaxed);
+                if (bt_sn) bt_sn->phase3_RR_ns = __dt_RR;
                 )
                 }
 
@@ -5423,17 +5544,96 @@ namespace solver
                 BF_INSTR(
                 profiling_patch::blocks_with_spqr.fetch_add(1, std::memory_order_relaxed);
                 profiling_patch::total_tree_nodes.fetch_add(T.numberOfNodes(), std::memory_order_relaxed);
+                profiling_patch::BlockTiming *bt = profiling_patch::try_get_block_timing(plan.bid);
+                if (bt) {
+                    bt->bid = plan.bid;
+                    bt->critical = plan.critical;
+                    bt->blockNodes = blk.Gblk->numberOfNodes();
+                    bt->blockEdges = blk.Gblk->numberOfEdges();
+                    bt->spqrTreeNodes = T.numberOfNodes();
+                    bt->logicWeight = T.numberOfNodes() + blk.Gblk->numberOfEdges();
+                    uint32_t cS = 0, cP = 0, cR = 0;
+                    for (ogdf::node tn : T.nodes) {
+                        auto ty = blk.spqr->typeOf(tn);
+                        if (ty == ogdf::StaticSPQRTree::NodeType::SNode) ++cS;
+                        else if (ty == ogdf::StaticSPQRTree::NodeType::PNode) ++cP;
+                        else if (ty == ogdf::StaticSPQRTree::NodeType::RNode) ++cR;
+                    }
+                    bt->spqrSCount = cS;
+                    bt->spqrPCount = cP;
+                    bt->spqrRCount = cR;
+                }
                 )
 
+                BF_INSTR(auto __sub_t0 = std::chrono::high_resolution_clock::now();)
                 ogdf::EdgeArray<EdgeDP> edge_dp(T);
                 ogdf::NodeArray<NodeDPState> node_dp(T);
+                BF_INSTR(
+                auto __sub_t1 = std::chrono::high_resolution_clock::now();
+                uint64_t __dt_alloc = std::chrono::duration_cast<std::chrono::nanoseconds>(__sub_t1 - __sub_t0).count();
+                profiling_patch::sub_alloc_dp_ns.fetch_add(__dt_alloc, std::memory_order_relaxed);
+                if (bt) bt->sub_alloc_dp_ns = __dt_alloc;
+                )
 
                 std::vector<ogdf::node> nodeOrder;
                 std::vector<ogdf::edge> edgeOrder;
 
+                BF_INSTR(__sub_t0 = std::chrono::high_resolution_clock::now();)
                 dfsSPQR_order(*blk.spqr, edgeOrder, nodeOrder);
+                BF_INSTR(
+                __sub_t1 = std::chrono::high_resolution_clock::now();
+                uint64_t __dt_dfs = std::chrono::duration_cast<std::chrono::nanoseconds>(__sub_t1 - __sub_t0).count();
+                profiling_patch::sub_dfs_order_ns.fetch_add(__dt_dfs, std::memory_order_relaxed);
+                if (bt) bt->sub_dfs_order_ns = __dt_dfs;
+                )
 
+                BF_INSTR(__sub_t0 = std::chrono::high_resolution_clock::now();)
                 blk.blkToSkel.init(*blk.Gblk, nullptr);
+                BF_INSTR(
+                __sub_t1 = std::chrono::high_resolution_clock::now();
+                uint64_t __dt_bts = std::chrono::duration_cast<std::chrono::nanoseconds>(__sub_t1 - __sub_t0).count();
+                profiling_patch::sub_blktoskel_init_ns.fetch_add(__dt_bts, std::memory_order_relaxed);
+                if (bt) bt->sub_blktoskel_init_ns = __dt_bts;
+                )
+
+                BF_INSTR(
+                if (bt) {
+                    auto __levels_t0 = std::chrono::high_resolution_clock::now();
+                    ogdf::NodeArray<uint32_t> depthArr(T, 0);
+                    ogdf::NodeArray<uint32_t> heightArr(T, 0);
+                    uint32_t maxDepth_loc = 0;
+                    for (ogdf::node v : nodeOrder) {
+                        ogdf::node p = blk.parent[v];
+                        uint32_t d = (p == v) ? 0 : (depthArr[p] + 1);
+                        depthArr[v] = d;
+                        if (d > maxDepth_loc) maxDepth_loc = d;
+                    }
+                    uint32_t maxHeight_loc = 0;
+                    for (size_t i = nodeOrder.size(); i-- > 0; ) {
+                        ogdf::node v = nodeOrder[i];
+                        uint32_t h = 0;
+                        T.forEachAdj(v, [&](ogdf::node nb, ogdf::edge) {
+                            if (nb == blk.parent[v]) return;
+                            uint32_t hc = heightArr[nb] + 1;
+                            if (hc > h) h = hc;
+                        });
+                        heightArr[v] = h;
+                        if (h > maxHeight_loc) maxHeight_loc = h;
+                    }
+                    bt->maxDepth = maxDepth_loc;
+                    bt->maxHeight = maxHeight_loc;
+                    bt->widthByDepth.assign(static_cast<size_t>(maxDepth_loc) + 1, 0);
+                    bt->widthByHeight.assign(static_cast<size_t>(maxHeight_loc) + 1, 0);
+                    for (ogdf::node v : nodeOrder) {
+                        bt->widthByDepth[depthArr[v]] += 1;
+                        bt->widthByHeight[heightArr[v]] += 1;
+                    }
+                    auto __levels_t1 = std::chrono::high_resolution_clock::now();
+                    uint64_t __dt_lvl = std::chrono::duration_cast<std::chrono::nanoseconds>(__levels_t1 - __levels_t0).count();
+                    profiling_patch::sub_levels_ns.fetch_add(__dt_lvl, std::memory_order_relaxed);
+                    bt->sub_levels_ns = __dt_lvl;
+                }
+                )
 
                 {
                 BF_INSTR(auto __sp_t0 = std::chrono::high_resolution_clock::now();)
@@ -5443,10 +5643,10 @@ namespace solver
                 }
                 BF_INSTR(
                 auto __sp_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::phase1_edge_dp_time_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_p1 = std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count();
+                profiling_patch::phase1_edge_dp_time_ns.fetch_add(__dt_p1, std::memory_order_relaxed);
                 profiling_patch::phase1_calls.fetch_add(1, std::memory_order_relaxed);
+                if (bt) bt->phase1_ns = __dt_p1;
                 )
                 }
 
@@ -5458,10 +5658,10 @@ namespace solver
                 }
                 BF_INSTR(
                 auto __sp_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::phase2_node_dp_time_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_p2 = std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count();
+                profiling_patch::phase2_node_dp_time_ns.fetch_add(__dt_p2, std::memory_order_relaxed);
                 profiling_patch::phase2_calls.fetch_add(1, std::memory_order_relaxed);
+                if (bt) bt->phase2_ns = __dt_p2;
                 )
                 }
 
@@ -5470,14 +5670,15 @@ namespace solver
                 solveNodes(node_dp, edge_dp, blk, cc, plan);
                 BF_INSTR(
                 auto __sp_t1 = std::chrono::high_resolution_clock::now();
-                profiling_patch::phase3_solve_time_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_p3 = std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1 - __sp_t0).count();
+                profiling_patch::phase3_solve_time_ns.fetch_add(__dt_p3, std::memory_order_relaxed);
                 profiling_patch::phase3_calls.fetch_add(1, std::memory_order_relaxed);
+                if (bt) bt->phase3_ns = __dt_p3;
                 )
                 }
 
                 BF_INSTR(auto __sp_t0_p4 = std::chrono::high_resolution_clock::now();)
+                BF_INSTR(auto __p4_setup_t0 = std::chrono::high_resolution_clock::now();)
 
                 std::vector<std::vector<ogdf::node>> block_vertexInSnodes; 
                 std::vector<std::vector<ogdf::node>> *vertexInSnodes_ptr = nullptr;
@@ -5516,6 +5717,13 @@ namespace solver
                         vertexInSnodes[vBlk.idx].push_back(mu);
                     }
                 }
+
+                BF_INSTR(
+                auto __p4_setup_t1 = std::chrono::high_resolution_clock::now();
+                uint64_t __dt_p4_setup = std::chrono::duration_cast<std::chrono::nanoseconds>(__p4_setup_t1 - __p4_setup_t0).count();
+                profiling_patch::sub_phase4_setup_ns.fetch_add(__dt_p4_setup, std::memory_order_relaxed);
+                if (bt) bt->phase4_setup_ns = __dt_p4_setup;
+                )
 
                 auto shareSnode = [&](ogdf::node aB, ogdf::node bB) -> bool {
                     const auto &La = vertexInSnodes[aB.idx];
@@ -5626,23 +5834,50 @@ namespace solver
                 };
 
                 if (!plan.critical) {
+                    BF_INSTR(auto __p4_body_t0 = std::chrono::high_resolution_clock::now();)
                     for (ogdf::edge eB : blk.Gblk->edges) {
                         caseE_body(eB);
                     }
+                    BF_INSTR(
+                    auto __p4_body_t1 = std::chrono::high_resolution_clock::now();
+                    uint64_t __dt_p4_body = std::chrono::duration_cast<std::chrono::nanoseconds>(__p4_body_t1 - __p4_body_t0).count();
+                    profiling_patch::sub_phase4_caseE_body_ns.fetch_add(__dt_p4_body, std::memory_order_relaxed);
+                    if (bt) bt->phase4_caseE_body_ns = __dt_p4_body;
+                    profiling_patch::taskloops_caseE_skipped.fetch_add(1, std::memory_order_relaxed);
+                    )
                 } else {
+                    BF_INSTR(auto __p4_collect_t0 = std::chrono::high_resolution_clock::now();)
                     std::vector<ogdf::edge> blockEdges;
                     blockEdges.reserve(blk.Gblk->numberOfEdges());
                     for (ogdf::edge eB : blk.Gblk->edges)
                         blockEdges.push_back(eB);
+                    BF_INSTR(
+                    auto __p4_collect_t1 = std::chrono::high_resolution_clock::now();
+                    uint64_t __dt_p4_collect = std::chrono::duration_cast<std::chrono::nanoseconds>(__p4_collect_t1 - __p4_collect_t0).count();
+                    profiling_patch::sub_caseE_collect_ns.fetch_add(__dt_p4_collect, std::memory_order_relaxed);
+                    if (bt) bt->phase4_caseE_collect_ns = __dt_p4_collect;
+                    )
 
                     const uint64_t n = blockEdges.size();
                     const uint64_t W = blk.Gblk->numberOfEdges();
                     const uint64_t nT = bf_choose_num_tasks(n, W, plan);
 
+                    BF_INSTR(auto __p4_body_t0 = std::chrono::high_resolution_clock::now();)
                     if (nT == 0) {
+                        BF_INSTR(
+                        profiling_patch::taskloops_caseE_skipped.fetch_add(1, std::memory_order_relaxed);
+                        )
                         for (size_t i = 0; i < blockEdges.size(); ++i)
                             caseE_body(blockEdges[i]);
                     } else {
+                        BF_INSTR(
+                        profiling_patch::taskloops_caseE_created.fetch_add(1, std::memory_order_relaxed);
+                        profiling_patch::tasks_requested_caseE_total.fetch_add(nT, std::memory_order_relaxed);
+                        if (bt) {
+                            bt->taskloops_caseE_created += 1;
+                            bt->tasks_requested_caseE += nT;
+                        }
+                        )
                         if (plan.activeIntraTaskloops)
                             plan.activeIntraTaskloops->fetch_add(1, std::memory_order_relaxed);
 
@@ -5654,13 +5889,18 @@ namespace solver
                         if (plan.activeIntraTaskloops)
                             plan.activeIntraTaskloops->fetch_sub(1, std::memory_order_relaxed);
                     }
+                    BF_INSTR(
+                    auto __p4_body_t1 = std::chrono::high_resolution_clock::now();
+                    uint64_t __dt_p4_body = std::chrono::duration_cast<std::chrono::nanoseconds>(__p4_body_t1 - __p4_body_t0).count();
+                    profiling_patch::sub_phase4_caseE_body_ns.fetch_add(__dt_p4_body, std::memory_order_relaxed);
+                    if (bt) bt->phase4_caseE_body_ns = __dt_p4_body;
+                    )
                 }
 
                 BF_INSTR(
                 auto __sp_t1_p4 = std::chrono::high_resolution_clock::now();
-                profiling_patch::phase4_caseE_time_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1_p4 - __sp_t0_p4).count(),
-                    std::memory_order_relaxed);
+                uint64_t __dt_p4 = std::chrono::duration_cast<std::chrono::nanoseconds>(__sp_t1_p4 - __sp_t0_p4).count();
+                profiling_patch::phase4_caseE_time_ns.fetch_add(__dt_p4, std::memory_order_relaxed);
                 profiling_patch::phase4_calls.fetch_add(1, std::memory_order_relaxed);
                 )
             }
@@ -6384,10 +6624,19 @@ namespace solver
                     BlockData &blk = *blockPreps->at(bid).blk;
                     blk.bNode = (*blockPreps)[bid].bNode;
 
+                    BF_INSTR(auto __build_t0 = std::chrono::high_resolution_clock::now();)
                     {
-                        // MEM_TIME_BLOCK("SPQR: build (snarl worker)");
                         buildBlockData(blk, *(*blockPreps)[bid].cc);
                     }
+                    BF_INSTR(
+                    auto __build_t1 = std::chrono::high_resolution_clock::now();
+                    uint64_t __dt_build = std::chrono::duration_cast<std::chrono::nanoseconds>(__build_t1 - __build_t0).count();
+                    profiling_patch::BlockTiming *bt_b = profiling_patch::try_get_block_timing(bid);
+                    if (bt_b) {
+                        bt_b->bid = bid;
+                        bt_b->build_ns = __dt_build;
+                    }
+                    )
 
                     BlockPrep &prepRef = (*blockPreps)[bid];
                     prepRef.treeWeight = (blk.spqr ? blk.spqr->tree().numberOfNodes() : 0);
@@ -6456,6 +6705,33 @@ namespace solver
             p3() << "  4  case E    (single-edge snarls)     " << t_p4 << " ms (";
             p1() << pct(t_p4, t_phases) << "%)\n";
 
+            const double t_alloc      = pp::sub_alloc_dp_ns.load() * NS_TO_MS;
+            const double t_dfs        = pp::sub_dfs_order_ns.load() * NS_TO_MS;
+            const double t_btsi       = pp::sub_blktoskel_init_ns.load() * NS_TO_MS;
+            const double t_lvl        = pp::sub_levels_ns.load() * NS_TO_MS;
+            const double t_p4_setup   = pp::sub_phase4_setup_ns.load() * NS_TO_MS;
+            const double t_p4_collect = pp::sub_caseE_collect_ns.load() * NS_TO_MS;
+            const double t_p4_body    = pp::sub_phase4_caseE_body_ns.load() * NS_TO_MS;
+            const double t_p3_collect = pp::sub_solveS_collect_ns.load() * NS_TO_MS;
+            const double t_destruct   = pp::sub_destruct_ns.load() * NS_TO_MS;
+
+            os << "\nSub-phases (cumulative across all blocks):\n";
+            p3() << "  alloc DP arrays                     " << t_alloc << " ms (";
+            p1() << pct(t_alloc, t_phases) << "% of phases)\n";
+            p3() << "  dfsSPQR_order                       " << t_dfs << " ms (";
+            p1() << pct(t_dfs, t_phases) << "% of phases)\n";
+            p3() << "  blkToSkel.init                      " << t_btsi << " ms (";
+            p1() << pct(t_btsi, t_phases) << "% of phases)\n";
+            p3() << "  levels analysis   " << t_lvl << " ms (";
+            p1() << pct(t_lvl, t_phases) << "% of phases)\n";
+            p3() << "  phase 3 sNodes/pNodes collect       " << t_p3_collect << " ms\n";
+            p3() << "  phase 4 vertexInSnodes setup        " << t_p4_setup << " ms (";
+            p1() << pct(t_p4_setup, t_p4) << "% of phase 4)\n";
+            p3() << "  phase 4 caseE edges collect         " << t_p4_collect << " ms\n";
+            p3() << "  phase 4 caseE body                  " << t_p4_body << " ms (";
+            p1() << pct(t_p4_body, t_p4) << "% of phase 4)\n";
+            p3() << "  BlockData destruction               " << t_destruct << " ms\n";
+
             auto row = [&](const char *label, double t, double sum) {
                 os << "  " << label;
                 p3() << t << " ms (";
@@ -6503,6 +6779,136 @@ namespace solver
                     p3() << p_ms  << " ms, "; p1() << pct(p_ms,  sum) << "%)\n";
                     os << "  solveRR " << rr_calls << " calls (";
                     p3() << rr_ms << " ms, "; p1() << pct(rr_ms, sum) << "%)\n";
+                }
+            }
+
+            {
+                const uint64_t tlS_c = pp::taskloops_S_created.load();
+                const uint64_t tlS_s = pp::taskloops_S_skipped.load();
+                const uint64_t tlP_c = pp::taskloops_P_created.load();
+                const uint64_t tlP_s = pp::taskloops_P_skipped.load();
+                const uint64_t tlE_c = pp::taskloops_caseE_created.load();
+                const uint64_t tlE_s = pp::taskloops_caseE_skipped.load();
+                const uint64_t taskS = pp::tasks_requested_S_total.load();
+                const uint64_t taskP = pp::tasks_requested_P_total.load();
+                const uint64_t taskE = pp::tasks_requested_caseE_total.load();
+                os << "\nTaskloops created (= entered parallel path):\n";
+                os << "  S-nodes :   created " << tlS_c << ", skipped " << tlS_s
+                   << ", tasks requested total " << taskS;
+                if (tlS_c > 0) os << " (avg " << (taskS / tlS_c) << "/taskloop)";
+                os << "\n";
+                os << "  P-nodes :   created " << tlP_c << ", skipped " << tlP_s
+                   << ", tasks requested total " << taskP;
+                if (tlP_c > 0) os << " (avg " << (taskP / tlP_c) << "/taskloop)";
+                os << "\n";
+                os << "  caseE   :   created " << tlE_c << ", skipped " << tlE_s
+                   << ", tasks requested total " << taskE;
+                if (tlE_c > 0) os << " (avg " << (taskE / tlE_c) << "/taskloop)";
+                os << "\n";
+            }
+
+            {
+                auto &tv = pp::g_block_timings();
+                if (!tv.empty()) {
+                    std::vector<size_t> idx;
+                    idx.reserve(tv.size());
+                    for (size_t i = 0; i < tv.size(); ++i) {
+                        if (tv[i].solve_total_ns > 0 || tv[i].build_ns > 0)
+                            idx.push_back(i);
+                    }
+                    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+                        uint64_t ka = tv[a].build_ns + tv[a].solve_total_ns;
+                        uint64_t kb = tv[b].build_ns + tv[b].solve_total_ns;
+                        return ka > kb;
+                    });
+                    const size_t topN = std::min<size_t>(idx.size(), 10);
+                    if (topN > 0) {
+                        os << "\nTop " << topN << " blocks (by build+solve time):\n";
+                        for (size_t k = 0; k < topN; ++k) {
+                            const auto &b = tv[idx[k]];
+                            const double ms_build = b.build_ns * NS_TO_MS;
+                            const double ms_solve = b.solve_total_ns * NS_TO_MS;
+                            const double ms_alloc = b.sub_alloc_dp_ns * NS_TO_MS;
+                            const double ms_dfs = b.sub_dfs_order_ns* NS_TO_MS;
+                            const double ms_btsi = b.sub_blktoskel_init_ns* NS_TO_MS;
+                            const double ms_lvl = b.sub_levels_ns * NS_TO_MS;
+                            const double ms_p1 = b.phase1_ns * NS_TO_MS;
+                            const double ms_p2 = b.phase2_ns * NS_TO_MS;
+                            const double ms_p3 = b.phase3_ns * NS_TO_MS;
+                            const double ms_p3_S = b.phase3_S_ns * NS_TO_MS;
+                            const double ms_p3_P = b.phase3_P_ns * NS_TO_MS;
+                            const double ms_p3_RR = b.phase3_RR_ns * NS_TO_MS;
+                            const double ms_p3_col = b.phase3_S_collect_ns * NS_TO_MS;
+                            const double ms_p4_set = b.phase4_setup_ns * NS_TO_MS;
+                            const double ms_p4_col = b.phase4_caseE_collect_ns * NS_TO_MS;
+                            const double ms_p4_body= b.phase4_caseE_body_ns    * NS_TO_MS;
+                            const double ms_destr = b.destruct_ns     * NS_TO_MS;
+                            const double sub_sum = ms_alloc + ms_dfs + ms_btsi + ms_lvl
+                                                    + ms_p1 + ms_p2 + ms_p3
+                                                    + ms_p4_set + ms_p4_col + ms_p4_body;
+                            const double unaccounted = ms_solve - sub_sum;
+
+                            os << "\n  block #" << b.bid
+                               << " (rank " << (k + 1) << ")"
+                               << "  critical=" << (b.critical ? "Y" : "N")
+                               << "  block(n+e)=" << b.blockNodes << "+" << b.blockEdges
+                               << "  spqr=" << b.spqrTreeNodes
+                               << " [S=" << b.spqrSCount << " P=" << b.spqrPCount << " R=" << b.spqrRCount << "]"
+                               << "  height=" << b.maxHeight
+                               << "  depth=" << b.maxDepth << "\n";
+                            p3() << "    build = " << ms_build << " ms\n";
+                            p3() << "    solve = " << ms_solve << " ms\n";
+                            p3() << "      alloc DP        " << ms_alloc << " ms\n";
+                            p3() << "      dfsSPQR_order   " << ms_dfs   << " ms\n";
+                            p3() << "      blkToSkel.init  " << ms_btsi  << " ms\n";
+                            p3() << "      levels analysis " << ms_lvl   << " ms (instrumentation overhead)\n";
+                            p3() << "      phase 1         " << ms_p1    << " ms\n";
+                            p3() << "      phase 2         " << ms_p2    << " ms\n";
+                            p3() << "      phase 3 total   " << ms_p3    << " ms\n";
+                            p3() << "        sNodes/pNodes collect " << ms_p3_col << " ms\n";
+                            p3() << "        solveS                 " << ms_p3_S << " ms\n";
+                            p3() << "        solveP                 " << ms_p3_P << " ms\n";
+                            p3() << "        solveRR                " << ms_p3_RR << " ms\n";
+                            p3() << "      phase 4 setup           " << ms_p4_set  << " ms\n";
+                            p3() << "      phase 4 caseE collect   " << ms_p4_col  << " ms\n";
+                            p3() << "      phase 4 caseE body      " << ms_p4_body << " ms\n";
+                            p3() << "      unaccounted in solve    " << unaccounted << " ms (";
+                            p1() << pct(unaccounted, ms_solve) << "%)\n";
+                            p3() << "    destruct   = " << ms_destr << " ms\n";
+                            os << "    taskloops S/P/caseE created = "
+                               << b.taskloops_S_created << "/"
+                               << b.taskloops_P_created << "/"
+                               << b.taskloops_caseE_created
+                               << "  tasks requested = "
+                               << b.tasks_requested_S << "/"
+                               << b.tasks_requested_P << "/"
+                               << b.tasks_requested_caseE << "\n";
+                        }
+                    }
+
+                    if (!idx.empty()) {
+                        const auto &b0 = tv[idx[0]];
+                        if (!b0.widthByDepth.empty()) {
+                            os << "\nDominant block #" << b0.bid << " - SPQR width by depth (top-down for phase 2 wavefront):\n";
+                            os << "  maxDepth = " << b0.maxDepth
+                               << ", total nodes = " << b0.spqrTreeNodes << "\n";
+                            for (size_t d = 0; d < b0.widthByDepth.size(); ++d) {
+                                if (b0.widthByDepth[d] == 0) continue;
+                                os << "  depth " << std::setw(4) << d << " : "
+                                   << b0.widthByDepth[d] << "\n";
+                            }
+                        }
+                        if (!b0.widthByHeight.empty()) {
+                            os << "\nDominant block #" << b0.bid << " - SPQR width by height (bottom-up for phase 1 wavefront):\n";
+                            os << "  maxHeight = " << b0.maxHeight
+                               << ", total nodes = " << b0.spqrTreeNodes << "\n";
+                            for (size_t h = 0; h < b0.widthByHeight.size(); ++h) {
+                                if (b0.widthByHeight[h] == 0) continue;
+                                os << "  height " << std::setw(4) << h << " : "
+                                   << b0.widthByHeight[h] << "\n";
+                            }
+                        }
+                    }
                 }
             }
 
@@ -6714,6 +7120,8 @@ namespace solver
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
 
+                    BF_INSTR(profiling_patch::reset_block_timings(blockPreps.size());)
+
                     size_t numThreads = std::thread::hardware_concurrency();
                     numThreads = std::min({(size_t)C.threads, blockPreps.size(), numThreads});
 
@@ -6916,9 +7324,25 @@ namespace solver
                                             plan.quantum = Q;
                                             plan.numThreads = P;
                                             plan.activeIntraTaskloops = &activeIntraTaskloops;
+                                            plan.bid = bid;
+                                            BF_INSTR(auto __solve_t0 = std::chrono::high_resolution_clock::now();)
                                             SPQRsolve::solveSPQR(blk, *prep.cc, plan);
+                                            BF_INSTR(
+                                            auto __solve_t1 = std::chrono::high_resolution_clock::now();
+                                            uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
+                                            profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
+                                            if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
+                                            )
                                         }
+                                        BF_INSTR(auto __destr_t0 = std::chrono::high_resolution_clock::now();)
                                         prep.blk.reset();
+                                        BF_INSTR(
+                                        auto __destr_t1 = std::chrono::high_resolution_clock::now();
+                                        uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
+                                        profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
+                                        profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
+                                        if (bt_d) bt_d->destruct_ns = __dt_destr;
+                                        )
                                         ++processed;
                                     }
                                     continue;
@@ -6944,9 +7368,25 @@ namespace solver
                                     plan.quantum = Q;
                                     plan.numThreads = P;
                                     plan.activeIntraTaskloops = &activeIntraTaskloops;
+                                    plan.bid = bid;
+                                    BF_INSTR(auto __solve_t0 = std::chrono::high_resolution_clock::now();)
                                     SPQRsolve::solveSPQR(blk, *prep.cc, plan);
+                                    BF_INSTR(
+                                    auto __solve_t1 = std::chrono::high_resolution_clock::now();
+                                    uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
+                                    profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
+                                    if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
+                                    )
                                 }
+                                BF_INSTR(auto __destr_t0 = std::chrono::high_resolution_clock::now();)
                                 prep.blk.reset();
+                                BF_INSTR(
+                                auto __destr_t1 = std::chrono::high_resolution_clock::now();
+                                uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
+                                profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
+                                profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
+                                if (bt_d) bt_d->destruct_ns = __dt_destr;
+                                )
                                 ++processed;
                             }
 
