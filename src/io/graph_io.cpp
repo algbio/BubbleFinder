@@ -2,6 +2,7 @@
 #include "util/context.hpp"
 #include "util/timer.hpp"
 #include "util/logger.hpp"
+#include "util/profiling_macros.hpp"
 #include "gfa_parser.hpp"
 
 #include "gbz_parser.hpp"
@@ -16,6 +17,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <unistd.h>
+#include <atomic>
+#include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <vector>
 
 using namespace ogdf;
 
@@ -523,6 +529,299 @@ namespace {
 }
 
 
+#ifdef BUBBLEFINDER_INSTRUMENT
+namespace {
+
+struct ChainAuditResult {
+    uint64_t totalNodes = 0;
+    uint64_t totalEdges = 0;
+    uint64_t trashNodes = 0;
+    uint64_t contractibleNodes = 0;
+    uint64_t entryNodes = 0;
+    uint64_t branchingNodes = 0;
+    uint64_t isolatedNodes = 0;
+    uint64_t selfLoopOnContract = 0;
+    uint64_t parallelEdgeOnContract = 0;
+    uint64_t numChains = 0;
+    uint64_t maxChainLen = 0;
+    uint64_t sumChainLen = 0;
+    uint64_t chainLenHist[16] = {0};
+    uint64_t chainLenP50 = 0;
+    uint64_t chainLenP90 = 0;
+    uint64_t chainLenP99 = 0;
+    uint64_t edgesAfterContract = 0;
+    uint64_t auditTimeMs = 0;
+};
+
+inline EdgePartType edgeTypeAtNode(const ogdf::Graph &G,
+                                   const ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
+                                   ogdf::edge e,
+                                   ogdf::node v)
+{
+    if (G.source(e) == v) return e2t[e].first;
+    if (G.target(e) == v) return e2t[e].second;
+    return EdgePartType::NONE;
+}
+
+inline bool isContractible(const ogdf::Graph &G,
+                           const ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
+                           ogdf::node v)
+{
+    int dPlus = 0, dMinus = 0, dOther = 0;
+    int total = 0;
+    bool hasSelfLoop = false;
+    G.forEachAdj(v, [&](ogdf::node nbr, ogdf::edge e) {
+        if (nbr == v) hasSelfLoop = true;
+        ++total;
+        EdgePartType t = edgeTypeAtNode(G, e2t, e, v);
+        if (t == EdgePartType::PLUS) ++dPlus;
+        else if (t == EdgePartType::MINUS) ++dMinus;
+        else ++dOther;
+    });
+    if (hasSelfLoop) return false;
+    if (dOther != 0) return false;
+    if (total != 2) return false;
+    return dPlus == 1 && dMinus == 1;
+}
+
+inline ogdf::node otherEndOnSide(const ogdf::Graph &G,
+                                 const ogdf::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
+                                 ogdf::node v,
+                                 EdgePartType wantedSide,
+                                 ogdf::edge &outEdge)
+{
+    ogdf::node res = nullptr;
+    outEdge = nullptr;
+    G.forEachAdj(v, [&](ogdf::node nbr, ogdf::edge e) {
+        if (res != nullptr) return;
+        if (edgeTypeAtNode(G, e2t, e, v) == wantedSide) {
+            res = nbr;
+            outEdge = e;
+        }
+    });
+    return res;
+}
+
+void auditDeg2ContractionPotential(ChainAuditResult &R)
+{
+    using namespace std::chrono;
+    auto t0 = high_resolution_clock::now();
+    auto &C = ctx();
+    const ogdf::Graph &G = C.G;
+    const auto &e2t = C._edge2types;
+
+    R.totalNodes = G.numberOfNodes();
+    R.totalEdges = G.numberOfEdges();
+
+    std::vector<bool> trash(G.numberOfNodes() + 1, false);
+    for (const auto &kv : C.node2name) {
+        if (kv.second == "_trash") {
+            if (kv.first.idx >= 0 && static_cast<size_t>(kv.first.idx) < trash.size())
+                trash[kv.first.idx] = true;
+        }
+    }
+    for (size_t i = 0; i < trash.size(); ++i) if (trash[i]) ++R.trashNodes;
+
+    std::vector<bool> isCtr(G.numberOfNodes() + 1, false);
+    for (ogdf::node v : G.nodes) {
+        size_t idx = static_cast<size_t>(v.idx);
+        if (idx >= isCtr.size()) continue;
+        if (idx < trash.size() && trash[idx]) continue;
+        int total = 0;
+        G.forEachAdj(v, [&](ogdf::node, ogdf::edge) { ++total; });
+        if (total == 0) { ++R.isolatedNodes; continue; }
+        if (isContractible(G, e2t, v)) {
+            isCtr[idx] = true;
+            ++R.contractibleNodes;
+        } else {
+            if (total >= 3) ++R.branchingNodes;
+            else ++R.entryNodes;
+        }
+    }
+
+    std::vector<bool> visited(G.numberOfNodes() + 1, false);
+    std::vector<uint64_t> chainLens;
+    chainLens.reserve(R.contractibleNodes / 2 + 1);
+
+    for (ogdf::node start : G.nodes) {
+        size_t sIdx = static_cast<size_t>(start.idx);
+        if (sIdx >= isCtr.size()) continue;
+        if (!isCtr[sIdx]) continue;
+        if (visited[sIdx]) continue;
+
+        std::vector<ogdf::node> chain;
+        chain.push_back(start);
+        visited[sIdx] = true;
+
+        ogdf::edge ePlus = nullptr;
+        ogdf::node curPlus = otherEndOnSide(G, e2t, start, EdgePartType::PLUS, ePlus);
+        while (curPlus != nullptr) {
+            size_t cIdx = static_cast<size_t>(curPlus.idx);
+            if (cIdx >= isCtr.size() || !isCtr[cIdx] || visited[cIdx]) break;
+            visited[cIdx] = true;
+            chain.push_back(curPlus);
+            ogdf::edge nextE = nullptr;
+            ogdf::node nx = nullptr;
+            G.forEachAdj(curPlus, [&](ogdf::node nbr, ogdf::edge e) {
+                if (e == ePlus) return;
+                if (nx != nullptr) return;
+                nx = nbr;
+                nextE = e;
+            });
+            if (nx == nullptr) break;
+            curPlus = nx;
+            ePlus = nextE;
+        }
+
+        ogdf::edge eMinus = nullptr;
+        ogdf::node curMinus = otherEndOnSide(G, e2t, start, EdgePartType::MINUS, eMinus);
+        while (curMinus != nullptr) {
+            size_t cIdx = static_cast<size_t>(curMinus.idx);
+            if (cIdx >= isCtr.size() || !isCtr[cIdx] || visited[cIdx]) break;
+            visited[cIdx] = true;
+            chain.push_back(curMinus);
+            ogdf::edge nextE = nullptr;
+            ogdf::node nx = nullptr;
+            G.forEachAdj(curMinus, [&](ogdf::node nbr, ogdf::edge e) {
+                if (e == eMinus) return;
+                if (nx != nullptr) return;
+                nx = nbr;
+                nextE = e;
+            });
+            if (nx == nullptr) break;
+            curMinus = nx;
+            eMinus = nextE;
+        }
+
+        ogdf::node leftAnchor = nullptr;
+        ogdf::node rightAnchor = nullptr;
+        ogdf::edge eL = nullptr, eR = nullptr;
+        ogdf::node leftEnd = chain.back();
+        ogdf::node rightEnd = chain.front();
+        if (chain.size() == 1) {
+            leftEnd = start; rightEnd = start;
+        } else {
+            leftEnd = chain.back();
+            rightEnd = chain.front();
+        }
+        G.forEachAdj(leftEnd, [&](ogdf::node nbr, ogdf::edge e) {
+            size_t nIdx = static_cast<size_t>(nbr.idx);
+            if (nIdx < isCtr.size() && isCtr[nIdx] && visited[nIdx] && nbr != leftEnd) return;
+            if (nIdx >= isCtr.size() || !isCtr[nIdx]) {
+                leftAnchor = nbr;
+                eL = e;
+            }
+        });
+        G.forEachAdj(rightEnd, [&](ogdf::node nbr, ogdf::edge e) {
+            size_t nIdx = static_cast<size_t>(nbr.idx);
+            if (nIdx < isCtr.size() && isCtr[nIdx] && visited[nIdx] && nbr != rightEnd) return;
+            if (nIdx >= isCtr.size() || !isCtr[nIdx]) {
+                rightAnchor = nbr;
+                eR = e;
+            }
+        });
+
+        if (leftAnchor != nullptr && leftAnchor == rightAnchor) {
+            ++R.selfLoopOnContract;
+        }
+
+        uint64_t L = chain.size();
+        chainLens.push_back(L);
+        ++R.numChains;
+        R.sumChainLen += L;
+        if (L > R.maxChainLen) R.maxChainLen = L;
+        size_t bucket = (L >= 16) ? 15 : static_cast<size_t>(L);
+        R.chainLenHist[bucket] += 1;
+    }
+
+    if (!chainLens.empty()) {
+        std::sort(chainLens.begin(), chainLens.end());
+        auto pick = [&](double q) -> uint64_t {
+            if (chainLens.empty()) return 0;
+            size_t i = static_cast<size_t>(q * (chainLens.size() - 1));
+            return chainLens[i];
+        };
+        R.chainLenP50 = pick(0.50);
+        R.chainLenP90 = pick(0.90);
+        R.chainLenP99 = pick(0.99);
+    }
+
+    R.edgesAfterContract = R.totalEdges;
+    if (R.contractibleNodes > 0 && R.numChains > 0) {
+        R.edgesAfterContract = (R.totalEdges > R.contractibleNodes)
+            ? (R.totalEdges - R.contractibleNodes)
+            : R.totalEdges;
+    }
+
+    auto t1 = high_resolution_clock::now();
+    R.auditTimeMs = static_cast<uint64_t>(duration_cast<milliseconds>(t1 - t0).count());
+}
+
+void printAuditReport(const ChainAuditResult &R)
+{
+    std::ostream &os = std::cout;
+    auto old_flags = os.flags();
+    auto old_prec = os.precision();
+
+    auto pct = [](double n, double d) -> double {
+        return d > 0.0 ? (100.0 * n / d) : 0.0;
+    };
+
+    os << "\n => Deg 2 information\n";
+    os << "  time" << R.auditTimeMs << " ms\n";
+    os << "\n  Input graph\n";
+    os << " nodes total: " << R.totalNodes << "\n";
+    os << " edges total: " << R.totalEdges << "\n";
+    os << " trash nodes: " << R.trashNodes
+       << " (" << std::fixed << std::setprecision(2) << pct(R.trashNodes, R.totalNodes) << "%)\n";
+
+    os << "\n  classification\n";
+    os << " contractible (deg+=1, deg-=1): " << R.contractibleNodes
+       << " (" << std::fixed << std::setprecision(2) << pct(R.contractibleNodes, R.totalNodes) << "%)\n";
+    os << " branching (>=3 edges): " << R.branchingNodes
+       << " (" << std::fixed << std::setprecision(2) << pct(R.branchingNodes, R.totalNodes) << "%)\n";
+    os << " end / single-side: " << R.entryNodes
+       << " (" << std::fixed << std::setprecision(2) << pct(R.entryNodes, R.totalNodes) << "%)\n";
+    os << " isolated: " << R.isolatedNodes << "\n";
+
+    os << "\n  Chain extraction\n";
+    os << " chains found: " << R.numChains << "\n";
+    if (R.numChains > 0) {
+        double avg = static_cast<double>(R.sumChainLen) / static_cast<double>(R.numChains);
+        os << " avg chain length: " << std::fixed << std::setprecision(2) << avg << "\n";
+        os << " max chain length: " << R.maxChainLen << "\n";
+        os << " p50 / p90 / p99: " << R.chainLenP50 << " / "
+           << R.chainLenP90 << " / " << R.chainLenP99 << "\n";
+        os << " histogram (chain len -> count):\n";
+        for (size_t i = 1; i < 16; ++i) {
+            if (R.chainLenHist[i] == 0) continue;
+            const char *prefix = (i == 15) ? ">=15" : "    ";
+            os << "      len " << prefix << " " << std::setw(4) << i << " : "
+               << R.chainLenHist[i] << "\n";
+        }
+        os << " self loops created: " << R.selfLoopOnContract << "\n";
+    }
+
+    os << "\n  Reduction if contraction is applied \n";
+    uint64_t nodesAfter = (R.totalNodes > R.contractibleNodes)
+        ? (R.totalNodes - R.contractibleNodes) : R.totalNodes;
+    os << " nodes:" << R.totalNodes << " -> " << nodesAfter
+       << "  (-" << std::fixed << std::setprecision(2) << pct(R.contractibleNodes, R.totalNodes) << "%)\n";
+    os << " edges:" << R.totalEdges << " -> " << R.edgesAfterContract
+       << "  (-" << std::fixed << std::setprecision(2) << pct(R.totalEdges - R.edgesAfterContract, R.totalEdges) << "%)\n";
+
+    if (R.totalNodes > 0 && nodesAfter > 0) {
+        double speedup = static_cast<double>(R.totalNodes) / static_cast<double>(nodesAfter);
+        os << " raw size ratio: " << std::fixed << std::setprecision(2) << speedup << "x\n";
+    }
+
+    os.precision(old_prec);
+    os.flags(old_flags);
+}
+
+}
+#endif
+
 void readGraph() {
     auto &C = ctx();
     TIME_BLOCK("Graph read");
@@ -547,6 +846,15 @@ void readGraph() {
             C.outDeg[C.G.source(e)]++;
             C.inDeg [C.G.target(e)]++;
         }
+
+        BF_INSTR(
+        if (C.bubbleType == Context::BubbleType::SNARL) {
+            ChainAuditResult R;
+            auditDeg2ContractionPotential(R);
+            printAuditReport(R);
+        }
+        )
+
         logger::info("Graph read");
         return;
     }

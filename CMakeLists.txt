@@ -304,6 +304,8 @@ option(BUBBLEFINDER_INSTRUMENT
     OFF)
 if(BUBBLEFINDER_INSTRUMENT)
     target_compile_definitions(BubbleFinder PRIVATE BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(sbio PRIVATE BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(sbutil PRIVATE BUBBLEFINDER_INSTRUMENT)
 endif()
 
 # Link against libdl (libspqr_rust.a indirectly calls dlsym).
