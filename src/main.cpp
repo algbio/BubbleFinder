@@ -1541,8 +1541,8 @@ namespace solver
 
             enum Phase2PruneMask : unsigned char
             {
-                P2None  = 0,
-                P2Tip   = 1u << 0,
+                P2None = 0,
+                P2Tip = 1u << 0,
                 P2Cycle = 1u << 1
             };
 
@@ -1550,7 +1550,7 @@ namespace solver
             {
                 unsigned char m = P2None;
                 if (st.globalSourceSink) m |= P2Tip;
-                if (!st.acyclic)         m |= P2Cycle;
+                if (!st.acyclic) m |= P2Cycle;
                 return m;
             }
 
@@ -1590,7 +1590,7 @@ namespace solver
                     tls_localInDeg.resize(nSkel);
                     tls_localOutDeg.resize(nSkel);
                 }
-                std::fill_n(tls_localInDeg.begin(),  nSkel, 0);
+                std::fill_n(tls_localInDeg.begin(), nSkel, 0);
                 std::fill_n(tls_localOutDeg.begin(), nSkel, 0);
                 tls_virtualEdges.clear();
 
@@ -1608,7 +1608,7 @@ namespace solver
                 skel.forEachEdge([&](spqr_compat::edge e, spqr_compat::node u, spqr_compat::node v) {
                     if (!skel.isVirtual(e)) {
                         tls_localOutDeg[u.idx]++;
-                        tls_localInDeg [v.idx]++;
+                        tls_localInDeg[v.idx]++;
                         return;
                     }
 
@@ -1631,9 +1631,9 @@ namespace solver
                     SPQR_RUST_ASSERT(sH != nullptr && tH != nullptr);
 
                     tls_localOutDeg[sH.idx] += opposite->localOutS;
-                    tls_localInDeg [sH.idx] += opposite->localInS;
+                    tls_localInDeg[sH.idx] += opposite->localInS;
                     tls_localOutDeg[tH.idx] += opposite->localOutT;
-                    tls_localInDeg [tH.idx] += opposite->localInT;
+                    tls_localInDeg[tH.idx] += opposite->localInT;
                 });
 
 
@@ -1651,7 +1651,7 @@ namespace solver
                             if (skel.isVirtual(e)) return;
                             spqr_compat::node bU = skel.original(u);
                             spqr_compat::node bV = skel.original(v);
-                            if      (bU == pole0Blk && bV == pole1Blk) ++cnt01;
+                            if (bU == pole0Blk && bV == pole1Blk) ++cnt01;
                             else if (bU == pole1Blk && bV == pole0Blk) ++cnt10;
                         });
 
@@ -1668,7 +1668,7 @@ namespace solver
                     }
                 }
 
-                const bool propagateTip   = (pruneMask & P2Tip)   != 0;
+                const bool propagateTip = (pruneMask & P2Tip) != 0;
                 const bool propagateCycle = (pruneMask & P2Cycle) != 0;
 
                 for (const auto &ve : tls_virtualEdges)
@@ -1678,7 +1678,7 @@ namespace solver
 
                     if (ve.other != parent_of_curr) {
                         if (propagateCycle) BA->acyclic = false;
-                        if (propagateTip)   BA->globalSourceSink = true;
+                        if (propagateTip) BA->globalSourceSink = true;
                     }
 
                     SPQR_RUST_ASSERT(BA->s != nullptr && BA->t != nullptr);
@@ -1686,9 +1686,9 @@ namespace solver
                     spqr_compat::node tH = blk.blkToSkel[BA->t];
                     SPQR_RUST_ASSERT(sH != nullptr && tH != nullptr);
 
-                    BA->localInS  = tls_localInDeg [sH.idx] - AB->localInS;
+                    BA->localInS = tls_localInDeg[sH.idx] - AB->localInS;
                     BA->localOutS = tls_localOutDeg[sH.idx] - AB->localOutS;
-                    BA->localInT  = tls_localInDeg [tH.idx] - AB->localInT;
+                    BA->localInT = tls_localInDeg[tH.idx] - AB->localInT;
                     BA->localOutT = tls_localOutDeg[tH.idx] - AB->localOutT;
                 }
             }
@@ -3105,15 +3105,15 @@ namespace solver
 
                 thread_local std::vector<uint32_t> tls_pe_skelToNew;
                 thread_local std::vector<uint32_t> tls_pe_newToSkel;
-                thread_local std::vector<int>      tls_pe_localInDeg;
-                thread_local std::vector<int>      tls_pe_localOutDeg;
+                thread_local std::vector<int> tls_pe_localInDeg;
+                thread_local std::vector<int> tls_pe_localOutDeg;
 
-                if (tls_pe_skelToNew.size()   < pe_nSkel) tls_pe_skelToNew.resize(pe_nSkel);
-                if (tls_pe_newToSkel.size()   < pe_nSkel) tls_pe_newToSkel.resize(pe_nSkel);
-                if (tls_pe_localInDeg.size()  < pe_nSkel) tls_pe_localInDeg.resize(pe_nSkel);
+                if (tls_pe_skelToNew.size() < pe_nSkel) tls_pe_skelToNew.resize(pe_nSkel);
+                if (tls_pe_newToSkel.size() < pe_nSkel) tls_pe_newToSkel.resize(pe_nSkel);
+                if (tls_pe_localInDeg.size() < pe_nSkel) tls_pe_localInDeg.resize(pe_nSkel);
                 if (tls_pe_localOutDeg.size() < pe_nSkel) tls_pe_localOutDeg.resize(pe_nSkel);
 
-                std::fill_n(tls_pe_localInDeg.begin(),  pe_nSkel, 0);
+                std::fill_n(tls_pe_localInDeg.begin(), pe_nSkel, 0);
                 std::fill_n(tls_pe_localOutDeg.begin(), pe_nSkel, 0);
 
                 for (node v : skelGraph.nodes) {
@@ -3427,42 +3427,42 @@ namespace solver
                 const StaticSPQRTree &spqr = *blk.spqr;
                 const Skeleton &skel = spqr.skeleton(A);
                 const auto &skelGraph = skel.getGraph();
-                const uint32_t nSkel      = skelGraph.numberOfNodes();
+                const uint32_t nSkel = skelGraph.numberOfNodes();
                 const uint32_t nSkelEdges = skelGraph.numberOfEdges();
 
                 Graph newGraph;
 
-                thread_local std::vector<uint32_t>                tls_pn_skelToNew;
-                thread_local std::vector<uint32_t>                tls_pn_newToSkel;
-                thread_local std::vector<int>                     tls_pn_localInDeg;
-                thread_local std::vector<int>                     tls_pn_localOutDeg;
-                thread_local std::vector<char>                    tls_pn_isSrcSink;
-                thread_local std::vector<char>                    tls_pn_isLeaking;
-                thread_local std::vector<char>                    tls_pn_isVirtual;
+                thread_local std::vector<uint32_t> tls_pn_skelToNew;
+                thread_local std::vector<uint32_t> tls_pn_newToSkel;
+                thread_local std::vector<int> tls_pn_localInDeg;
+                thread_local std::vector<int> tls_pn_localOutDeg;
+                thread_local std::vector<char> tls_pn_isSrcSink;
+                thread_local std::vector<char> tls_pn_isLeaking;
+                thread_local std::vector<char> tls_pn_isVirtual;
                 thread_local std::vector<SPQRsolve::EdgeDPState*> tls_pn_edgeToDp;
                 thread_local std::vector<SPQRsolve::EdgeDPState*> tls_pn_edgeToDpR;
-                thread_local std::vector<spqr_compat::node>              tls_pn_edgeChild;
-                thread_local std::vector<spqr_compat::edge>              tls_pn_virtualEdges;
+                thread_local std::vector<spqr_compat::node> tls_pn_edgeChild;
+                thread_local std::vector<spqr_compat::edge> tls_pn_virtualEdges;
 
-                if (tls_pn_skelToNew.size()  < nSkel)      tls_pn_skelToNew.resize(nSkel);
-                if (tls_pn_newToSkel.size()  < nSkel)      tls_pn_newToSkel.resize(nSkel);
-                if (tls_pn_localInDeg.size() < nSkel)      tls_pn_localInDeg.resize(nSkel);
-                if (tls_pn_localOutDeg.size()< nSkel)      tls_pn_localOutDeg.resize(nSkel);
-                if (tls_pn_isSrcSink.size()  < nSkel)      tls_pn_isSrcSink.resize(nSkel);
-                if (tls_pn_isLeaking.size()  < nSkel)      tls_pn_isLeaking.resize(nSkel);
-                if (tls_pn_isVirtual.size()  < nSkelEdges) tls_pn_isVirtual.resize(nSkelEdges);
-                if (tls_pn_edgeToDp.size()   < nSkelEdges) tls_pn_edgeToDp.resize(nSkelEdges);
-                if (tls_pn_edgeToDpR.size()  < nSkelEdges) tls_pn_edgeToDpR.resize(nSkelEdges);
-                if (tls_pn_edgeChild.size()  < nSkelEdges) tls_pn_edgeChild.resize(nSkelEdges);
+                if (tls_pn_skelToNew.size() < nSkel) tls_pn_skelToNew.resize(nSkel);
+                if (tls_pn_newToSkel.size() < nSkel) tls_pn_newToSkel.resize(nSkel);
+                if (tls_pn_localInDeg.size() < nSkel) tls_pn_localInDeg.resize(nSkel);
+                if (tls_pn_localOutDeg.size() < nSkel) tls_pn_localOutDeg.resize(nSkel);
+                if (tls_pn_isSrcSink.size() < nSkel) tls_pn_isSrcSink.resize(nSkel);
+                if (tls_pn_isLeaking.size() < nSkel) tls_pn_isLeaking.resize(nSkel);
+                if (tls_pn_isVirtual.size() < nSkelEdges) tls_pn_isVirtual.resize(nSkelEdges);
+                if (tls_pn_edgeToDp.size() < nSkelEdges) tls_pn_edgeToDp.resize(nSkelEdges);
+                if (tls_pn_edgeToDpR.size() < nSkelEdges) tls_pn_edgeToDpR.resize(nSkelEdges);
+                if (tls_pn_edgeChild.size() < nSkelEdges) tls_pn_edgeChild.resize(nSkelEdges);
 
-                std::fill_n(tls_pn_localInDeg.begin(),  nSkel, 0);
+                std::fill_n(tls_pn_localInDeg.begin(), nSkel, 0);
                 std::fill_n(tls_pn_localOutDeg.begin(), nSkel, 0);
-                std::fill_n(tls_pn_isSrcSink.begin(),   nSkel, (char)0);
-                std::fill_n(tls_pn_isLeaking.begin(),   nSkel, (char)0);
-                std::fill_n(tls_pn_isVirtual.begin(),   nSkelEdges, (char)0);
-                std::fill_n(tls_pn_edgeToDp.begin(),    nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
-                std::fill_n(tls_pn_edgeToDpR.begin(),   nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
-                std::fill_n(tls_pn_edgeChild.begin(),   nSkelEdges, spqr_compat::node{});
+                std::fill_n(tls_pn_isSrcSink.begin(), nSkel, (char)0);
+                std::fill_n(tls_pn_isLeaking.begin(), nSkel, (char)0);
+                std::fill_n(tls_pn_isVirtual.begin(), nSkelEdges, (char)0);
+                std::fill_n(tls_pn_edgeToDp.begin(), nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
+                std::fill_n(tls_pn_edgeToDpR.begin(), nSkelEdges, (SPQRsolve::EdgeDPState*)nullptr);
+                std::fill_n(tls_pn_edgeChild.begin(), nSkelEdges, spqr_compat::node{});
                 tls_pn_virtualEdges.clear();
 
                 for (uint32_t i = 0; i < nSkel; ++i) {
@@ -3504,7 +3504,7 @@ namespace solver
                     if (!skel.isVirtual(e)) {
                         auto newEdge = newGraph.newEdge(nU, nV);
                         tls_pn_localOutDeg[nU.idx]++;
-                        tls_pn_localInDeg [nV.idx]++;
+                        tls_pn_localInDeg[nV.idx]++;
                         continue;
                     }
 
@@ -3528,21 +3528,21 @@ namespace solver
                         newEdge = newGraph.newEdge(nT, nS);
                     }
                     tls_pn_isVirtual[newEdge.idx] = (char)1;
-                    tls_pn_edgeToDp[newEdge.idx]  = edgeToUpdate;
+                    tls_pn_edgeToDp[newEdge.idx] = edgeToUpdate;
                     tls_pn_edgeToDpR[newEdge.idx] = child;
                     tls_pn_edgeChild[newEdge.idx] = B;
                     tls_pn_virtualEdges.push_back(newEdge);
 
                     if (nS == nU && nT == nV) {
                         tls_pn_localOutDeg[nS.idx] += child->localOutS;
-                        tls_pn_localInDeg [nS.idx] += child->localInS;
+                        tls_pn_localInDeg[nS.idx] += child->localInS;
                         tls_pn_localOutDeg[nT.idx] += child->localOutT;
-                        tls_pn_localInDeg [nT.idx] += child->localInT;
+                        tls_pn_localInDeg[nT.idx] += child->localInT;
                     } else {
                         tls_pn_localOutDeg[nT.idx] += child->localOutT;
-                        tls_pn_localInDeg [nT.idx] += child->localInT;
+                        tls_pn_localInDeg[nT.idx] += child->localInT;
                         tls_pn_localOutDeg[nS.idx] += child->localOutS;
-                        tls_pn_localInDeg [nS.idx] += child->localInS;
+                        tls_pn_localInDeg[nS.idx] += child->localInS;
                     }
                 }
 
@@ -3564,7 +3564,7 @@ namespace solver
                         localSourceSinkCount++;
                         tls_pn_isSrcSink[vN.idx] = (char)1;
                     }
-                    if (globIn[vB]  != tls_pn_localInDeg [vN.idx] ||
+                    if (globIn[vB] != tls_pn_localInDeg[vN.idx] ||
                         globOut[vB] != tls_pn_localOutDeg[vN.idx])
                     {
                         localLeakageCount++;
@@ -3679,7 +3679,7 @@ namespace solver
                             }
 
                             tls_pn_isVirtual[eRest.idx] = (char)1;
-                            tls_pn_edgeToDp[eRest.idx]  = st;
+                            tls_pn_edgeToDp[eRest.idx] = st;
                             tls_pn_edgeToDpR[eRest.idx] = ts;
                             tls_pn_edgeChild[eRest.idx] = child;
 
@@ -3839,8 +3839,8 @@ namespace solver
                     SPQRsolve::EdgeDPState *BA = tls_pn_edgeToDp[e.idx];
                     SPQRsolve::EdgeDPState *AB = tls_pn_edgeToDpR[e.idx];
 
-                    BA->localInS  = tls_pn_localInDeg [mapBlockToNew(BA->s).idx] - AB->localInS;
-                    BA->localInT  = tls_pn_localInDeg [mapBlockToNew(BA->t).idx] - AB->localInT;
+                    BA->localInS = tls_pn_localInDeg[mapBlockToNew(BA->s).idx] - AB->localInS;
+                    BA->localInT = tls_pn_localInDeg[mapBlockToNew(BA->t).idx] - AB->localInT;
                     BA->localOutS = tls_pn_localOutDeg[mapBlockToNew(BA->s).idx] - AB->localOutS;
                     BA->localOutT = tls_pn_localOutDeg[mapBlockToNew(BA->t).idx] - AB->localOutT;
                 }
@@ -5234,8 +5234,8 @@ namespace solver
 
             BF_INSTR(
             {
-                const uint64_t b  = tip_diag_spqr_blocks.load();
-                const uint64_t v  = tip_diag_spqr_verts.load();
+                const uint64_t b = tip_diag_spqr_blocks.load();
+                const uint64_t v = tip_diag_spqr_verts.load();
                 const uint64_t ss = tip_diag_internal_ss.load();
                 const uint64_t bs = tip_diag_blocks_with_ss.load();
                 const uint64_t mx = tip_diag_max_ss_one_block.load();
@@ -5294,7 +5294,7 @@ namespace solver
                     p1() << pct(t_p3, t_phases) << "%)\n";
                 
                     if (n_pn_total > 0) {
-                        const uint64_t both     = pp::phase2_pruned_both.load();
+                        const uint64_t both = pp::phase2_pruned_both.load();
                         const uint64_t only_src = pp::phase2_pruned_tip.load()   - both;
                         const uint64_t only_cyc = pp::phase2_pruned_cycle.load() - both;
                         os << "\nPhase 2 pruning: " << n_pn_light << "/" << n_pn_total << " (";
@@ -5381,7 +5381,7 @@ namespace solver
                 
                     const uint64_t n_pn_fast = pp::pn_fastpath_calls.load();
                     const uint64_t n_e3_total = pp::pn_E3_calls.load();
-                    const uint64_t n_e3_skip  = pp::pn_E3_fas_dag_skipped.load();
+                    const uint64_t n_e3_skip = pp::pn_E3_fas_dag_skipped.load();
                     if (n_pn_full > 0 || n_e3_total > 0) {
                         if (n_e3_total > 0) {
                             os << " FAS skipped on DAG " << n_e3_skip << "/" << n_e3_total << " (";
@@ -7241,7 +7241,7 @@ namespace solver
 
                 uint32_t total = 0;
                 uint32_t skipped_absorbed_parent = 0;
-                uint32_t skipped_absorbed_tcore  = 0;
+                uint32_t skipped_absorbed_tcore = 0;
                 for (uint32_t m_id = 0; m_id < M; ++m_id) {
                     const SpCompressNode &m = m_view.macros_ptr[m_id];
                     if (m.kind != SP_COMPRESS_KIND_PARALLEL) continue;
@@ -7460,14 +7460,14 @@ namespace solver
                 spqr_tree_info(ctx_out.T, &ctx_out.T_len, &ctx_out.T_root);
                 if (ctx_out.T_len == 0) return false;
 
-                ctx_out.node_types         = spqr_tree_node_types_raw(ctx_out.T);
-                ctx_out.skel_offsets       = spqr_tree_skeleton_offsets_raw(ctx_out.T);
+                ctx_out.node_types = spqr_tree_node_types_raw(ctx_out.T);
+                ctx_out.skel_offsets = spqr_tree_skeleton_offsets_raw(ctx_out.T);
                 uint32_t skel_total = 0;
-                ctx_out.skel_edges         = spqr_tree_skeleton_edges_raw(ctx_out.T, &skel_total);
-                ctx_out.node_parents       = spqr_tree_node_parents_raw(ctx_out.T);
-                ctx_out.children_offsets   = spqr_tree_children_offsets_raw(ctx_out.T);
+                ctx_out.skel_edges = spqr_tree_skeleton_edges_raw(ctx_out.T, &skel_total);
+                ctx_out.node_parents = spqr_tree_node_parents_raw(ctx_out.T);
+                ctx_out.children_offsets = spqr_tree_children_offsets_raw(ctx_out.T);
                 uint32_t children_len = 0;
-                ctx_out.children_array     = spqr_tree_children_raw(ctx_out.T, &children_len);
+                ctx_out.children_array = spqr_tree_children_raw(ctx_out.T, &children_len);
                 uint32_t mapping_len = 0;
                 spqr_tree_node_mapping_raw(ctx_out.T,
                                            &ctx_out.node_mapping_offsets,
@@ -7513,7 +7513,7 @@ namespace solver
                 uint32_t local_idx)
             {
                 uint32_t map_start = tctx.node_mapping_offsets[tree_node];
-                uint32_t core_id   = tctx.node_mapping[map_start + local_idx];
+                uint32_t core_id = tctx.node_mapping[map_start + local_idx];
                 return tctx.core_node_inv[core_id];
             }
 
@@ -7531,7 +7531,7 @@ namespace solver
                     uint32_t parent_tn = tctx.node_parents[tn];
 
                     uint32_t e_start = tctx.skel_offsets[tn];
-                    uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                    uint32_t e_end = tctx.skel_offsets[tn + 1];
                     uint32_t parent_virt_idx = SPQR_INVALID;
                     uint32_t parent_pole0_local = 0, parent_pole1_local = 1;
                     for (uint32_t i = e_start; i < e_end; ++i) {
@@ -7651,7 +7651,7 @@ namespace solver
                     local_counts.assign(local_n, LocalCounts{});
 
                     const uint32_t e_start = tctx.skel_offsets[P];
-                    const uint32_t e_end   = tctx.skel_offsets[P + 1];
+                    const uint32_t e_end = tctx.skel_offsets[P + 1];
                     const uint32_t P_parent =
                         (P == tctx.T_root) ? SPQR_INVALID : tctx.node_parents[P];
 
@@ -7681,9 +7681,9 @@ namespace solver
                         EdgeDPState& state = down_states[child];
                         state.s = spqr_compat::node{pole0_blk_id};
                         state.t = spqr_compat::node{pole1_blk_id};
-                        state.localPlusS  = local_counts[se.src].plus;
+                        state.localPlusS = local_counts[se.src].plus;
                         state.localMinusS = local_counts[se.src].minus;
-                        state.localPlusT  = local_counts[se.dst].plus;
+                        state.localPlusT = local_counts[se.dst].plus;
                         state.localMinusT = local_counts[se.dst].minus;
 
                         subtract_edge_contribution(P, se, up_states[child], state);
@@ -7721,7 +7721,7 @@ namespace solver
                 reset_state_for_poles(state, pole0Blk, pole1Blk);
 
                 uint32_t e_start = tctx.skel_offsets[tn];
-                uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                uint32_t e_end = tctx.skel_offsets[tn + 1];
                 uint32_t parent_tn =
                     (tn == tctx.T_root) ? SPQR_INVALID : tctx.node_parents[tn];
 
@@ -7827,7 +7827,7 @@ namespace solver
                     local_counts.assign(local_n, LocalCounts{});
 
                     uint32_t e_start = tctx.skel_offsets[tn];
-                    uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                    uint32_t e_end = tctx.skel_offsets[tn + 1];
                     uint32_t parent_tn =
                         (tn == tctx.T_root) ? SPQR_INVALID : tctx.node_parents[tn];
 
@@ -7971,7 +7971,7 @@ namespace solver
                     tctx->T_len > 0 && !tcore_up_states->empty()) {
                     for (uint32_t tn = 0; tn < tctx->T_len; ++tn) {
                         uint32_t e_start = tctx->skel_offsets[tn];
-                        uint32_t e_end   = tctx->skel_offsets[tn + 1];
+                        uint32_t e_end = tctx->skel_offsets[tn + 1];
                         for (uint32_t i = e_start; i < e_end; ++i) {
                             const SkeletonEdge& se = tctx->skel_edges[i];
                             if (se.real_edge == SPQR_INVALID) continue;
@@ -8428,7 +8428,7 @@ namespace solver
                     bool ambiguous = false;
 
                     uint32_t e_start = tctx.skel_offsets[tn];
-                    uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                    uint32_t e_end = tctx.skel_offsets[tn + 1];
                     oris.reserve(e_end - e_start);
 
                     uint32_t parent_tn = (tn == tctx.T_root) ? SPQR_INVALID : tctx.node_parents[tn];
@@ -8505,7 +8505,7 @@ namespace solver
                             leftPart.clear();
                             rightPart.clear();
                             for (uint32_t i = 0; i < n_eff; ++i) {
-                                if (oris[i].lSign == leftSign)  leftPart.push_back(i);
+                                if (oris[i].lSign == leftSign) leftPart.push_back(i);
                                 if (oris[i].rSign == rightSign) rightPart.push_back(i);
                             }
                             if (leftPart.empty() || leftPart != rightPart) continue;
@@ -8970,7 +8970,7 @@ namespace solver
                     uint32_t pole1_blk_id = tcore_local_to_block_id(tctx, tn, 1);
 
                     uint32_t e_start = tctx.skel_offsets[tn];
-                    uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                    uint32_t e_end = tctx.skel_offsets[tn + 1];
 
                     for (uint32_t i = e_start; i < e_end; ++i) {
                         const SkeletonEdge& se = tctx.skel_edges[i];
@@ -9006,7 +9006,7 @@ namespace solver
                     if (tctx.node_types[tn] != SPQR_NODE_TYPE_S) continue;
 
                     uint32_t e_start = tctx.skel_offsets[tn];
-                    uint32_t e_end   = tctx.skel_offsets[tn + 1];
+                    uint32_t e_end = tctx.skel_offsets[tn + 1];
 
                     for (uint32_t i = e_start; i < e_end; ++i) {
                         const SkeletonEdge& se = tctx.skel_edges[i];
@@ -9881,7 +9881,7 @@ namespace solver
                     spqr_compat::edge treeE = blk.skel2tree.at(e);
                     SPQR_RUST_ASSERT(treeE != nullptr);
 
-                    EdgeDPState *child    = (B == parent_of_A ? &edge_dp[treeE].up   : &edge_dp[treeE].down);
+                    EdgeDPState *child = (B == parent_of_A ? &edge_dp[treeE].up : &edge_dp[treeE].down);
                     EdgeDPState *toUpdate = (B == parent_of_A ? &edge_dp[treeE].down : &edge_dp[treeE].up);
 
 
@@ -9917,8 +9917,8 @@ namespace solver
                     spqr_compat::node sH = blk.blkToSkel[BA->s];
                     spqr_compat::node tH = blk.blkToSkel[BA->t];
 
-                    BA->localPlusS  = tls_localPlusDeg [sH.idx] - AB->localPlusS;
-                    BA->localPlusT  = tls_localPlusDeg [tH.idx] - AB->localPlusT;
+                    BA->localPlusS = tls_localPlusDeg[sH.idx] - AB->localPlusS;
+                    BA->localPlusT = tls_localPlusDeg[tH.idx] - AB->localPlusT;
                     BA->localMinusS = tls_localMinusDeg[sH.idx] - AB->localMinusS;
                     BA->localMinusT = tls_localMinusDeg[tH.idx] - AB->localMinusT;
                 }
@@ -10633,7 +10633,7 @@ namespace solver
                 BF_INSTR(auto __collect_t0 = std::chrono::high_resolution_clock::now();)
                 for (node tNode : T.nodes) {
                     auto ty = blk.spqr->typeOf(tNode);
-                    if (ty == StaticSPQRTree::NodeType::SNode)      sNodes.push_back(tNode);
+                    if (ty == StaticSPQRTree::NodeType::SNode) sNodes.push_back(tNode);
                     else if (ty == StaticSPQRTree::NodeType::PNode) pNodes.push_back(tNode);
                 }
                 BF_INSTR(
@@ -10694,8 +10694,8 @@ namespace solver
 
                 const uint64_t n = pNodes.size();
 
-                const uint64_t W   = T.numberOfNodes();
-                const uint64_t nT  = bf_choose_num_tasks(n, W, plan);
+                const uint64_t W = T.numberOfNodes();
+                const uint64_t nT = bf_choose_num_tasks(n, W, plan);
 
                 if (nT == 0) {
                     BF_INSTR(
@@ -11696,7 +11696,7 @@ namespace solver
                     if (La.empty() || Lb.empty()) return false;
 
                     const auto &Small = (La.size() <= Lb.size()) ? La : Lb;
-                    const auto &Big   = (La.size() <= Lb.size()) ? Lb : La;
+                    const auto &Big = (La.size() <= Lb.size()) ? Lb : La;
 
                     if (Small.size() <= 4) {
                         for (spqr_compat::node x : Small) {
@@ -11755,26 +11755,26 @@ namespace solver
                     auto check_one_vertex = [&](spqr_compat::node vNode,
                                                 EdgePartType sign,
                                                 EdgePartType eSign) {
-                        int totPlus  = blockDegPlus(blk, vNode);
+                        int totPlus = blockDegPlus(blk, vNode);
                         int totMinus = blockDegMinus(blk, vNode);
                         if (sign == EdgePartType::PLUS) {
                             if (eSign == EdgePartType::PLUS) {
-                                int othersPlus  = totPlus - 1;
+                                int othersPlus = totPlus - 1;
                                 int othersMinus = totMinus;
                                 return (othersPlus == 0 && othersMinus > 0);
                             } else {
-                                int othersPlus  = totPlus;
+                                int othersPlus = totPlus;
                                 int othersMinus = totMinus - 1;
                                 return (othersMinus == 0 && othersPlus > 0);
                             }
                         } else {
                             if (eSign == EdgePartType::MINUS) {
                                 int othersMinus = totMinus - 1;
-                                int othersPlus  = totPlus;
+                                int othersPlus = totPlus;
                                 return (othersMinus == 0 && othersPlus > 0);
                             } else {
                                 int othersMinus = totMinus;
-                                int othersPlus  = totPlus - 1;
+                                int othersPlus = totPlus - 1;
                                 return (othersPlus == 0 && othersMinus > 0);
                             }
                         }
@@ -11991,7 +11991,7 @@ namespace solver
                             blocks.push_back({bIdx, false, false});
                             slot = &blocks.back();
                         }
-                        if (outType == EdgePartType::PLUS)  slot->hasPlus  = true;
+                        if (outType == EdgePartType::PLUS) slot->hasPlus = true;
                         if (outType == EdgePartType::MINUS) slot->hasMinus = true;
                     });
 
@@ -13163,15 +13163,15 @@ namespace solver
             p3() << "  4  case E    (single-edge snarls)     " << t_p4 << " ms (";
             p1() << pct(t_p4, t_phases) << "%)\n";
 
-            const double t_alloc      = pp::sub_alloc_dp_ns.load() * NS_TO_MS;
-            const double t_dfs        = pp::sub_dfs_order_ns.load() * NS_TO_MS;
-            const double t_btsi       = pp::sub_blktoskel_init_ns.load() * NS_TO_MS;
-            const double t_lvl        = pp::sub_levels_ns.load() * NS_TO_MS;
-            const double t_p4_setup   = pp::sub_phase4_setup_ns.load() * NS_TO_MS;
+            const double t_alloc = pp::sub_alloc_dp_ns.load() * NS_TO_MS;
+            const double t_dfs = pp::sub_dfs_order_ns.load() * NS_TO_MS;
+            const double t_btsi = pp::sub_blktoskel_init_ns.load() * NS_TO_MS;
+            const double t_lvl = pp::sub_levels_ns.load() * NS_TO_MS;
+            const double t_p4_setup = pp::sub_phase4_setup_ns.load() * NS_TO_MS;
             const double t_p4_collect = pp::sub_caseE_collect_ns.load() * NS_TO_MS;
-            const double t_p4_body    = pp::sub_phase4_caseE_body_ns.load() * NS_TO_MS;
+            const double t_p4_body = pp::sub_phase4_caseE_body_ns.load() * NS_TO_MS;
             const double t_p3_collect = pp::sub_solveS_collect_ns.load() * NS_TO_MS;
-            const double t_destruct   = pp::sub_destruct_ns.load() * NS_TO_MS;
+            const double t_destruct = pp::sub_destruct_ns.load() * NS_TO_MS;
 
             os << "\nSub-phases (cumulative across all blocks):\n";
             p3() << "  alloc DP arrays                     " << t_alloc << " ms (";
@@ -13221,13 +13221,13 @@ namespace solver
             }
 
             {
-                const uint64_t s_calls  = pp::p3_solveS_calls.load();
-                const uint64_t p_calls  = pp::p3_solveP_calls.load();
+                const uint64_t s_calls = pp::p3_solveS_calls.load();
+                const uint64_t p_calls = pp::p3_solveP_calls.load();
                 const uint64_t rr_calls = pp::p3_solveRR_calls.load();
-                const double s_ms  = pp::p3_solveS_ns.load()  * NS_TO_MS;
-                const double p_ms  = pp::p3_solveP_ns.load()  * NS_TO_MS;
+                const double s_ms = pp::p3_solveS_ns.load() * NS_TO_MS;
+                const double p_ms = pp::p3_solveP_ns.load() * NS_TO_MS;
                 const double rr_ms = pp::p3_solveRR_ns.load() * NS_TO_MS;
-                const double sum   = s_ms + p_ms + rr_ms;
+                const double sum = s_ms + p_ms + rr_ms;
                 if (sum > 0.0) {
                     os << "\nPhase 3 breakdown: total ";
                     p3() << sum << " ms\n";
@@ -13954,7 +13954,7 @@ namespace solver
 
                     std::atomic<size_t> nextHot{0};
                     std::atomic<size_t> nextNormal{0};
-                    std::atomic<int>    activeIntraTaskloops{0};
+                    std::atomic<int> activeIntraTaskloops{0};
 
                     const size_t nBlocks = blockPreps.size();
 
@@ -13972,7 +13972,7 @@ namespace solver
 
                         size_t chunkSize = 1;
                         size_t processed = 0;
-                        bool   hotDone   = hotBlocks.empty();
+                        bool hotDone = hotBlocks.empty();
 
                         while (true) {
                             if (!hotDone) {
@@ -14270,7 +14270,7 @@ namespace solver
                 for (spqr_compat::node vOrig : ccNodes[ccIdx])
                 {
                     C.G.forEachAdj(vOrig, [&](node /*neighbor*/, edge e) {
-                        if (C.G.source(e) != vOrig)  // Only process from source side
+                        if (C.G.source(e) != vOrig) // Only process from source side
                             return;
 
                         spqr_compat::node src = C.G.source(e);
@@ -14998,7 +14998,7 @@ namespace solver
 
             auto &C = ctx();
 
-            const uint32_t N  = C.ubNumNodes;
+            const uint32_t N = C.ubNumNodes;
             const auto &names = C.ubNodeNames;
 
             std::vector<bool> is_tip(N, false);
@@ -15008,7 +15008,7 @@ namespace solver
                     bool saw_plus = false, saw_minus = false;
                     for (const UBEdge *it = C.adjBegin(v), *end = C.adjEnd(v);
                          it != end; ++it) {
-                        if (it->type_self == UB_PLUS)  saw_plus  = true;
+                        if (it->type_self == UB_PLUS) saw_plus = true;
                         if (it->type_self == UB_MINUS) saw_minus = true;
                         if (saw_plus && saw_minus) break;
                     }

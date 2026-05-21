@@ -38,7 +38,7 @@ BubbleFinder first builds the undirected version of the input bidirected graph, 
 > Therefore, `BubbleFinder` may output **more** snarls than `vg snarls`.
 
 > [!NOTE]
-> **Empirical performance (snarls & superbubbles).** Benchmarks and theory are reported in [Sena, Politov et al., 2025](#ref-sena-politov2025).
+> Empirical performance (snarls & superbubbles). Benchmarks and theory are reported in [Sena, Politov et al., 2025](#ref-sena-politov2025).
 
 ### Ultrabubbles via linear-time orientation + reduction to weak superbubbles
 
