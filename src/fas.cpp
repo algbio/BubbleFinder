@@ -1,16 +1,17 @@
 #include "fas.h"
 
-void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph, 
-                             std::vector<spqr_compat::edge> &result)
+void FeedbackArcSet::run_fas(const ogdf::Graph &graph, 
+                             std::vector<ogdf::edge> &result)
 {
-    spqr_compat::NodeArray<int>  disc(graph, 0), dfsNum(graph, 0);
-    spqr_compat::NodeArray<char> colour(graph, 0);
-    spqr_compat::EdgeArray<EdgeType> etype(graph);
+    ogdf::NodeArray<int>  disc(graph, 0), dfsNum(graph, 0);
+    ogdf::NodeArray<char> colour(graph, 0);
+    ogdf::EdgeArray<EdgeType> etype(graph);
     int discTimer = 0, dfsIndex = 0;
-    std::vector<spqr_compat::node> dfsNumInverse(graph.numberOfNodes(), nullptr);
-    spqr_compat::edge singleBackEdge = nullptr;
+    std::vector<ogdf::node> dfsNumInverse(graph.numberOfNodes(), nullptr);
+    ogdf::edge singleBackEdge = nullptr;
 
-    std::function<void(spqr_compat::node)> dfs1 = [&](spqr_compat::node u)
+    // Building dfs tree and classifying edges
+    std::function<void(ogdf::node)> dfs1 = [&](ogdf::node u)
     {
         colour[u] = 1;
         disc[u]  = ++discTimer;
@@ -20,8 +21,11 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
             ++dfsIndex;
         }
         
-        graph.forEachAdj(u, [&](node v, edge e) {
-            if (graph.source(e) != u) return;  
+        for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ())
+        {
+            if (!adj->isSource()) continue;
+            ogdf::edge e = adj->theEdge();
+            ogdf::node v = adj->twinNode();
             
             if (colour[v] == 0) {
                 etype[e] = TREE;
@@ -31,30 +35,30 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
             } else {
                 etype[e] = (disc[u] < disc[v]) ? FORWARD : CROSS;
             }
-        });
+        }
         colour[u] = 2;
     };
     
-    spqr_compat::node root = graph.firstNode();
+    ogdf::node root = graph.firstNode();
     dfs1(root);
     
-    spqr_compat::Graph T;
-    spqr_compat::NodeArray<spqr_compat::node> mapToTree(graph, nullptr);
-    spqr_compat::NodeArray<spqr_compat::node> mapToOriginal(T, nullptr);
-    for (spqr_compat::node v : graph.nodes) {
+    ogdf::Graph T;
+    ogdf::NodeArray<ogdf::node> mapToTree(graph, nullptr);
+    ogdf::NodeArray<ogdf::node> mapToOriginal(T, nullptr);
+    for (ogdf::node v : graph.nodes) {
         auto newNode = T.newNode();
         mapToTree[v] = newNode;
         mapToOriginal[newNode] = v;
     }
 
-    spqr_compat::NodeArray<int> backedgeTailSubtreeCount(T, 0);
+    ogdf::NodeArray<int> backedgeTailSubtreeCount(T, 0);
     int backEdgeCount = 0;
 
-    spqr_compat::node y = nullptr;
+    ogdf::node y = nullptr;
 
-    for (spqr_compat::edge e : graph.edges) {
-        spqr_compat::node u = graph.source(e);
-        spqr_compat::node v = graph.target(e);
+    for (ogdf::edge e : graph.edges) {
+        ogdf::node u = e->source();
+        ogdf::node v = e->target();
         
         if (etype[e] == TREE) {
             T.newEdge(mapToTree[u], mapToTree[v]);
@@ -72,31 +76,33 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
         result.push_back(singleBackEdge);
     }
 
-    spqr_compat::node z = graph.firstNode(); 
+    ogdf::node z = graph.firstNode(); 
     {
-        std::function<void(spqr_compat::node, spqr_compat::node)> dfsSubtree =
-            [&](spqr_compat::node u, spqr_compat::node prev) {
-                T.forEachAdj(u, [&](node v, edge e) {
-                    if (T.source(e) != u) return;
-                    if (v == prev) return;
+        std::function<void(ogdf::node, ogdf::node)> dfsSubtree =
+            [&](ogdf::node u, ogdf::node prev) {
+                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    if (!adj->isSource()) continue;
+                    ogdf::node v = adj->twinNode();
+                    if (v == prev) continue;
                     dfsSubtree(v, u);
                     backedgeTailSubtreeCount[u] += backedgeTailSubtreeCount[v];
-                });
+                }
             };
 
         dfsSubtree(mapToTree[root], nullptr);
 
-        std::function<void(spqr_compat::node, spqr_compat::node)> dfs2 =
-            [&](spqr_compat::node u, spqr_compat::node prev) {
+        std::function<void(ogdf::node, ogdf::node)> dfs2 =
+            [&](ogdf::node u, ogdf::node prev) {
                 int c = backedgeTailSubtreeCount[u];
                 if (c == backEdgeCount) {
                     z = mapToOriginal[u];
                 }
-                T.forEachAdj(u, [&](node v, edge e) {
-                    if (T.source(e) != u) return;
-                    if (v == prev) return;
+                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    if (!adj->isSource()) continue;
+                    ogdf::node v = adj->twinNode();
+                    if (v == prev) continue;
                     dfs2(v, u);
-                });
+                }
             };
 
         dfs2(mapToTree[root], nullptr);
@@ -109,67 +115,70 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
     }
 
     {
-        std::function<bool(spqr_compat::node)> inInterval = [&](spqr_compat::node u) -> bool {
+        std::function<bool(ogdf::node)> inInterval = [&](ogdf::node u) -> bool {
             return dfsNum[y] <= dfsNum[u] && dfsNum[u] <= dfsNum[z];
         };
 
-        spqr_compat::Graph Gp;
-        spqr_compat::NodeArray<spqr_compat::node> mapToGp(graph, nullptr);
-        for (spqr_compat::node v : graph.nodes)
+        ogdf::Graph Gp;
+        ogdf::NodeArray<ogdf::node> mapToGp(graph, nullptr);
+        for (ogdf::node v : graph.nodes)
             mapToGp[v] = Gp.newNode();
 
-        for (spqr_compat::edge e : graph.edges) {
-            spqr_compat::node u = graph.source(e);
-            spqr_compat::node v = graph.target(e);
+        for (ogdf::edge e : graph.edges) {
+            ogdf::node u = e->source();
+            ogdf::node v = e->target();
             if (inInterval(u) && inInterval(v) && etype[e] == EdgeType::TREE)
                 continue;
             Gp.newEdge(mapToGp[u], mapToGp[v]);
         }
 
         if (!isAcyclic(Gp)) {
+            // Graph without interval is not acyclic, so there is no feedback set
             return;
         }
     }
 
-    spqr_compat::NodeArray<bool> loop(graph, false);
-    spqr_compat::NodeArray<int> maxi(graph, 0);
+    ogdf::NodeArray<bool> loop(graph, false);
+    ogdf::NodeArray<int> maxi(graph, 0);
     {
-        spqr_compat::NodeArray<int> discDfs(graph), fin(graph);
+        ogdf::NodeArray<int> discDfs(graph), fin(graph);
         int timeCounter = 0;
 
-        std::function<bool(spqr_compat::node, spqr_compat::node)> isDescendant =
-            [&](spqr_compat::node ancestor, spqr_compat::node v) -> bool {
+        std::function<bool(ogdf::node, ogdf::node)> isDescendant =
+            [&](ogdf::node ancestor, ogdf::node v) -> bool {
                 return ancestor != v &&
                        discDfs[ancestor] < discDfs[v] &&
                        fin[v] < fin[ancestor];
             };
 
-        spqr_compat::NodeArray<bool> vis(graph, false);
-        std::function<void(spqr_compat::node)> dfsAssignTime =
-            [&](spqr_compat::node u) {
+        ogdf::NodeArray<bool> vis(graph, false);
+        std::function<void(ogdf::node)> dfsAssignTime =
+            [&](ogdf::node u) {
                 vis[u] = true;
                 discDfs[u] = ++timeCounter;
-                graph.forEachAdj(u, [&](node v, edge e) {
-                    if (graph.source(e) != u) return;
-                    if (vis[v]) return;
+                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    if (!adj->isSource()) continue; // follow children only
+                    ogdf::node v = adj->twinNode();
+                    if (vis[v]) continue;
                     dfsAssignTime(v);
-                });
+                }
                 fin[u] = ++timeCounter;
             };
         
         dfsAssignTime(root);
 
-        vis = spqr_compat::NodeArray<bool>(graph, false);
+        vis = ogdf::NodeArray<bool>(graph, false);
 
-        std::vector<spqr_compat::node> stk;
-        stk.reserve(graph.numberOfNodes());
-        std::function<void(spqr_compat::node)> dfsOrder =
-            [&](spqr_compat::node u) {
+        std::vector<ogdf::node> stk;
+        stk.reserve(graph.nodes.size());
+        std::function<void(ogdf::node)> dfsOrder =
+            [&](ogdf::node u) {
                 vis[u] = true;
-                graph.forEachAdj(u, [&](node v, edge e) {
-                    if (graph.source(e) != u) return;
+                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    if (!adj->isSource()) continue;
+                    ogdf::node v = adj->twinNode();
                     if (!vis[v]) dfsOrder(v);
-                });
+                }
                 stk.push_back(u);
             };
 
@@ -177,48 +186,59 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
 
         std::reverse(stk.begin(), stk.end());
         while (!stk.empty()) {
-            spqr_compat::node u = stk.back();
+            ogdf::node u = stk.back();
             stk.pop_back();
             
-            graph.forEachAdj(u, [&](node v, edge e) {
-                if (graph.source(e) != u) return;
+            // maxi computation
+            for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                if (!adj->isSource()) continue;
+
+                ogdf::edge e  = adj->theEdge();
+                ogdf::node v  = adj->twinNode();
 
                 if (etype[e] == EdgeType::BACK) {
-                    return;
+                    continue;
                 }
 
                 if (dfsNum[y] <= dfsNum[u] &&
                     dfsNum[u]   < dfsNum[z] &&
                     dfsNum[u] + 1 == dfsNum[v]) {
-                    return;
+                    continue;
                 }
 
                 if (dfsNum[v] <= dfsNum[z]) {
                     maxi[u] = std::max(maxi[u], dfsNum[v]);
-                } else {
+                } else { // dfsNum[v] > dfsNum[z]
                     maxi[u] = std::max(maxi[u], maxi[v]);
                 }
-            });
+            }
 
+            // loop computation
             if (isDescendant(z, u)) {
                 loop[u] = true;
             } else {
-                graph.forEachAdj(u, [&](node v, edge e) {
-                    if (graph.source(e) != u) return;
+                for (ogdf::adjEntry adj = u->firstAdj(); adj; adj = adj->succ()) {
+                    if (!adj->isSource()) continue;
+
+                    ogdf::edge e  = adj->theEdge();
+                    ogdf::node v  = adj->twinNode();
+
                     if (etype[e] != EdgeType::BACK) {
-                        loop[u] = loop[u] || (dfsNum[v] > dfsNum[z] && loop[v]);
+                        loop[u] |= (dfsNum[v] > dfsNum[z] && loop[v]);
                     }
-                });
+                }
             }
         }
     }
 
-    spqr_compat::node v = y;
+    // init
+    ogdf::node v = y;
     int maxitest = -1;
     for (int i = 0; i < dfsNum[y]; ++i) {
         maxitest = std::max(maxitest, maxi[dfsNumInverse[i]]);
     }
 
+    // step 4
     while (true) {
         if (loop[v]) {
             break;
@@ -228,20 +248,23 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
 
         if (maxitest <= dfsNum[v]) {
             int        cntVnext   = 0;
-            spqr_compat::edge edgeToAdd  = nullptr;
+            ogdf::edge edgeToAdd  = nullptr;
 
-            graph.forEachAdj(v, [&](node v2, edge e) {
-                if (graph.source(e) != v) return;
+            for (ogdf::adjEntry adj = v->firstAdj(); adj; adj = adj->succ()) {
+                if (!adj->isSource()) continue;
+                
+                ogdf::edge e  = adj->theEdge();
+                ogdf::node v2 = adj->twinNode();
                 
                 if (dfsNum[v] + 1 == dfsNum[v2]) {
                     if (edgeToAdd != nullptr) {
                         edgeToAdd = nullptr;
-                        return; 
+                        break;
                     } 
                     edgeToAdd = e;
                     ++cntVnext;
                 }
-            });
+            }
             if (cntVnext == 1 && edgeToAdd != nullptr) {
                 result.push_back(edgeToAdd);
             }
@@ -259,47 +282,47 @@ void FeedbackArcSet::run_fas(const spqr_compat::Graph &graph,
 
 
 void FeedbackArcSet::find_feedback_arcs(
-    std::vector<spqr_compat::edge> &result,
-    const spqr_compat::NodeArray<bool> &toRemove
+    std::vector<ogdf::edge> &result,
+    const ogdf::NodeArray<bool> &toRemove
 ) {
-    spqr_compat::Graph newG;
-    spqr_compat::NodeArray<spqr_compat::node> orig2copy(G, nullptr);
-    spqr_compat::EdgeArray<spqr_compat::edge> copy2origE(newG, nullptr);
+    ogdf::Graph newG;
+    ogdf::NodeArray<ogdf::node> orig2copy(G, nullptr);
+    ogdf::EdgeArray<ogdf::edge> copy2origE(newG, nullptr);
 
-    for (spqr_compat::node v : G.nodes) {
+    for (ogdf::node v : G.nodes) {
         if (!toRemove[v]) {
             orig2copy[v] = newG.newNode();
         }
     }
 
-    for (spqr_compat::edge e : G.edges) {
-        spqr_compat::node u  = G.source(e);
-        spqr_compat::node w  = G.target(e);
-        spqr_compat::node uC = orig2copy[u];
-        spqr_compat::node wC = orig2copy[w];
+    for (ogdf::edge e : G.edges) {
+        ogdf::node u  = e->source();
+        ogdf::node w  = e->target();
+        ogdf::node uC = orig2copy[u];
+        ogdf::node wC = orig2copy[w];
         if (uC && wC) {
-            spqr_compat::edge f = newG.newEdge(uC, wC);
+            ogdf::edge f = newG.newEdge(uC, wC);
             copy2origE[f] = e;
         }
     }
 
-    std::vector<spqr_compat::edge> copyResult;
+    std::vector<ogdf::edge> copyResult;
     run_fas(newG, copyResult);
 
     result.clear();
     result.reserve(copyResult.size());
-    for (spqr_compat::edge f : copyResult) {
+    for (ogdf::edge f : copyResult) {
         result.push_back(copy2origE[f]);
     }
 }
 
 
-std::vector<spqr_compat::edge> FeedbackArcSet::run() {
-    spqr_compat::NodeArray<int> comp(this->G);
+std::vector<ogdf::edge> FeedbackArcSet::run() {
+    ogdf::NodeArray<int> comp(this->G);
     int sccs = strongComponents(this->G, comp);
 
     std::vector<int> size(sccs, 0);
-    for (spqr_compat::node v : this->G.nodes) ++size[comp[v]];
+    for (ogdf::node v : this->G.nodes) ++size[comp[v]];
 
     int nonTrivial = 0;
     int ntIdx      = -1;
@@ -314,52 +337,17 @@ std::vector<spqr_compat::edge> FeedbackArcSet::run() {
     if (nonTrivial >= 2) {
         return {};
     } else if (nonTrivial == 1) {
-        spqr_compat::NodeArray<bool> toRemove(this->G, false);
-        for (spqr_compat::node v : this->G.nodes) {
+        ogdf::NodeArray<bool> toRemove(this->G, false);
+        for (ogdf::node v : this->G.nodes) {
             if (comp[v] != ntIdx) toRemove[v] = true;
         }
 
-        std::vector<spqr_compat::edge> res;
+        std::vector<ogdf::edge> res;
         this->find_feedback_arcs(res, toRemove);
         return res;
     } else {
-        std::vector<spqr_compat::edge> res;
-        for (spqr_compat::edge e : this->G.edges) res.push_back(e);
+        std::vector<ogdf::edge> res;
+        for (ogdf::edge &e : this->G.edges) res.push_back(e);
         return res;
-    }
-}
-
-bool FeedbackArcSet::run_or_acyclic(std::vector<spqr_compat::edge> &out) {
-    spqr_compat::NodeArray<int> comp(this->G);
-    int sccs = strongComponents(this->G, comp);
-
-    std::vector<int> size(sccs, 0);
-    for (spqr_compat::node v : this->G.nodes) ++size[comp[v]];
-
-    int nonTrivial = 0;
-    int ntIdx      = -1;
-
-    for (int i = 0; i < sccs; ++i) {
-        if (size[i] > 1) {
-            ++nonTrivial;
-            ntIdx = i;
-        }
-    }
-
-    if (nonTrivial >= 2) {
-        out.clear();
-        return false;  
-    } else if (nonTrivial == 1) {
-        spqr_compat::NodeArray<bool> toRemove(this->G, false);
-        for (spqr_compat::node v : this->G.nodes) {
-            if (comp[v] != ntIdx) toRemove[v] = true;
-        }
-
-        out.clear();
-        this->find_feedback_arcs(out, toRemove);
-        return false;  
-    } else {
-        out.clear();
-        return true; 
     }
 }

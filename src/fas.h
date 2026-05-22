@@ -1,6 +1,6 @@
 #pragma once
 
-#include "util/spqr_rust_all.hpp"
+#include "util/ogdf_all.hpp"
 
 #include "io/graph_io.hpp"
 #include "util/profiling.hpp"
@@ -12,17 +12,15 @@
 // O(n + m) time complexity.
 class FeedbackArcSet {
 private:
-    spqr_compat::Graph &G;
+    ogdf::Graph &G;
     enum EdgeType { TREE, BACK, FORWARD, CROSS };
 
-    void run_fas(const spqr_compat::Graph &graph, std::vector<spqr_compat::edge> &result); 
-    void find_feedback_arcs(std::vector<spqr_compat::edge> &result,
-                            const spqr_compat::NodeArray<bool> &toRemove);
+    void run_fas(const ogdf::Graph &graph, std::vector<ogdf::edge> &result); 
+    void find_feedback_arcs(std::vector<ogdf::edge> &result,
+                            const ogdf::NodeArray<bool> &toRemove);
 
 public:
-    FeedbackArcSet(spqr_compat::Graph &graph) : G(graph) {}
+    FeedbackArcSet(ogdf::Graph &graph) : G(graph) {}
 
-    std::vector<spqr_compat::edge> run();
-
-    bool run_or_acyclic(std::vector<spqr_compat::edge> &out);
+    std::vector<ogdf::edge> run();
 };

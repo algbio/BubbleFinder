@@ -7,4 +7,4 @@ target_include_directories(sbutil
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR})   # src/util  (for its own compilation)
 
-target_link_libraries(sbutil PUBLIC spqr_rust PUBLIC spdlog::spdlog_header_only)
+target_link_libraries(sbutil PUBLIC OGDF PUBLIC spdlog::spdlog_header_only)

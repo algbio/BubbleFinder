@@ -5,4 +5,4 @@ target_include_directories(sbio
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})       # src/io for its own .cpp
 
 target_link_libraries(sbio
-    PUBLIC sbutil spqr_rust)        # sbio still needs ctx(), logger, spqr_rust
+    PUBLIC sbutil OGDF)        # sbio still needs ctx(), logger, OGDF
