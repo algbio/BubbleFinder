@@ -10,3 +10,6 @@
 [submodule "external/gbz/gbwtgraph"]
 	path = external/gbz/gbwtgraph
 	url = https://github.com/jltsiren/gbwtgraph.git
+[submodule "external/spqr-rust"]
+	path = external/spqr-rust
+	url = https://github.com/algbio/spqr-rust.git

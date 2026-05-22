@@ -11,11 +11,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SB_NATIVE_OPTIMIZATIONS "Use -march=native in Release builds" ON)
-option(SB_ENABLE_SANITIZERS    "Enable ASan/UBSan (Debug)"           OFF)
-option(SB_ENABLE_LTO           "Enable Link Time Optimization"       ON)
-option(SB_BUNDLE_OGDF          "Download & build OGDF locally"       ON)
-
-set(OGDF_TAG "elderberry-202309" CACHE STRING "OGDF tag/branch/commit")
+option(SB_ENABLE_SANITIZERS "Enable ASan/UBSan (Debug)" OFF)
+option(SB_ENABLE_LTO "Enable Link Time Optimization" ON)
 
 
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
@@ -32,25 +29,61 @@ FetchContent_Declare(spdlog
     GIT_TAG        v1.15.3)
 FetchContent_MakeAvailable(spdlog)
 
-if(SB_BUNDLE_OGDF)
-    FetchContent_Declare(ogdf
-        GIT_REPOSITORY https://github.com/ogdf/ogdf.git
-        GIT_TAG        ${OGDF_TAG}
-        GIT_SHALLOW    TRUE)
-    set(OGDF_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-    set(OGDF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(ogdf)
+
+# Auto-fetch external submodules if missing (GBZ + spqr-rust)
+set(_needs_fetch FALSE)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/gbwtgraph/include")
+    set(_needs_fetch TRUE)
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/spqr-rust/Cargo.toml")
+    set(_needs_fetch TRUE)
 endif()
 
-find_package(OGDF CONFIG QUIET)
-if(TARGET OGDF::OGDF)
-    set(OGDF_LIB OGDF::OGDF)
-elseif(TARGET ogdf)
-    set(OGDF_LIB ogdf)
-elseif(TARGET OGDF)
-    set(OGDF_LIB OGDF)
-else()
-    message(FATAL_ERROR "No OGDF library target available.")
+if(_needs_fetch)
+    find_package(Git REQUIRED)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.gitmodules")
+        message(STATUS "Initializing git submodules...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            RESULT_VARIABLE _sm_result)
+        if(NOT _sm_result EQUAL 0)
+            message(FATAL_ERROR "git submodule update failed (code ${_sm_result})")
+        endif()
+    endif()
+
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/spqr-rust/Cargo.toml")
+        message(STATUS "Cloning spqr-rust...")
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/external")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} clone https://github.com/algbio/spqr-rust.git spqr-rust
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external
+            RESULT_VARIABLE _clone_result)
+        if(NOT _clone_result EQUAL 0)
+            message(FATAL_ERROR "git clone spqr-rust failed (code ${_clone_result})")
+        endif()
+    endif()
+
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/gbwtgraph/include")
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz")
+        foreach(repo
+            "https://github.com/vgteam/sdsl-lite.git"
+            "https://github.com/vgteam/libhandlegraph.git"
+            "https://github.com/jltsiren/gbwt.git"
+            "https://github.com/jltsiren/gbwtgraph.git")
+            get_filename_component(_name ${repo} NAME_WE)
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/${_name}")
+                message(STATUS "Cloning ${_name}...")
+                execute_process(
+                    COMMAND ${GIT_EXECUTABLE} clone ${repo}
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external/gbz
+                    RESULT_VARIABLE _clone_result)
+                if(NOT _clone_result EQUAL 0)
+                    message(FATAL_ERROR "git clone ${repo} failed (code ${_clone_result})")
+                endif()
+            endif()
+        endforeach()
+    endif()
 endif()
 
 
@@ -126,29 +159,17 @@ add_library(sbutil OBJECT
     src/util/logger.cpp)
 target_include_directories(sbutil
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/util)
-target_link_libraries(sbutil PUBLIC ${OGDF_LIB} spdlog::spdlog_header_only)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/util
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/external/spqr-rust/include)
+target_link_libraries(sbutil PUBLIC spdlog::spdlog_header_only)
 
 add_library(sbio OBJECT
     src/io/graph_io.cpp)
 target_include_directories(sbio
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/io)
-target_link_libraries(sbio PUBLIC sbutil ${OGDF_LIB})
+target_link_libraries(sbio PUBLIC sbutil)
 
-
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/gbz/gbwtgraph/include")
-    message(FATAL_ERROR
-        "GBZ submodules not found. Run:\n"
-        "  cd ${CMAKE_CURRENT_SOURCE_DIR}\n"
-        "  git submodule update --init --recursive\n"
-        "Or if not using submodules:\n"
-        "  mkdir -p external/gbz && cd external/gbz\n"
-        "  git clone https://github.com/vgteam/sdsl-lite.git\n"
-        "  git clone https://github.com/vgteam/libhandlegraph.git\n"
-        "  git clone https://github.com/jltsiren/gbwt.git\n"
-        "  git clone https://github.com/jltsiren/gbwtgraph.git")
-endif()
 
 # sdsl lite
 set(WITH_GOOGLETEST OFF CACHE BOOL "" FORCE)
@@ -219,6 +240,17 @@ target_link_libraries(sbio PUBLIC gbwtgraph)
 
 message(STATUS "GBZ support: ON (always enabled)")
 
+add_executable(chunk_gbz
+    external/gbz/gbwtgraph/src/chunk_gbz.cpp)
+target_link_libraries(chunk_gbz PRIVATE gbwtgraph)
+target_compile_features(chunk_gbz PRIVATE cxx_std_17)
+
+add_executable(gbz_component_stats
+    src/tools/gbz_component_stats.cpp)
+target_include_directories(gbz_component_stats PRIVATE src)
+target_link_libraries(gbz_component_stats PRIVATE gbwtgraph)
+target_compile_features(gbz_component_stats PRIVATE cxx_std_17)
+
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -236,14 +268,69 @@ add_executable(BubbleFinder
 
 target_include_directories(BubbleFinder PRIVATE src)
 
+find_program(CARGO cargo REQUIRED)
+set(SPQR_RUST_DIR "${CMAKE_SOURCE_DIR}/external/spqr-rust")
+set(SPQR_RUST_LIB "${SPQR_RUST_DIR}/target/release/libspqr_rust.a")
+
+add_custom_command(
+    OUTPUT ${SPQR_RUST_LIB}
+    COMMAND ${CARGO} build --release --manifest-path ${SPQR_RUST_DIR}/Cargo.toml
+    WORKING_DIRECTORY ${SPQR_RUST_DIR}
+    DEPENDS ${SPQR_RUST_DIR}/Cargo.toml
+            ${SPQR_RUST_DIR}/src/lib.rs
+            ${SPQR_RUST_DIR}/src/biconnected.rs
+            ${SPQR_RUST_DIR}/src/connected.rs
+            ${SPQR_RUST_DIR}/src/ffi.rs
+            ${SPQR_RUST_DIR}/src/spqr_format.rs
+            ${SPQR_RUST_DIR}/src/verify.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/mod.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/adj.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/arena.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/ffi.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/integration.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/iso.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/pmap.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/reconstruct.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/reduction.rs
+            ${SPQR_RUST_DIR}/src/sp_compress/types.rs
+    COMMENT "Building spqr-rust (cargo --release)"
+    VERBATIM)
+
+add_custom_target(spqr_rust_build DEPENDS ${SPQR_RUST_LIB})
+add_dependencies(BubbleFinder spqr_rust_build)
+
 target_link_libraries(BubbleFinder PRIVATE
     sbio sbutil
-    ${OGDF_LIB}
+    ${SPQR_RUST_LIB}
     spdlog::spdlog_header_only)
+
+# Link OpenMP if available; the snarls solver uses #pragma omp for intra-block
+# parallelism (taskloops). When OpenMP is not found, the pragmas degrade to
+# no-ops and the code falls back to fully sequential intra-block execution.
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(BubbleFinder PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(BubbleFinder PRIVATE BF_HAVE_OPENMP=1)
+    message(STATUS "BubbleFinder: OpenMP enabled (intra-block parallelism active)")
+else()
+    target_compile_definitions(BubbleFinder PRIVATE BF_HAVE_OPENMP=0)
+    message(STATUS "BubbleFinder: OpenMP not found (intra-block parallelism disabled)")
+endif()
 
 set_target_properties(BubbleFinder PROPERTIES
     INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib"
     BUILD_WITH_INSTALL_RPATH FALSE)
+
+option(BUBBLEFINDER_INSTRUMENT
+    "Enable BubbleFinder profiling counters and timers (zero overhead when OFF)"
+    OFF)
+if(BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(BubbleFinder PRIVATE BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(sbio PRIVATE BUBBLEFINDER_INSTRUMENT)
+    target_compile_definitions(sbutil PRIVATE BUBBLEFINDER_INSTRUMENT)
+endif()
+
+# Link against libdl (libspqr_rust.a indirectly calls dlsym).
+target_link_libraries(BubbleFinder PRIVATE ${CMAKE_DL_LIBS})
 
 
 if(SB_ENABLE_SANITIZERS)
@@ -291,13 +378,15 @@ endforeach()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "OGDF target: ${OGDF_LIB}")
+message(STATUS "spqr-rust lib: ${SPQR_RUST_LIB}")
 message(STATUS "zstd target: ${ZSTD_TARGET}")
 message(STATUS "crypto target: ${CRYPTO_TARGET}")
 message(STATUS "handlegraph target: ${HANDLEGRAPH_LIB}")
 message(STATUS "Sanitizers: ${SB_ENABLE_SANITIZERS}")
 message(STATUS "Enable LTO: ${SB_ENABLE_LTO} (ipo_ok=${ipo_ok})")
 message(STATUS "Native optimizations (-march=native): ${SB_NATIVE_OPTIMIZATIONS}")
+
+message(STATUS "BubbleFinder instrumentation: ${BUBBLEFINDER_INSTRUMENT}")
 
 
 add_executable(snarls_bf src/snarls_bruteforce.cpp)
