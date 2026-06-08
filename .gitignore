@@ -10,3 +10,4 @@ diff.py
 dist.py
 out
 .DS_Store
+*.spqr
