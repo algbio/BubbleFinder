@@ -18400,6 +18400,8 @@ namespace solver
                 spqr_compat::BCTree bc(ccGraph);
 
                 std::map<spqr_compat::node, std::string> bcNodeToBlockName;
+                std::unordered_map<uint32_t, std::vector<spqr_compat::node>> cutVertexBlocks;
+                cutVertexBlocks.reserve(bc.numberOfCComps());
 
                 spqr_compat::NodeArray<int> markCc(ccGraph, 0);
                 int stampCc = 1;
@@ -18448,6 +18450,11 @@ namespace solver
                     {
                         spqr_compat::node vOrig = ccToOrig[vCc];
                         out << " " << C.node2name[vOrig];
+
+                        if (bc.typeOfGNode(vCc) == spqr_compat::BCTree::GNodeType::CutVertex)
+                        {
+                            cutVertexBlocks[vCc.idx].push_back(bNode);
+                        }
                     }
                     out << "\n";
                 }
@@ -18462,25 +18469,14 @@ namespace solver
                         spqr_compat::node vOrig = ccToOrig[vCc];
                         out << "C " << C.node2name[vOrig];
 
-                        // Iterate over all B-nodes and check if this cut vertex has edges there
-                        for (uint32_t bIdx = 0; bIdx < bc.numberOfBComps(); ++bIdx)
+                        auto blocksIt = cutVertexBlocks.find(vCc.idx);
+                        if (blocksIt != cutVertexBlocks.end())
                         {
-                            spqr_compat::node bNode{bIdx};
-                            // Check if this cut vertex has edges in this block
-                            bool hasEdgesInBlock = false;
-                            for (spqr_compat::edge eCc : bc.hEdges(bNode))
+                            for (spqr_compat::node bNode : blocksIt->second)
                             {
-                                if (ccGraph.source(eCc) == vCc || ccGraph.target(eCc) == vCc)
-                                {
-                                    hasEdgesInBlock = true;
-                                    break;
-                                }
-                            }
-                            if (hasEdgesInBlock)
-                            {
-                                auto it = bcNodeToBlockName.find(bNode);
-                                assert(it != bcNodeToBlockName.end());
-                                out << " " << it->second;
+                                auto blockNameIt = bcNodeToBlockName.find(bNode);
+                                assert(blockNameIt != bcNodeToBlockName.end());
+                                out << " " << blockNameIt->second;
                             }
                         }
                         out << "\n";
