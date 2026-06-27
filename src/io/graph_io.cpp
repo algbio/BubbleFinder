@@ -35,6 +35,32 @@ using namespace spqr_compat;
 
 namespace GraphIO {
 
+namespace {
+
+inline uint32_t require_u32_count(size_t value, const char* what) {
+    if (value > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::runtime_error(std::string(what) +
+                                 " exceeds current 32-bit SPQR backend limit; a true u64 backend is required");
+    }
+    return static_cast<uint32_t>(value);
+}
+
+inline size_t checked_mul_size(size_t lhs, size_t rhs, const char* what) {
+    if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
+        throw std::runtime_error(std::string(what) + " size overflow");
+    }
+    return lhs * rhs;
+}
+
+inline size_t checked_add_size(size_t lhs, size_t rhs, const char* what) {
+    if (lhs > std::numeric_limits<size_t>::max() - rhs) {
+        throw std::runtime_error(std::string(what) + " size overflow");
+    }
+    return lhs + rhs;
+}
+
+} // namespace
+
 void readStandard()
 {
     auto &C = ctx();
@@ -329,6 +355,10 @@ void setCompactTrashNode(Context &C, spqr_compat::node v)
 
 std::vector<spqr_compat::node> createNodes(BiGraph& bg, size_t extra_nodes = 0) {
     auto &C = ctx();
+    const size_t node_storage_size = checked_add_size(
+        static_cast<size_t>(bg.n_nodes), extra_nodes, "input graph node storage");
+    require_u32_count(bg.n_nodes, "input graph node count");
+    require_u32_count(node_storage_size, "SPQR graph node count");
     std::vector<spqr_compat::node> id2node(bg.n_nodes);
     const bool compact_names = useCompactSnarlNameTables(C);
     const bool bg_has_numeric_names =
@@ -348,15 +378,15 @@ std::vector<spqr_compat::node> createNodes(BiGraph& bg, size_t extra_nodes = 0) 
         C.sparseNodeNamesByIndex.clear();
         C.isTrashNodeByIndex.clear();
         if (bg_has_numeric_names) {
-            C.nodeNumericNamesByIndex.resize(static_cast<size_t>(bg.n_nodes) + extra_nodes);
-            C.nodeNumericNameValidByIndex.resize(static_cast<size_t>(bg.n_nodes) + extra_nodes, 0);
+            C.nodeNumericNamesByIndex.resize(node_storage_size);
+            C.nodeNumericNameValidByIndex.resize(node_storage_size, 0);
             C.sparseNodeNamesByIndex.reserve(bg.string_node_names.size());
         } else {
-            C.nodeNamesByIndex.resize(static_cast<size_t>(bg.n_nodes) + extra_nodes);
+            C.nodeNamesByIndex.resize(node_storage_size);
         }
-        C.isTrashNodeByIndex.resize(static_cast<size_t>(bg.n_nodes) + extra_nodes, 0);
+        C.isTrashNodeByIndex.resize(node_storage_size, 0);
     } else {
-        C.node2name.reserve(static_cast<size_t>(bg.n_nodes) + extra_nodes);
+        C.node2name.reserve(node_storage_size);
     }
     spqr_compat::node first = C.G.newNodes(bg.n_nodes);
     for (uint32_t i = 0; i < bg.n_nodes; ++i) {
@@ -470,12 +500,18 @@ void buildSnarlGraph(BiGraph& bg) {
         const size_t end = (link_count * (tid + 1)) / worker_count;
         chunk_out_base[tid] = out_edges;
         chunk_mid_base[tid] = multi_links;
-        out_edges += (end - begin) + chunk_multi[tid];
-        multi_links += chunk_multi[tid];
+        out_edges = checked_add_size(out_edges,
+                                     checked_add_size(end - begin, chunk_multi[tid],
+                                                      "snarl graph edge count"),
+                                     "snarl graph edge count");
+        multi_links = checked_add_size(multi_links, chunk_multi[tid],
+                                       "snarl multi-link node count");
     }
 
+    const uint32_t multi_links_u32 = require_u32_count(multi_links, "snarl multi-link node count");
+    const uint32_t out_edges_u32 = require_u32_count(out_edges, "snarl graph edge count");
     auto id2node = createNodes(bg, multi_links);
-    spqr_compat::node first_mid = C.G.newNodes(static_cast<uint32_t>(multi_links));
+    spqr_compat::node first_mid = C.G.newNodes(multi_links_u32);
     const bool compact_names = useCompactSnarlNameTables(C);
     for (size_t i = 0; i < multi_links; ++i) {
         spqr_compat::node mid(first_mid.index() + static_cast<uint32_t>(i));
@@ -486,7 +522,7 @@ void buildSnarlGraph(BiGraph& bg) {
         }
     }
 
-    std::vector<uint32_t> endpoints(out_edges * 2);
+    std::vector<uint32_t> endpoints(checked_mul_size(out_edges, 2u, "snarl graph endpoint array"));
     std::vector<uint8_t> edge_types(out_edges);
 
     auto packType = [](EdgePartType a, EdgePartType b) -> uint8_t {
@@ -532,7 +568,7 @@ void buildSnarlGraph(BiGraph& bg) {
 
     spqr_compat::edge first_edge = edge_types.empty()
                                 ? spqr_compat::edge(C.G.numberOfEdges())
-                                : C.G.newEdgesBatchFlat(endpoints.data(), static_cast<uint32_t>(edge_types.size()));
+                                : C.G.newEdgesBatchFlat(endpoints.data(), out_edges_u32);
     C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
     #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_types.size() > 100000)
     for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_types.size()); ++i_i) {

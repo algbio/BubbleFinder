@@ -39,6 +39,11 @@ struct BiGraph {
 
 namespace gfa_detail {
 
+inline void throw_gfa_u32_limit(const char* what) {
+    throw std::runtime_error(std::string("GFA exceeds current 32-bit backend limit while ") +
+                             what + "; a true u64 SPQR backend is required");
+}
+
 struct StringView {
     const char* ptr;
     uint32_t    len;
@@ -81,6 +86,9 @@ struct NameMap {
         while (true) {
             auto& s = slots[idx];
             if (!s.used) {
+                if (next_id == UINT32_MAX) {
+                    throw_gfa_u32_limit("assigning segment ids");
+                }
                 s.hash = h; s.id = next_id;
                 s.name_off = (uint32_t)store.size();
                 s.name_len = sv.len;
@@ -130,6 +138,12 @@ struct NameMap {
         return v;
     }
 };
+
+inline void require_more_gfa_links_fit_u32(size_t current_size) {
+    if (current_size >= static_cast<size_t>(UINT32_MAX)) {
+        throw_gfa_u32_limit("storing links");
+    }
+}
 
 struct SegmentRef {
     const char* ptr = nullptr;
@@ -548,6 +562,7 @@ struct ParseState {
                 auto [vid, vn] = names.get_or_insert({ts, tl}, next_id);
                 if (vn) next_id++;
 
+                require_more_gfa_links_fit_u32(links.size());
                 links.push_back({uid, vid, o1, o2});
                 p = skip_line(p, end);
             }
@@ -679,6 +694,9 @@ private:
         size_t link_count = 0;
         for (const auto& local : chunk_links) {
             link_count += local.size();
+            if (link_count > static_cast<size_t>(UINT32_MAX)) {
+                gfa_detail::throw_gfa_u32_limit("storing parallel-parsed links");
+            }
         }
 
         std::vector<BiLink> links;
