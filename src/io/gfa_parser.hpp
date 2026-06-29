@@ -8,6 +8,7 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -62,18 +63,18 @@ struct NameMap {
     struct Slot {
         uint64_t hash       = 0;
         uint32_t id         = UINT32_MAX;
-        uint32_t name_off   = 0;
+        size_t   name_off   = 0;
         uint32_t name_len   = 0;
         bool     used       = false;
     };
 
     std::vector<Slot> slots;
-    uint32_t          mask  = 0;
+    size_t            mask  = 0;
     uint32_t          count = 0;
     std::vector<char> store;
 
-    void init(uint32_t cap) {
-        uint32_t sz = 1;
+    void init(size_t cap) {
+        size_t sz = 1;
         while (sz < cap * 2) sz <<= 1;
         slots.resize(sz);
         mask = sz - 1;
@@ -82,7 +83,7 @@ struct NameMap {
 
     std::pair<uint32_t, bool> get_or_insert(StringView sv, uint32_t next_id) {
         uint64_t h = sv_hash(sv);
-        uint32_t idx = (uint32_t)(h & mask);
+        size_t idx = static_cast<size_t>(h & mask);
         while (true) {
             auto& s = slots[idx];
             if (!s.used) {
@@ -90,7 +91,7 @@ struct NameMap {
                     throw_gfa_u32_limit("assigning segment ids");
                 }
                 s.hash = h; s.id = next_id;
-                s.name_off = (uint32_t)store.size();
+                s.name_off = store.size();
                 s.name_len = sv.len;
                 store.insert(store.end(), sv.ptr, sv.ptr + sv.len);
                 s.used = true;
@@ -108,7 +109,7 @@ struct NameMap {
     uint32_t find(StringView sv) const {
         if (slots.empty()) return UINT32_MAX;
         uint64_t h = sv_hash(sv);
-        uint32_t idx = (uint32_t)(h & mask);
+        size_t idx = static_cast<size_t>(h & mask);
         while (true) {
             const auto& s = slots[idx];
             if (!s.used) return UINT32_MAX;
@@ -120,12 +121,15 @@ struct NameMap {
     }
 
     void rehash() {
-        uint32_t nc = (uint32_t)slots.size() * 2;
+        if (slots.size() > std::numeric_limits<size_t>::max() / 2) {
+            throw std::runtime_error("GFA name map too large to rehash");
+        }
+        size_t nc = slots.size() * 2;
         std::vector<Slot> old = std::move(slots);
         slots.resize(nc); mask = nc - 1;
         for (auto& s : old) {
             if (!s.used) continue;
-            uint32_t idx = (uint32_t)(s.hash & mask);
+            size_t idx = static_cast<size_t>(s.hash & mask);
             while (slots[idx].used) idx = (idx + 1) & mask;
             slots[idx] = s;
         }
@@ -138,6 +142,23 @@ struct NameMap {
         return v;
     }
 };
+
+inline uint32_t numeric_dense_id_limit() {
+    constexpr uint32_t kDefaultMaxDenseNumericId = UINT32_MAX - 1;
+    const char* env = std::getenv("BF_GFA_NUMERIC_MAX_ID");
+    if (!env || !*env) return kDefaultMaxDenseNumericId;
+
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long v = std::strtoull(env, &end, 10);
+    if (errno != 0 || end == env || (end && *end != '\0')) {
+        return kDefaultMaxDenseNumericId;
+    }
+    if (v >= static_cast<unsigned long long>(UINT32_MAX)) {
+        return UINT32_MAX - 1;
+    }
+    return static_cast<uint32_t>(v);
+}
 
 inline void require_more_gfa_links_fit_u32(size_t current_size) {
     if (current_size >= static_cast<size_t>(UINT32_MAX)) {
@@ -195,9 +216,8 @@ inline bool ensure_numeric_name(NumericScan& scan,
                                 uint32_t numeric_id,
                                 const char* name,
                                 uint32_t name_len) {
-    constexpr uint32_t kMaxDenseNumericId = 100'000'000;
     if (numeric_id == 0) return false;
-    if (numeric_id > kMaxDenseNumericId) return false;
+    if (numeric_id > numeric_dense_id_limit()) return false;
     if (numeric_id >= scan.id_map.size()) {
         size_t next_size = std::max<size_t>(numeric_id + 1, scan.id_map.size() * 2);
         scan.id_map.resize(next_size, UINT32_MAX);
@@ -205,6 +225,7 @@ inline bool ensure_numeric_name(NumericScan& scan,
 
     uint32_t& mapped = scan.id_map[numeric_id];
     if (mapped == UINT32_MAX) {
+        if (scan.n_nodes == UINT32_MAX) return false;
         mapped = scan.n_nodes++;
         scan.name_refs.push_back({name, name_len});
         return true;
@@ -798,7 +819,8 @@ private:
         const char* numeric_env = std::getenv("BF_GFA_NUMERIC_PARSE");
         bool force_serial = parallel_env && std::string(parallel_env) == "0";
         bool force_parallel = parallel_env && std::string(parallel_env) == "1";
-        bool numeric_parse = numeric_env && std::string(numeric_env) == "1";
+        bool disable_numeric_parse = numeric_env && std::string(numeric_env) == "0";
+        bool numeric_parse = !disable_numeric_parse;
         if (!force_serial && numeric_parse) {
             bg = parse_buffer_numeric_dense(data, sz, threads);
         } else if (!force_serial && force_parallel && threads > 1) {
