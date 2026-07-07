@@ -161,7 +161,8 @@ target_include_directories(sbutil
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/util
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/external/spqr-rust/include)
-target_link_libraries(sbutil PUBLIC spdlog::spdlog_header_only)
+target_link_libraries(sbutil PUBLIC spdlog::spdlog_header_only ${ZSTD_TARGET})
+target_compile_definitions(sbutil PUBLIC BF_HAVE_ZSTD=1)
 
 add_library(sbio OBJECT
     src/io/graph_io.cpp)
