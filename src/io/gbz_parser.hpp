@@ -1,9 +1,10 @@
 #pragma once
 
-#include "gfa_parser.hpp"   // BiGraph, BiLink
+#include "gfa_parser.hpp"
 
 #include <gbwtgraph/gbz.h>
 #include <gbwtgraph/gbwtgraph.h>
+#include <handlegraph/path_metadata.hpp>
 #include <sdsl/simple_sds.hpp>
 
 #include <algorithm>
@@ -28,11 +29,13 @@
 
 class GBZParser {
 public:
-    static gbwtgraph::GBZ load_topology_file(const std::string& path, int threads = 1) {
+    static gbwtgraph::GBZ load_topology_file(const std::string& path,
+                                             int threads = 1,
+                                             bool load_haplotypes = false) {
         gbwtgraph::GBZ gbz;
         std::ifstream in(path, std::ios::binary);
         if (!in) throw std::runtime_error("Cannot open GBZ file: " + path);
-        if (std::getenv("BF_GBZ_FULL_LOAD") != nullptr) {
+        if (load_haplotypes) {
             gbz.simple_sds_load(in);
         } else {
             load_gbz_topology_only(gbz, in, threads);
@@ -40,16 +43,18 @@ public:
         return gbz;
     }
 
-    static BiGraph parse_file(const std::string& path, int threads = 1) {
-        gbwtgraph::GBZ gbz = load_topology_file(path, threads);
+    static BiGraph parse_file(const std::string& path,
+                              int threads = 1,
+                              bool load_haplotypes = false) {
+        gbwtgraph::GBZ gbz = load_topology_file(path, threads, load_haplotypes);
 
         auto& graph = gbz.graph;
         BiGraph bg;
 
         if (graph.has_segment_names()) {
-            build_from_segments(graph, bg, threads);
+            build_from_segments(graph, bg, threads, load_haplotypes);
         } else {
-            build_from_nodes(graph, bg, threads);
+            build_from_nodes(graph, bg, threads, load_haplotypes);
         }
 
         return bg;
@@ -243,11 +248,7 @@ private:
         gbz.header.set_version();
 
         gbz.tags.simple_sds_load(in);
-        if (std::getenv("BF_GBZ_FULL_GBWT") != nullptr) {
-            gbz.index.simple_sds_load(in);
-        } else {
-            load_gbwt_topology_only(gbz.index, in);
-        }
+        load_gbwt_topology_only(gbz.index, in);
         load_gbz_graph_topology_only(gbz.graph, gbz.index, in, threads);
     }
 
@@ -275,7 +276,67 @@ private:
         return true;
     }
 
-    static void build_from_segments(gbwtgraph::GBWTGraph& graph, BiGraph& bg, int threads) {
+    template <typename MapNodeFn>
+    static void collect_haplotype_paths(gbwtgraph::GBWTGraph& graph,
+                                        BiGraph& bg,
+                                        MapNodeFn&& map_node,
+                                        bool collapse_consecutive) {
+        auto encode_optional_path_number = [](size_t value) -> uint64_t {
+            if (value == gbwtgraph::GBWTGraph::NO_PHASE ||
+                value == handlegraph::PathMetadata::NO_HAPLOTYPE ||
+                value == handlegraph::PathMetadata::NO_PHASE_BLOCK) {
+                return std::numeric_limits<uint64_t>::max();
+            }
+            return static_cast<uint64_t>(value);
+        };
+        graph.for_each_path_of_sense(
+            handlegraph::PathSense::HAPLOTYPE,
+            [&](const handlegraph::path_handle_t& path) {
+                BiHaplotypePath rec;
+                rec.name = graph.get_path_name(path);
+                rec.sample = graph.get_sample_name(path);
+                rec.locus = graph.get_locus_name(path);
+                rec.haplotype =
+                    encode_optional_path_number(graph.get_haplotype(path));
+                rec.phase_block =
+                    encode_optional_path_number(graph.get_phase_block(path));
+                rec.sense = 2u;
+                rec.step_begin = static_cast<uint64_t>(bg.haplotype_steps.size());
+
+                uint32_t last_node = UINT32_MAX;
+                uint8_t last_orientation = 2u;
+                graph.for_each_step_in_path(
+                    path,
+                    [&](const handlegraph::step_handle_t& step) {
+                        const handlegraph::handle_t handle =
+                            graph.get_handle_of_step(step);
+                        uint32_t node = UINT32_MAX;
+                        if (!map_node(graph.get_id(handle), node)) return true;
+                        const uint8_t is_reverse =
+                            graph.get_is_reverse(handle) ? 1u : 0u;
+                        if (collapse_consecutive &&
+                            node == last_node &&
+                            is_reverse == last_orientation) {
+                            return true;
+                        }
+                        bg.haplotype_steps.push_back({node, is_reverse});
+                        last_node = node;
+                        last_orientation = is_reverse;
+                        return true;
+                    });
+
+                rec.step_end = static_cast<uint64_t>(bg.haplotype_steps.size());
+                if (rec.step_end > rec.step_begin) {
+                    bg.haplotype_paths.push_back(std::move(rec));
+                }
+                return true;
+            });
+    }
+
+    static void build_from_segments(gbwtgraph::GBWTGraph& graph,
+                                    BiGraph& bg,
+                                    int threads,
+                                    bool load_haplotypes) {
         using nid_t = handlegraph::nid_t;
 
         nid_t min_nid = graph.min_node_id();
@@ -285,51 +346,35 @@ private:
         std::vector<uint32_t> nid_to_seg(range, UINT32_MAX);
         std::vector<std::pair<nid_t, nid_t>> seg_ranges;
         uint32_t seg_count = 0;
-        const bool numeric_names = (std::getenv("BF_ENABLE_NUMERIC_GBZ_NAMES") != nullptr);
-        if (numeric_names) {
-            bg.numeric_node_names.reserve(graph.segments.size());
-            bg.numeric_node_name_valid.reserve(graph.segments.size());
-        }
+        bg.numeric_node_names.reserve(graph.segments.size());
+        bg.numeric_node_name_valid.reserve(graph.segments.size());
 
-        if (!numeric_names) {
-            graph.for_each_segment([&](const std::string& name,
-                                       std::pair<nid_t, nid_t> nodes) {
-                uint32_t id = seg_count++;
-                bg.node_names.push_back(name);
-                seg_ranges.push_back(nodes);
-                for (nid_t n = nodes.first; n < nodes.second; n++) {
-                    nid_to_seg[(size_t)(n - min_nid)] = id;
-                }
-                return true;
-            });
-        } else {
-            auto segment_iter = graph.node_to_segment.one_begin();
-            while (segment_iter != graph.node_to_segment.one_end()) {
-                const gbwt::size_type segment_id = segment_iter->first;
-                const nid_t start = segment_iter->second;
-                ++segment_iter;
-                const nid_t limit = segment_iter->second;
-                if (!graph.has_node(start)) {
-                    continue;
-                }
+        auto segment_iter = graph.node_to_segment.one_begin();
+        while (segment_iter != graph.node_to_segment.one_end()) {
+            const gbwt::size_type segment_id = segment_iter->first;
+            const nid_t start = segment_iter->second;
+            ++segment_iter;
+            const nid_t limit = segment_iter->second;
+            if (!graph.has_node(start)) {
+                continue;
+            }
 
-                uint32_t id = seg_count++;
-                std::string_view name = graph.segments.view(segment_id);
-                uint64_t parsed = 0;
-                if (parse_canonical_u64(name, parsed)) {
-                    bg.numeric_node_names.push_back(parsed);
-                    bg.numeric_node_name_valid.push_back(1);
-                } else {
-                    bg.numeric_node_names.push_back(0);
-                    bg.numeric_node_name_valid.push_back(0);
-                    bg.string_node_names.emplace_back(
-                        id, std::string(name.data(), name.size()));
-                }
-                std::pair<nid_t, nid_t> nodes(start, limit);
-                seg_ranges.push_back(nodes);
-                for (nid_t n = nodes.first; n < nodes.second; n++) {
-                    nid_to_seg[(size_t)(n - min_nid)] = id;
-                }
+            uint32_t id = seg_count++;
+            std::string_view name = graph.segments.view(segment_id);
+            uint64_t parsed = 0;
+            if (parse_canonical_u64(name, parsed)) {
+                bg.numeric_node_names.push_back(parsed);
+                bg.numeric_node_name_valid.push_back(1);
+            } else {
+                bg.numeric_node_names.push_back(0);
+                bg.numeric_node_name_valid.push_back(0);
+                bg.string_node_names.emplace_back(
+                    id, std::string(name.data(), name.size()));
+            }
+            std::pair<nid_t, nid_t> nodes(start, limit);
+            seg_ranges.push_back(nodes);
+            for (nid_t n = nodes.first; n < nodes.second; n++) {
+                nid_to_seg[(size_t)(n - min_nid)] = id;
             }
         }
 
@@ -337,6 +382,15 @@ private:
         if (threads > 1) {
             set_worker_count(threads);
         }
+        auto collect_haplotypes_if_requested = [&]() {
+            if (!load_haplotypes) return;
+            auto map_node = [&](nid_t nid, uint32_t& out) -> bool {
+                if (nid < min_nid || nid > max_nid) return false;
+                out = nid_to_seg[(size_t)(nid - min_nid)];
+                return out != UINT32_MAX;
+            };
+            collect_haplotype_paths(graph, bg, map_node, true);
+        };
 
         if (threads <= 1) {
             bg.links.reserve(graph.get_edge_count());
@@ -380,6 +434,7 @@ private:
             }
 
             bg.n_nodes = seg_total;
+            collect_haplotypes_if_requested();
             return;
         }
 
@@ -422,129 +477,47 @@ private:
             });
         };
 
-        if (std::getenv("BF_GBZ_TWO_PASS_LINKS") == nullptr) {
-            const size_t chunk_segments = 65536;
-            const size_t chunk_count =
-                (static_cast<size_t>(seg_total) + chunk_segments - 1) / chunk_segments;
+        const size_t chunk_segments = 65536;
+        const size_t chunk_count =
+            (static_cast<size_t>(seg_total) + chunk_segments - 1) / chunk_segments;
 
-            std::vector<std::vector<BiLink>> chunks(chunk_count);
+        std::vector<std::vector<BiLink>> chunks(chunk_count);
 
-            #pragma omp parallel for schedule(dynamic, 1) if(threads > 1 && chunk_count > 1)
-            for (int64_t ci_i = 0; ci_i < static_cast<int64_t>(chunk_count); ++ci_i) {
-                const size_t ci = static_cast<size_t>(ci_i);
-                const uint32_t begin = static_cast<uint32_t>(ci * chunk_segments);
-                const uint32_t end = static_cast<uint32_t>(
-                    std::min(static_cast<size_t>(seg_total), (ci + 1) * chunk_segments));
-                std::vector<BiLink>& local = chunks[ci];
-                local.reserve(static_cast<size_t>(end - begin) * 2);
-                gbwt::CachedGBWT cache = graph.get_single_cache();
-                for (uint32_t sid = begin; sid < end; ++sid) {
-                    append_links_for_segment(sid, local, cache);
-                }
+        #pragma omp parallel for schedule(dynamic, 1) if(threads > 1 && chunk_count > 1)
+        for (int64_t ci_i = 0; ci_i < static_cast<int64_t>(chunk_count); ++ci_i) {
+            const size_t ci = static_cast<size_t>(ci_i);
+            const uint32_t begin = static_cast<uint32_t>(ci * chunk_segments);
+            const uint32_t end = static_cast<uint32_t>(
+                std::min(static_cast<size_t>(seg_total), (ci + 1) * chunk_segments));
+            std::vector<BiLink>& local = chunks[ci];
+            local.reserve(static_cast<size_t>(end - begin) * 2);
+            gbwt::CachedGBWT cache = graph.get_single_cache();
+            for (uint32_t sid = begin; sid < end; ++sid) {
+                append_links_for_segment(sid, local, cache);
             }
-
-            std::vector<size_t> chunk_offsets(chunk_count + 1, 0);
-            for (size_t ci = 0; ci < chunk_count; ++ci) {
-                chunk_offsets[ci + 1] = chunk_offsets[ci] + chunks[ci].size();
-            }
-            bg.links.resize(chunk_offsets[chunk_count]);
-
-            #pragma omp parallel for schedule(static) if(threads > 1 && chunk_count > 1)
-            for (int64_t ci_i = 0; ci_i < static_cast<int64_t>(chunk_count); ++ci_i) {
-                const size_t ci = static_cast<size_t>(ci_i);
-                std::copy(chunks[ci].begin(), chunks[ci].end(),
-                          bg.links.begin() + static_cast<std::ptrdiff_t>(chunk_offsets[ci]));
-            }
-
-            bg.n_nodes = seg_total;
-            return;
         }
 
-        auto count_links_for_segment = [&](uint32_t sid) -> size_t {
-            const auto nodes = seg_ranges[sid];
-            size_t count = 0;
-
-            handlegraph::handle_t last = graph.get_handle(nodes.second - 1, false);
-            graph.follow_edges(last, false, [&](const handlegraph::handle_t& next) {
-                nid_t next_id = graph.get_id(next);
-                if (next_id >= nodes.second - 1) {
-                    ++count;
-                }
-                return true;
-            });
-
-            handlegraph::handle_t first = graph.get_handle(nodes.first, true);
-            graph.follow_edges(first, false, [&](const handlegraph::handle_t& next) {
-                nid_t next_id = graph.get_id(next);
-                if (next_id > nodes.first ||
-                    (next_id == nodes.first && !(graph.get_is_reverse(next)))) {
-                    ++count;
-                }
-                return true;
-            });
-
-            return count;
-        };
-
-        std::vector<size_t> offsets(static_cast<size_t>(seg_total) + 1, 0);
-        #pragma omp parallel for schedule(dynamic, 512) if(threads > 1 && seg_total > 4096)
-        for (int64_t sid = 0; sid < static_cast<int64_t>(seg_total); ++sid) {
-            offsets[static_cast<size_t>(sid) + 1] =
-                count_links_for_segment(static_cast<uint32_t>(sid));
+        std::vector<size_t> chunk_offsets(chunk_count + 1, 0);
+        for (size_t ci = 0; ci < chunk_count; ++ci) {
+            chunk_offsets[ci + 1] = chunk_offsets[ci] + chunks[ci].size();
         }
-        for (uint32_t sid = 0; sid < seg_total; ++sid) {
-            offsets[static_cast<size_t>(sid) + 1] += offsets[sid];
-        }
+        bg.links.resize(chunk_offsets[chunk_count]);
 
-        bg.links.resize(offsets[seg_total]);
-
-        auto write_links_for_segment = [&](uint32_t sid) {
-            const auto nodes = seg_ranges[sid];
-            size_t out = offsets[sid];
-
-            auto emit = [&](const handlegraph::handle_t& from,
-                            const handlegraph::handle_t& to) {
-                nid_t from_nid = graph.get_id(from);
-                nid_t to_nid   = graph.get_id(to);
-
-                uint32_t src = nid_to_seg[(size_t)(from_nid - min_nid)];
-                uint32_t dst = nid_to_seg[(size_t)(to_nid   - min_nid)];
-
-                char o1 = graph.get_is_reverse(from) ? '-' : '+';
-                char o2 = graph.get_is_reverse(to)   ? '-' : '+';
-
-                bg.links[out++] = {src, dst, o1, o2};
-            };
-
-            handlegraph::handle_t last = graph.get_handle(nodes.second - 1, false);
-            graph.follow_edges(last, false, [&](const handlegraph::handle_t& next) {
-                nid_t next_id = graph.get_id(next);
-                if (next_id >= nodes.second - 1) {
-                    emit(last, next);
-                }
-                return true;
-            });
-
-            handlegraph::handle_t first = graph.get_handle(nodes.first, true);
-            graph.follow_edges(first, false, [&](const handlegraph::handle_t& next) {
-                nid_t next_id = graph.get_id(next);
-                if (next_id > nodes.first ||
-                    (next_id == nodes.first && !(graph.get_is_reverse(next)))) {
-                    emit(first, next);
-                }
-                return true;
-            });
-        };
-
-        #pragma omp parallel for schedule(dynamic, 512) if(threads > 1 && seg_total > 4096)
-        for (int64_t sid = 0; sid < static_cast<int64_t>(seg_total); ++sid) {
-            write_links_for_segment(static_cast<uint32_t>(sid));
+        #pragma omp parallel for schedule(static) if(threads > 1 && chunk_count > 1)
+        for (int64_t ci_i = 0; ci_i < static_cast<int64_t>(chunk_count); ++ci_i) {
+            const size_t ci = static_cast<size_t>(ci_i);
+            std::copy(chunks[ci].begin(), chunks[ci].end(),
+                      bg.links.begin() + static_cast<std::ptrdiff_t>(chunk_offsets[ci]));
         }
 
         bg.n_nodes = seg_total;
+        collect_haplotypes_if_requested();
     }
 
-    static void build_from_nodes(gbwtgraph::GBWTGraph& graph, BiGraph& bg, int threads) {
+    static void build_from_nodes(gbwtgraph::GBWTGraph& graph,
+                                 BiGraph& bg,
+                                 int threads,
+                                 bool load_haplotypes) {
         using nid_t = handlegraph::nid_t;
 
         nid_t min_nid = graph.min_node_id();
@@ -555,6 +528,12 @@ private:
 
         std::unique_ptr<uint32_t[]> nid_to_id(new uint32_t[range]);
         uint32_t next_id = 0;
+        if (load_haplotypes) {
+            #pragma omp parallel for schedule(static) if(threads > 1 && range > 4096)
+            for (int64_t i = 0; i < static_cast<int64_t>(range); ++i) {
+                nid_to_id[static_cast<size_t>(i)] = UINT32_MAX;
+            }
+        }
 
         const bool use_real_node_select =
             graph.index != nullptr && !graph.index->empty() && !graph.real_nodes.empty();
@@ -793,5 +772,13 @@ private:
         }
 
         bg.n_nodes = next_id;
+        if (load_haplotypes) {
+            auto map_node = [&](nid_t nid, uint32_t& out) -> bool {
+                if (nid < min_nid || nid > max_nid) return false;
+                out = nid_to_id[(size_t)(nid - min_nid)];
+                return out != UINT32_MAX;
+            };
+            collect_haplotype_paths(graph, bg, map_node, false);
+        }
     }
 };

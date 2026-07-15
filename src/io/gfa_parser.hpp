@@ -2,14 +2,11 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <atomic>
-#include <cerrno>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -25,8 +22,24 @@
 struct BiLink {
     uint32_t src;
     uint32_t dst;
-    char     orient_src;
-    char     orient_dst;
+    char orient_src;
+    char orient_dst;
+};
+
+struct BiHaplotypeStep {
+    uint32_t node = 0;
+    uint8_t is_reverse = 0;
+};
+
+struct BiHaplotypePath {
+    std::string name;
+    std::string sample;
+    std::string locus;
+    uint64_t haplotype = std::numeric_limits<uint64_t>::max();
+    uint64_t phase_block = std::numeric_limits<uint64_t>::max();
+    uint8_t sense = 0;
+    uint64_t step_begin = 0;
+    uint64_t step_end = 0;
 };
 
 struct BiGraph {
@@ -36,7 +49,12 @@ struct BiGraph {
     std::vector<uint8_t>     numeric_node_name_valid;
     std::vector<std::pair<uint32_t, std::string>> string_node_names;
     std::vector<BiLink>      links;
+    std::vector<BiHaplotypePath> haplotype_paths;
+    std::vector<BiHaplotypeStep> haplotype_steps;
 };
+
+static_assert(sizeof(BiLink) == sizeof(uint32_t) * 3,
+              "u32 GFA link layout must stay compact");
 
 namespace gfa_detail {
 
@@ -143,23 +161,6 @@ struct NameMap {
     }
 };
 
-inline uint32_t numeric_dense_id_limit() {
-    constexpr uint32_t kDefaultMaxDenseNumericId = UINT32_MAX - 1;
-    const char* env = std::getenv("BF_GFA_NUMERIC_MAX_ID");
-    if (!env || !*env) return kDefaultMaxDenseNumericId;
-
-    errno = 0;
-    char* end = nullptr;
-    unsigned long long v = std::strtoull(env, &end, 10);
-    if (errno != 0 || end == env || (end && *end != '\0')) {
-        return kDefaultMaxDenseNumericId;
-    }
-    if (v >= static_cast<unsigned long long>(UINT32_MAX)) {
-        return UINT32_MAX - 1;
-    }
-    return static_cast<uint32_t>(v);
-}
-
 inline void require_more_gfa_links_fit_u32(size_t current_size) {
     if (current_size >= static_cast<size_t>(UINT32_MAX)) {
         throw_gfa_u32_limit("storing links");
@@ -169,18 +170,6 @@ inline void require_more_gfa_links_fit_u32(size_t current_size) {
 struct SegmentRef {
     const char* ptr = nullptr;
     uint32_t len = 0;
-};
-
-struct ChunkRange {
-    size_t begin = 0;
-    size_t end = 0;
-};
-
-struct ChunkScan {
-    std::vector<SegmentRef> segments;
-    size_t link_count = 0;
-    size_t first_link_offset = std::numeric_limits<size_t>::max();
-    size_t last_segment_offset = 0;
 };
 
 struct NumericScan {
@@ -202,13 +191,14 @@ inline const char* skip_line(const char* p, const char* end) {
 
 inline bool parse_u32_token(const char*& p, const char* end, uint32_t& out) {
     if (p >= end || *p < '0' || *p > '9') return false;
-    uint64_t v = 0;
+    uint32_t v = 0;
     while (p < end && *p >= '0' && *p <= '9') {
-        v = v * 10u + static_cast<uint64_t>(*p - '0');
-        if (v > std::numeric_limits<uint32_t>::max()) return false;
+        uint32_t digit = static_cast<uint32_t>(*p - '0');
+        if (v > (std::numeric_limits<uint32_t>::max() - digit) / 10u) return false;
+        v = static_cast<uint32_t>(v * 10u + digit);
         ++p;
     }
-    out = static_cast<uint32_t>(v);
+    out = v;
     return true;
 }
 
@@ -217,7 +207,7 @@ inline bool ensure_numeric_name(NumericScan& scan,
                                 const char* name,
                                 uint32_t name_len) {
     if (numeric_id == 0) return false;
-    if (numeric_id > numeric_dense_id_limit()) return false;
+    if (numeric_id == UINT32_MAX) return false;
     if (numeric_id >= scan.id_map.size()) {
         size_t next_size = std::max<size_t>(numeric_id + 1, scan.id_map.size() * 2);
         scan.id_map.resize(next_size, UINT32_MAX);
@@ -340,207 +330,6 @@ inline bool parse_numeric_link_at(const char* base,
     return true;
 }
 
-inline std::vector<ChunkRange> make_line_chunks(const char* data,
-                                                size_t begin,
-                                                size_t end,
-                                                int threads,
-                                                bool force_parallel = false) {
-    size_t size = end - begin;
-    size_t workers = (threads > 1) ? (size_t)threads : 1;
-    if (!force_parallel) {
-        workers = std::min(workers, std::max<size_t>(1, size / (16 << 20)));
-    }
-    if (workers <= 1) return {{begin, end}};
-
-    std::vector<size_t> bounds(workers + 1, 0);
-    bounds[0] = begin;
-    bounds[workers] = end;
-    for (size_t i = 1; i < workers; ++i) {
-        size_t pos = begin + (size * i) / workers;
-        while (pos < end && data[pos - 1] != '\n') ++pos;
-        bounds[i] = pos;
-    }
-
-    std::vector<ChunkRange> ranges;
-    ranges.reserve(workers);
-    for (size_t i = 0; i < workers; ++i) {
-        if (bounds[i] < bounds[i + 1]) ranges.push_back({bounds[i], bounds[i + 1]});
-    }
-    return ranges;
-}
-
-inline std::vector<ChunkRange> make_line_chunks(const char* data,
-                                                size_t size,
-                                                int threads,
-                                                bool force_parallel = false) {
-    return make_line_chunks(data, 0, size, threads, force_parallel);
-}
-
-inline ChunkScan scan_segments_and_count_links(const char* base, ChunkRange range) {
-    ChunkScan out;
-    const char* p = base + range.begin;
-    const char* end = base + range.end;
-
-    while (p < end) {
-        const char* line = p;
-        if (*p == 'S' && p + 1 < end && p[1] == '\t') {
-            p += 2;
-            const char* s = p;
-            p = next_tab(p, end);
-            uint32_t len = (uint32_t)(p - s);
-            if (len > 0) {
-                out.segments.push_back({s, len});
-                out.last_segment_offset = (size_t)(line - base);
-            }
-            p = skip_line(p, end);
-        } else if (*p == 'L' && p + 1 < end && p[1] == '\t') {
-            p += 2;
-            p = next_tab(p, end);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            p = next_tab(p, end);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            ++out.link_count;
-            size_t off = (size_t)(line - base);
-            if (off < out.first_link_offset) out.first_link_offset = off;
-            p = skip_line(p, end);
-        } else {
-            p = skip_line(p, end);
-        }
-    }
-
-    return out;
-}
-
-inline size_t fill_links_from_chunk(const char* base,
-                                    ChunkRange range,
-                                    const NameMap& names,
-                                    BiLink* out_links,
-                                    std::atomic<bool>& missing_name) {
-    size_t written = 0;
-    const char* p = base + range.begin;
-    const char* end = base + range.end;
-
-    while (p < end) {
-        if (*p == 'L' && p + 1 < end && p[1] == '\t') {
-            p += 2;
-            const char* fs = p; p = next_tab(p, end);
-            uint32_t fl = (uint32_t)(p - fs);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            char o1 = *p; p++;
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            const char* ts = p; p = next_tab(p, end);
-            uint32_t tl = (uint32_t)(p - ts);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            char o2 = *p;
-
-            uint32_t uid = names.find({fs, fl});
-            uint32_t vid = names.find({ts, tl});
-            if (uid == UINT32_MAX || vid == UINT32_MAX) {
-                missing_name.store(true, std::memory_order_relaxed);
-            } else {
-                out_links[written] = {uid, vid, o1, o2};
-            }
-            ++written;
-            p = skip_line(p, end);
-        } else {
-            p = skip_line(p, end);
-        }
-    }
-
-    return written;
-}
-
-inline size_t count_links_in_chunk(const char* base,
-                                   ChunkRange range,
-                                   std::atomic<bool>& saw_late_segment) {
-    size_t count = 0;
-    const char* p = base + range.begin;
-    const char* end = base + range.end;
-
-    while (p < end) {
-        if (*p == 'S' && p + 1 < end && p[1] == '\t') {
-            saw_late_segment.store(true, std::memory_order_relaxed);
-            p = skip_line(p, end);
-        } else if (*p == 'L' && p + 1 < end && p[1] == '\t') {
-            p += 2;
-            p = next_tab(p, end);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            p = next_tab(p, end);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            ++count;
-            p = skip_line(p, end);
-        } else {
-            p = skip_line(p, end);
-        }
-    }
-
-    return count;
-}
-
-inline void parse_links_to_vector(const char* base,
-                                  ChunkRange range,
-                                  const NameMap& names,
-                                  std::vector<BiLink>& out_links,
-                                  std::atomic<bool>& missing_name,
-                                  std::atomic<bool>& saw_late_segment) {
-    out_links.reserve(std::max<size_t>(1024, (range.end - range.begin) / 32));
-    const char* p = base + range.begin;
-    const char* end = base + range.end;
-
-    while (p < end) {
-        if (*p == 'S' && p + 1 < end && p[1] == '\t') {
-            saw_late_segment.store(true, std::memory_order_relaxed);
-            p = skip_line(p, end);
-        } else if (*p == 'L' && p + 1 < end && p[1] == '\t') {
-            p += 2;
-            const char* fs = p; p = next_tab(p, end);
-            uint32_t fl = (uint32_t)(p - fs);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            char o1 = *p; p++;
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            const char* ts = p; p = next_tab(p, end);
-            uint32_t tl = (uint32_t)(p - ts);
-            if (p >= end || *p != '\t') { p = skip_line(p, end); continue; }
-            p++;
-            if (p >= end) { p = skip_line(p, end); continue; }
-            char o2 = *p;
-
-            uint32_t uid = names.find({fs, fl});
-            uint32_t vid = names.find({ts, tl});
-            if (uid == UINT32_MAX || vid == UINT32_MAX) {
-                missing_name.store(true, std::memory_order_relaxed);
-            } else {
-                out_links.push_back({uid, vid, o1, o2});
-            }
-            p = skip_line(p, end);
-        } else {
-            p = skip_line(p, end);
-        }
-    }
-}
-
 struct ParseState {
     NameMap  names;
     uint32_t next_id = 0;
@@ -645,98 +434,6 @@ private:
         return state.finish();
     }
 
-    static BiGraph parse_buffer_parallel(const char* data,
-                                         size_t size,
-                                         int threads,
-                                         bool force_parallel) {
-        gfa_detail::NameMap names;
-        size_t estimated_segments = std::max<size_t>(1 << 20, size / 140);
-        if (estimated_segments > std::numeric_limits<uint32_t>::max()) {
-            estimated_segments = std::numeric_limits<uint32_t>::max();
-        }
-        names.init((uint32_t)estimated_segments);
-
-        const char* p = data;
-        const char* end = data + size;
-        uint32_t next_id = 0;
-        size_t link_begin = size;
-
-        while (p < end) {
-            const char* line = p;
-            if (*p == 'S' && p + 1 < end && p[1] == '\t') {
-                p += 2;
-                const char* s = p;
-                p = gfa_detail::next_tab(p, end);
-                uint32_t len = (uint32_t)(p - s);
-                if (len > 0) {
-                    auto [id, is_new] = names.get_or_insert({s, len}, next_id);
-                    (void)id;
-                    if (is_new) ++next_id;
-                }
-                p = gfa_detail::skip_line(p, end);
-            } else if (*p == 'L' && p + 1 < end && p[1] == '\t') {
-                link_begin = (size_t)(line - data);
-                break;
-            } else {
-                p = gfa_detail::skip_line(p, end);
-            }
-        }
-
-        if (link_begin == size) {
-            BiGraph bg;
-            bg.n_nodes = next_id;
-            bg.node_names = names.to_names();
-            return bg;
-        }
-
-        auto ranges = gfa_detail::make_line_chunks(
-            data, link_begin, size, threads, force_parallel);
-        if (ranges.size() <= 1) return parse_buffer_serial(data, size);
-
-        std::atomic<bool> saw_late_segment{false};
-        std::atomic<bool> missing_name{false};
-        std::vector<std::vector<BiLink>> chunk_links(ranges.size());
-        std::vector<std::thread> workers;
-        workers.reserve(ranges.size());
-        for (size_t i = 0; i < ranges.size(); ++i) {
-            workers.emplace_back([&, i]() {
-                gfa_detail::parse_links_to_vector(
-                    data, ranges[i], names, chunk_links[i],
-                    missing_name, saw_late_segment);
-            });
-        }
-        for (auto& th : workers) th.join();
-
-        if (saw_late_segment.load(std::memory_order_relaxed) ||
-            missing_name.load(std::memory_order_relaxed)) {
-            return parse_buffer_serial(data, size);
-        }
-
-        size_t link_count = 0;
-        for (const auto& local : chunk_links) {
-            link_count += local.size();
-            if (link_count > static_cast<size_t>(UINT32_MAX)) {
-                gfa_detail::throw_gfa_u32_limit("storing parallel-parsed links");
-            }
-        }
-
-        std::vector<BiLink> links;
-        links.reserve(link_count);
-        for (auto& local : chunk_links) {
-            links.insert(links.end(),
-                         std::make_move_iterator(local.begin()),
-                         std::make_move_iterator(local.end()));
-            std::vector<BiLink>().swap(local);
-        }
-        std::vector<std::vector<BiLink>>().swap(chunk_links);
-
-        BiGraph bg;
-        bg.n_nodes = next_id;
-        bg.node_names = names.to_names();
-        bg.links = std::move(links);
-        return bg;
-    }
-
     static BiGraph parse_buffer_numeric_dense(const char* data,
                                               size_t size,
                                               int threads) {
@@ -814,20 +511,7 @@ private:
         madvise(m, sz, MADV_SEQUENTIAL);
 
         const char* data = (const char*)m;
-        BiGraph bg;
-        const char* parallel_env = std::getenv("BF_GFA_PAR_PARSE");
-        const char* numeric_env = std::getenv("BF_GFA_NUMERIC_PARSE");
-        bool force_serial = parallel_env && std::string(parallel_env) == "0";
-        bool force_parallel = parallel_env && std::string(parallel_env) == "1";
-        bool disable_numeric_parse = numeric_env && std::string(numeric_env) == "0";
-        bool numeric_parse = !disable_numeric_parse;
-        if (!force_serial && numeric_parse) {
-            bg = parse_buffer_numeric_dense(data, sz, threads);
-        } else if (!force_serial && force_parallel && threads > 1) {
-            bg = parse_buffer_parallel(data, sz, threads, force_parallel);
-        } else {
-            bg = parse_buffer_serial(data, sz);
-        }
+        BiGraph bg = parse_buffer_numeric_dense(data, sz, threads);
 
         munmap(m, sz);
         close(fd);
@@ -838,7 +522,6 @@ private:
 
     static BiGraph parse_gz(const std::string& path, int threads) {
         std::string cmd = gfa_detail::decompress_cmd(path, threads);
-        fprintf(stderr, "[gfa_parser] decompressor: %s\n", cmd.c_str());
         FILE* pipe = popen(cmd.c_str(), "r");
         if (!pipe) throw std::runtime_error("Cannot decompress " + path);
 
