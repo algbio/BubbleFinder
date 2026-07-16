@@ -272,6 +272,7 @@ target_include_directories(BubbleFinder PRIVATE src)
 find_program(CARGO cargo REQUIRED)
 set(SPQR_RUST_DIR "${CMAKE_SOURCE_DIR}/external/spqr-rust")
 set(SPQR_RUST_LIB "${SPQR_RUST_DIR}/target/release/libspqr_rust.a")
+file(GLOB_RECURSE SPQR_RUST_SOURCES CONFIGURE_DEPENDS "${SPQR_RUST_DIR}/src/*.rs")
 
 add_custom_command(
     OUTPUT ${SPQR_RUST_LIB}
@@ -279,23 +280,7 @@ add_custom_command(
     WORKING_DIRECTORY ${SPQR_RUST_DIR}
     DEPENDS ${SPQR_RUST_DIR}/Cargo.toml
             ${SPQR_RUST_DIR}/Cargo.lock
-            ${SPQR_RUST_DIR}/src/lib.rs
-            ${SPQR_RUST_DIR}/src/biconnected.rs
-            ${SPQR_RUST_DIR}/src/connected.rs
-            ${SPQR_RUST_DIR}/src/ffi.rs
-            ${SPQR_RUST_DIR}/src/spqr_format.rs
-            ${SPQR_RUST_DIR}/src/verify.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/mod.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/adj.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/arena.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/direct.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/ffi.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/integration.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/iso.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/pmap.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/reconstruct.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/reduction.rs
-            ${SPQR_RUST_DIR}/src/sp_compress/types.rs
+            ${SPQR_RUST_SOURCES}
     COMMENT "Building spqr-rust (cargo --release)"
     VERBATIM)
 

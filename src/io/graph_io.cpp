@@ -2658,7 +2658,7 @@ struct FastSnarlOutputTables {
     size_t max_idx = 0;
 };
 
-using FastEndpointKey = std::uint64_t;
+using FastEndpointKey = std::uint32_t;
 using FastPairKey = std::uint64_t;
 
 inline bool tableIsTrash(const FastSnarlOutputTables &t, uint32_t idx)

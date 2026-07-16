@@ -90,8 +90,6 @@ struct Context
     {
         Off,
         On,
-        Instrument,
-        MacroDirectDebug,
         MacroDirect
     };
 
@@ -162,7 +160,6 @@ struct Context
     bool weakSuperbubbles = false;
 
     SpCompressMode spCompressMode = SpCompressMode::Off;
-    std::string spCompressInstrumentCsv = "";
 
     bool skipCanonicalizeRoot = false;
 
@@ -213,7 +210,7 @@ struct Context
 
     bool fastSnarlPairsEnabled = false;
     std::vector<std::uint64_t> fastSnarlPairs;
-    std::vector<std::vector<std::uint64_t>> fastSnarlCliques;
+    std::vector<std::vector<std::uint32_t>> fastSnarlCliques;
 
     std::vector<spqr_compat::node> nodeByGlobalId;
 
