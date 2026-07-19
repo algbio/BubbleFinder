@@ -8411,7 +8411,7 @@ namespace solver
                 C.G.forEachAdj(a.node, [&](spqr_compat::node, spqr_compat::edge e) {
                     if (found || C.G.source(e) != a.node || C.G.target(e) != a.node)
                         return;
-                    const auto edgeTypes = C._edge2types(e);
+                    const auto edgeTypes = edgePartTypes(C, e);
                     found =
                         (edgeTypes.first == a.sign && edgeTypes.second == b.sign) ||
                         (edgeTypes.first == b.sign && edgeTypes.second == a.sign);
@@ -8421,9 +8421,8 @@ namespace solver
 
             inline uint64_t endpointKey(const SnarlEndpoint& ep)
             {
-                return pack_fast_snarl_endpoint_key(
-                    static_cast<uint32_t>(ep.node.idx),
-                    endpoint_sign_bit(ep.sign));
+                return (static_cast<uint64_t>(ep.node.idx) << 1) |
+                       static_cast<uint64_t>(endpoint_sign_bit(ep.sign));
             }
 
             bool verifySmallSnarlComponentDirect(uint64_t leftKey,
@@ -8483,7 +8482,7 @@ namespace solver
 
                     spqr_compat::node u{uIdx};
                     C.G.forEachAdj(u, [&](spqr_compat::node other, spqr_compat::edge e) {
-                        const auto edgeTypes = C._edge2types(e);
+                        const auto edgeTypes = edgePartTypes(C, e);
                         auto pushIfMatches = [&](uint32_t toIdx, uint8_t outSign, uint8_t inSign) {
                             if (outSign != sign)
                                 return;
@@ -8795,32 +8794,6 @@ namespace solver
 
             canonicalize_pair(s);
 
-            if (const char *taggedPath = std::getenv("BF_DEBUG_TAGGED_SNARLS"))
-            {
-                if (*taggedPath)
-                {
-                    static std::mutex tagged_mtx;
-                    static std::ofstream tagged_out;
-                    static std::string tagged_open_path;
-                    std::lock_guard<std::mutex> lk(tagged_mtx);
-                    if (!tagged_out.is_open() || tagged_open_path != taggedPath)
-                    {
-                        tagged_out.close();
-                        tagged_out.open(taggedPath);
-                        tagged_open_path = taggedPath;
-                    }
-                    if (tagged_out)
-                    {
-                        tagged_out << (tag ? tag : "?");
-                        for (const auto &x : s)
-                        {
-                            tagged_out << '\t' << x;
-                        }
-                        tagged_out << '\n';
-                    }
-                }
-            }
-
             if (tryCommitFastSnarlPairs(s)) {
                 return;
             }
@@ -8880,9 +8853,18 @@ namespace solver
 
         struct CcData
         {
+            struct CutAdjEntry
+            {
+                uint32_t to;
+                uint8_t outBit;
+                uint8_t inBit;
+            };
+
             std::unique_ptr<spqr_compat::Graph> Gcc;
             spqr_compat::NodeArray<spqr_compat::node> nodeToOrig;
             spqr_compat::EdgeArray<spqr_compat::edge> edgeToOrig;
+            std::vector<uint32_t> cutAdjOffsets;
+            std::vector<CutAdjEntry> cutAdj;
 
             spqr_compat::NodeArray<bool> isTip;
 
@@ -8985,13 +8967,14 @@ namespace solver
         EdgePartType getNodeEdgeType(spqr_compat::node v, spqr_compat::edge e)
         {
             auto &C = ctx();
+            const auto types = edgePartTypes(C, e);
             if (C.G.source(e) == v)
             {
-                return C._edge2types(e).first;
+                return types.first;
             }
             else if (C.G.target(e) == v)
             {
-                return C._edge2types(e).second;
+                return types.second;
             }
             else
             {
@@ -9019,8 +9002,8 @@ namespace solver
         }
 
         void getOutgoingEdgesInBlock(const CcData &cc,
-                                     spqr_compat::node uG, 
-                                     spqr_compat::node vB, 
+                                     spqr_compat::node uG,
+                                     spqr_compat::node vB,
                                      EdgePartType type,
                                      std::vector<spqr_compat::edge> &outEdges)
         {
@@ -9048,10 +9031,11 @@ namespace solver
 
             cc.Gcc->forEachAdj(uG, [&](node neighbor, edge eC) {
                 spqr_compat::edge eOrig = cc.edgeToOrig[eC];
+                const auto edgeTypes = edgePartTypes(ctx(), eOrig);
 
                 if (cc.Gcc->source(eC) == uG)
                 {
-                    EdgePartType outType = ctx()._edge2types(eOrig).first;
+                    EdgePartType outType = edgeTypes.first;
                     if (type == outType)
                     {
                         outEdges.push_back(adjEntry{neighbor, eC});
@@ -9059,7 +9043,7 @@ namespace solver
                 }
                 else
                 {
-                    EdgePartType outType = ctx()._edge2types(eOrig).second;
+                    EdgePartType outType = edgeTypes.second;
                     if (type == outType)
                     {
                         outEdges.push_back(adjEntry{neighbor, eC});
@@ -9117,7 +9101,7 @@ namespace solver
                     spqr_compat::node gT = blockNodeToOrig(blk, state.t);
 
                     for (uint32_t i = 0; i < m.children_count; ++i) {
-                        uint32_t child_ref = m_view.children_ptr[m.children_offset + i];
+                        SpCompressChildRef child_ref = m_view.children_ptr[m.children_offset + i];
 
                         if (SP_COMPRESS_CHILD_IS_EDGE(child_ref)) {
                             uint32_t block_edge_id = SP_COMPRESS_CHILD_AS_EDGE(child_ref);
@@ -9189,7 +9173,7 @@ namespace solver
                 incidence.reserve(static_cast<size_t>(m.children_count) * 2);
 
                 for (uint32_t i = 0; i < m.children_count; ++i) {
-                    uint32_t cref = m_view.children_ptr[m.children_offset + i];
+                    SpCompressChildRef cref = m_view.children_ptr[m.children_offset + i];
                     uint32_t e0 = SPQR_INVALID;
                     uint32_t e1 = SPQR_INVALID;
                     if (SP_COMPRESS_CHILD_IS_EDGE(cref)) {
@@ -9232,7 +9216,7 @@ namespace solver
                     if (!nodeIsCut) continue;
 
                     auto orient_at = [&](uint32_t child_idx) -> EdgePartType {
-                        uint32_t cref = m_view.children_ptr[m.children_offset + child_idx];
+                        SpCompressChildRef cref = m_view.children_ptr[m.children_offset + child_idx];
                         if (SP_COMPRESS_CHILD_IS_EDGE(cref)) {
                             uint32_t bid = SP_COMPRESS_CHILD_AS_EDGE(cref);
                             spqr_compat::edge eBlk{bid};
@@ -9380,7 +9364,7 @@ namespace solver
                     return o;
                 };
 
-                auto compute_ori = [&](uint32_t cref) -> ChildOri {
+                auto compute_ori = [&](SpCompressChildRef cref) -> ChildOri {
                     ChildOri o{EdgePartType::NONE, EdgePartType::NONE, false, false};
 
                     if (SP_COMPRESS_CHILD_IS_EDGE(cref)) {
@@ -9421,7 +9405,7 @@ namespace solver
                             series_context_state.localMinusS = 0;
                             series_context_state.localPlusT = 0;
                             series_context_state.localMinusT = 0;
-                            auto merge_context_ref = [&](uint32_t cref) {
+                            auto merge_context_ref = [&](SpCompressChildRef cref) {
                                 if (SP_COMPRESS_CHILD_IS_EDGE(cref)) {
                                     uint32_t bid = SP_COMPRESS_CHILD_AS_EDGE(cref);
                                     spqr_compat::edge eBlk{bid};
@@ -9466,13 +9450,13 @@ namespace solver
                                 merge_side(pole1Blk, false);
                             };
 
-                            uint32_t prev_ref_path = SPQR_INVALID;
-                            uint32_t next_ref_path = SPQR_INVALID;
+                            SpCompressChildRef prev_ref_path = SPQR_INVALID;
+                            SpCompressChildRef next_ref_path = SPQR_INVALID;
                             bool path_ok = false;
                             {
                                 const uint32_t k = parent.children_count;
                                 struct PathChild {
-                                    uint32_t cref{SPQR_INVALID};
+                                    SpCompressChildRef cref{SPQR_INVALID};
                                     uint32_t a{SPQR_INVALID};
                                     uint32_t b{SPQR_INVALID};
                                 };
@@ -9483,7 +9467,7 @@ namespace solver
 
                                 bool valid = true;
                                 for (uint32_t i = 0; i < k; ++i) {
-                                    uint32_t cr2 =
+                                    SpCompressChildRef cr2 =
                                         m_view.children_ptr[parent.children_offset + i];
                                     uint32_t a = SPQR_INVALID;
                                     uint32_t b = SPQR_INVALID;
@@ -9587,13 +9571,13 @@ namespace solver
                                 }
                             } else {
                                 if (child_idx > 0) {
-                                    uint32_t prev_ref =
+                                    SpCompressChildRef prev_ref =
                                         m_view.children_ptr[parent.children_offset + child_idx - 1];
                                     merge_context_ref(prev_ref);
                                     added = true;
                                 }
                                 if (child_idx + 1 < parent.children_count) {
-                                    uint32_t next_ref =
+                                    SpCompressChildRef next_ref =
                                         m_view.children_ptr[parent.children_offset + child_idx + 1];
                                     merge_context_ref(next_ref);
                                     added = true;
@@ -9610,7 +9594,7 @@ namespace solver
 
                 auto compute_eff_ori = [&](uint32_t idx) -> ChildOri {
                     if (idx < m.children_count) {
-                        uint32_t cref = m_view.children_ptr[m.children_offset + idx];
+                        SpCompressChildRef cref = m_view.children_ptr[m.children_offset + idx];
                         return compute_ori(cref);
                     }
                     if (has_down_child) {
@@ -9682,7 +9666,7 @@ namespace solver
                         if (macro_gcc_cuts && part_size == 1) {
                             if (single_idx >= m.children_count) {
                             } else {
-                                uint32_t cref = m_view.children_ptr[m.children_offset + single_idx];
+                                SpCompressChildRef cref = m_view.children_ptr[m.children_offset + single_idx];
                                 if (SP_COMPRESS_CHILD_IS_MACRO(cref)) {
                                     uint32_t sub_id = SP_COMPRESS_CHILD_AS_MACRO(cref);
                                     if (m_view.macros_ptr[sub_id].kind == SP_COMPRESS_KIND_SERIES) {
@@ -9736,7 +9720,7 @@ namespace solver
                 for (uint32_t m_id = 0; m_id < M; ++m_id) {
                     const SpCompressNode &m = m_view.macros_ptr[m_id];
                     for (uint32_t i = 0; i < m.children_count; ++i) {
-                        uint32_t cref = m_view.children_ptr[m.children_offset + i];
+                        SpCompressChildRef cref = m_view.children_ptr[m.children_offset + i];
                         if (!SP_COMPRESS_CHILD_IS_MACRO(cref)) continue;
                         uint32_t sub_id = SP_COMPRESS_CHILD_AS_MACRO(cref);
                         if (sub_id < M) {
@@ -9903,7 +9887,7 @@ namespace solver
                 spqr_compat::node pole1Blk,
                 spqr_compat::node pole0G,
                 spqr_compat::node pole1G,
-                uint32_t child_ref,
+                SpCompressChildRef child_ref,
                 const std::vector<EdgeDPState>& macro_states,
                 const SpCompressTreeView& m_view,
                 BlockData& blk)
@@ -9927,7 +9911,7 @@ namespace solver
                 spqr_compat::node pole1Blk,
                 spqr_compat::node pole0G,
                 spqr_compat::node pole1G,
-                uint32_t child_ref,
+                SpCompressChildRef child_ref,
                 const std::vector<EdgeDPState>& macro_states,
                 BlockData& blk)
             {
@@ -10079,7 +10063,7 @@ namespace solver
                         const SkeletonEdge& se = tctx.skel_edges[i];
 
                         if (se.real_edge != SPQR_INVALID) {
-                            uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                            SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                             if (SP_COMPRESS_CHILD_IS_EDGE(cr)) {
                                 uint32_t bid = SP_COMPRESS_CHILD_AS_EDGE(cr);
                                 spqr_compat::edge eBlk{bid};
@@ -10129,7 +10113,7 @@ namespace solver
                     reset_state_for_poles(tmp, pole0Blk, pole1Blk);
 
                     if (se.real_edge != SPQR_INVALID) {
-                        uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                        SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                         merge_child_ref_into_state(tmp, pole0Blk, pole1Blk,
                                                    pole0G, pole1G, cr,
                                                    macro_states, m_view, blk);
@@ -10246,7 +10230,7 @@ namespace solver
                     const SkeletonEdge& se = tctx.skel_edges[i];
 
                     if (se.real_edge != SPQR_INVALID) {
-                        uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                        SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                         merge_child_ref_into_state(state, pole0Blk, pole1Blk,
                                                    pole0G, pole1G, cr,
                                                    macro_states, m_view, blk);
@@ -10291,7 +10275,7 @@ namespace solver
                 for (uint32_t m_id = 0; m_id < M; ++m_id) {
                     const SpCompressNode& m = m_view.macros_ptr[m_id];
                     for (uint32_t i = 0; i < m.children_count; ++i) {
-                        uint32_t cref = m_view.children_ptr[m.children_offset + i];
+                        SpCompressChildRef cref = m_view.children_ptr[m.children_offset + i];
                         if (!SP_COMPRESS_CHILD_IS_MACRO(cref)) continue;
                         uint32_t sub_id = SP_COMPRESS_CHILD_AS_MACRO(cref);
                         if (sub_id < M) has_macro_parent[sub_id] = 1;
@@ -10322,7 +10306,7 @@ namespace solver
                     EdgeDPState tmp;
                     reset_state_for_poles(tmp, pole0Blk, pole1Blk);
                     if (se.real_edge != SPQR_INVALID) {
-                        uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                        SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                         merge_child_ref_into_state(tmp, pole0Blk, pole1Blk,
                                                    pole0G, pole1G, cr,
                                                    macro_states, m_view, blk);
@@ -10373,7 +10357,7 @@ namespace solver
                     for (uint32_t i = e_start; i < e_end; ++i) {
                         const SkeletonEdge& se = tctx.skel_edges[i];
                         if (se.real_edge == SPQR_INVALID) continue;
-                        uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                        SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                         if (!SP_COMPRESS_CHILD_IS_MACRO(cr)) continue;
                         uint32_t macro_id = SP_COMPRESS_CHILD_AS_MACRO(cr);
                         if (macro_id >= M || has_macro_parent[macro_id]) continue;
@@ -10460,7 +10444,7 @@ namespace solver
                 for (uint32_t m_id = 0; m_id < M; ++m_id) {
                     const SpCompressNode& m = m_view.macros_ptr[m_id];
                     for (uint32_t i = 0; i < m.children_count; ++i) {
-                        uint32_t cref = m_view.children_ptr[m.children_offset + i];
+                        SpCompressChildRef cref = m_view.children_ptr[m.children_offset + i];
                         if (!SP_COMPRESS_CHILD_IS_MACRO(cref)) continue;
                         uint32_t sub_id = SP_COMPRESS_CHILD_AS_MACRO(cref);
                         if (sub_id < M) parent_macro[sub_id] = m_id;
@@ -10491,7 +10475,7 @@ namespace solver
                         for (uint32_t i = e_start; i < e_end; ++i) {
                             const SkeletonEdge& se = tctx->skel_edges[i];
                             if (se.real_edge == SPQR_INVALID) continue;
-                            uint32_t cr = m_view.core_edges_ptr[se.real_edge].child;
+                            SpCompressChildRef cr = m_view.core_edges_ptr[se.real_edge].child;
                             if (!SP_COMPRESS_CHILD_IS_MACRO(cr)) continue;
                             uint32_t macro_id = SP_COMPRESS_CHILD_AS_MACRO(cr);
                             if (macro_id >= M || parent_macro[macro_id] != SPQR_INVALID) continue;
