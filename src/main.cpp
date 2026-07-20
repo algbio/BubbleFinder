@@ -18317,8 +18317,8 @@ namespace solver
                                     writeV(vName,
                                         spqrNodeNames[src],
                                         spqrNodeNames[tgt],
-                                        C.node2name[uOrig],
-                                        C.node2name[vOrig]);
+                                        uOrig,
+                                        vOrig);
                                 }
                                 continue;
                             }
@@ -18351,12 +18351,12 @@ namespace solver
                             writeV(vName,
                                 spqrNodeNames[src],
                                 spqrNodeNames[tgt],
-                                C.node2name[uOrig],
-                                C.node2name[vOrig]);
+                                uOrig,
+                                vOrig);
                         }
 
                         // Write E-lines (real edges), assigned to their containing SPQR node
-                        for (spqr_compat::node treeNode : spqr.tree().nodes)
+                        for (spqr_compat::node treeNode : spqrTree.nodes)
                         {
                             const spqr_compat::Skeleton &skel = spqr.skeleton(treeNode);
                             for (spqr_compat::edge skelEdge : skel.getGraph().edges)
@@ -18378,8 +18378,9 @@ namespace solver
                                 std::string eName = makeId("E", edgeCtr++);
                                 writeE(eName,
                                     spqrNodeNames[treeNode],
-                                    C.node2name[uOrig],
-                                    C.node2name[vOrig]);
+                                    uOrig,
+                                    vOrig,
+                                    ccEdgeToOrig[eCc]);
                             }
 
                             // The SPQR tree contains no self-loops, hence we need to output self-loops manually.
@@ -18403,7 +18404,7 @@ namespace solver
                                     }
 
                                     std::string eName = makeId("E", edgeCtr++);
-                                    writeE(eName, spqrNodeNames[treeNode], C.node2name[vOrig], C.node2name[vOrig]);
+                                    writeE(eName, spqrNodeNames[treeNode], vOrig, vOrig, e);
                                 });
                             }
                         }
@@ -18426,7 +18427,31 @@ namespace solver
                 std::cerr << "[spqr-tree] CC " << (ccIdx + 1) << "/" << numCC << " done\n";
             }
 
-            if (!out)
+            if (directBinaryIndex)
+            {
+                appendHaplotypesToDirectIndex();
+                directIndex->build_indices();
+                if (directCompactGraphNames)
+                {
+                    directIndex->compact_graph_node_count =
+                        graph_index::require_spqr_count_size(
+                            directGraphNodeCount,
+                            "SPQR direct compact graph node count");
+                    directIndex->graph_node_numeric_names =
+                        std::move(C.nodeNumericNamesByIndex);
+                    directIndex->graph_node_numeric_name_valid.clear();
+                    directIndex->node_names.resize(directGraphNodeCount);
+                    std::iota(directIndex->node_names.begin(),
+                              directIndex->node_names.end(),
+                              0u);
+                }
+                directIndex->drop_bubble_edge_type_records();
+
+                directIndex->save_binary(C.outputPath);
+
+                C.spqrIndex = std::move(directIndex);
+            }
+            else if (!*out_ptr)
             {
                 throw std::runtime_error("Error while writing SPQR tree to output");
             }
@@ -18534,7 +18559,7 @@ namespace solver
             uint32_t u,
             uint8_t sign_at_v,
             uint8_t sign_at_u,
-            const std::vector<int> &plus_dir,
+            const std::vector<uint8_t> &plus_dir,
             const std::vector<int> &localId,
             DirectedEdgeBuilder &out
         ) {
@@ -18565,7 +18590,7 @@ namespace solver
         static void orient(
             uint32_t start,
             bool plus_enter,
-            std::vector<int> &plus_dir,
+            std::vector<uint8_t> &plus_dir,
             const std::vector<int> &localId,
             const Context &C,
             DirectedEdgeBuilder &out
@@ -18631,9 +18656,9 @@ namespace solver
 
                     if (!plus_dir[u]) {
                         if (plus_dir[v] == 1) {
-                            plus_dir[u] = 1 + (int)(ae.type_self == sign_u);
+                            plus_dir[u] = static_cast<uint8_t>(1u + (ae.type_self == sign_u));
                         } else {
-                            plus_dir[u] = 1 + (int)(ae.type_self != sign_u);
+                            plus_dir[u] = static_cast<uint8_t>(1u + (ae.type_self != sign_u));
                         }
 
                         f.pending = true;
@@ -18818,7 +18843,7 @@ namespace solver
                 }
             }
 
-            std::vector<int> plus_dir(N, 0);
+            std::vector<uint8_t> plus_dir(N, 0);
 
             using PackedInc = std::pair<std::uint32_t, std::uint32_t>;
             std::vector<std::vector<PackedInc>> incidencesByCC(comps.size());
@@ -19230,7 +19255,7 @@ namespace solver
                 int nextId = 0;
             };
 
-            std::vector<int> plus_dir(N, 0);
+            std::vector<uint8_t> plus_dir(N, 0);
             std::vector<DirectedCC> directedByCC(comps.size());
             std::atomic<size_t> next{0};
             std::atomic<bool> abort_flag{false};
@@ -20102,11 +20127,439 @@ namespace solver
 
     }
 
+    }
+
+static bool populateSpqriBlockInputEdgeOrderFromBCTree(
+    spqr_index::IndexedSpqrTree &index)
+{
+    const std::uint32_t blockCount = index.block_count();
+    if (blockCount == 0)
+        return false;
+
+    const std::vector<spqr_index::GraphEdgeRecord> &graphEdges =
+        index.graph_edges;
+    if (graphEdges.empty() || !index.has_graph_components())
+        return false;
+
+    const std::uint32_t graphNodeCount = index.graph_node_count();
+    const bool nodesIdentity = index.graph_component_nodes_identity;
+    const bool edgesIdentity = index.graph_component_edges_identity;
+    if (!nodesIdentity && index.graph_component_nodes.size() != graphNodeCount)
+        return false;
+    if (!edgesIdentity && index.graph_component_edges.size() != graphEdges.size())
+        return false;
+
+    std::vector<std::uint32_t> stagedBegins(blockCount, spqr_index::invalid_id);
+    std::vector<std::uint32_t> stagedCounts(blockCount, 0u);
+    std::vector<std::uint8_t> matched(blockCount, 0u);
+    std::vector<std::uint32_t> stagedEdges;
+    stagedEdges.reserve(graph_index::require_spqr_count_size(
+        graphEdges.size(), "SPQR block input-edge staging"));
+    std::vector<std::uint8_t> stagedOrientations;
+    stagedOrientations.reserve(graph_index::require_spqr_count_size(
+        graphEdges.size(), "SPQR block input-edge orientation staging"));
+    std::vector<spqr_index::GraphEdgeRecord> stagedLocalEndpoints;
+    stagedLocalEndpoints.reserve(graph_index::require_spqr_count_size(
+        graphEdges.size(), "SPQR block input-edge local-endpoint staging"));
+
+    std::uint64_t matchedBlocks = 0;
+    bool failed = false;
+
+    std::vector<std::uint32_t> localToGraph;
+    std::vector<std::uint32_t> endpoints;
+    std::vector<std::uint32_t> ccEdgeToGraphEdge;
+    std::vector<std::uint32_t> blockNodes;
+    std::vector<std::uint32_t> blockEdges;
+    std::vector<std::uint8_t> blockOrientations;
+    std::vector<spqr_index::GraphEdgeRecord> blockLocalEndpoints;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> indexBlockLocalByGraph;
+    std::unordered_map<std::uint32_t, std::uint32_t> graphToLocal;
+
+    auto localForGraphNode =
+        [&](std::uint32_t graphNode,
+            const spqr_index::GraphComponentRecord &rec,
+            std::uint32_t &local) -> bool {
+        if (nodesIdentity) {
+            if (graphNode < rec.node_begin || graphNode >= rec.node_end)
+                return false;
+            local = graphNode - rec.node_begin;
+            return true;
+        }
+        auto it = graphToLocal.find(graphNode);
+        if (it == graphToLocal.end())
+            return false;
+        local = it->second;
+        return true;
+    };
+
+    const auto &components = index.graph_components;
+    for (std::uint32_t cid = 0;
+         cid < graph_index::require_spqr_count_size(
+                   components.size(), "SPQR graph component count");
+         ++cid) {
+        const auto &rec = components[cid];
+        if (rec.node_begin > rec.node_end ||
+            rec.edge_begin > rec.edge_end ||
+            rec.node_end > graphNodeCount ||
+            rec.edge_end > graphEdges.size()) {
+            failed = true;
+            continue;
+        }
+
+        const std::uint32_t nodeCount = rec.node_end - rec.node_begin;
+        const std::uint32_t edgeCount = rec.edge_end - rec.edge_begin;
+        if (nodeCount <= 1u)
+            continue;
+
+        Graph gcc;
+        gcc.newNodes(nodeCount);
+
+        localToGraph.clear();
+        localToGraph.reserve(nodeCount);
+        graphToLocal.clear();
+        if (!nodesIdentity)
+            graphToLocal.reserve(static_cast<std::size_t>(nodeCount) * 2u + 1u);
+        for (std::uint32_t local = 0; local < nodeCount; ++local) {
+            const std::uint32_t graphNode = nodesIdentity
+                ? rec.node_begin + local
+                : index.graph_component_nodes[rec.node_begin + local];
+            if (graphNode >= graphNodeCount) {
+                failed = true;
+                continue;
+            }
+            localToGraph.push_back(graphNode);
+            if (!nodesIdentity)
+                graphToLocal.emplace(graphNode, local);
+        }
+        if (localToGraph.size() != nodeCount)
+            continue;
+
+        endpoints.clear();
+        endpoints.reserve(static_cast<std::size_t>(edgeCount) * 2u);
+        ccEdgeToGraphEdge.clear();
+        ccEdgeToGraphEdge.reserve(edgeCount);
+
+        bool componentOk = true;
+        for (std::uint32_t localEdge = 0; localEdge < edgeCount; ++localEdge) {
+            const std::uint32_t graphEdgeId = edgesIdentity
+                ? rec.edge_begin + localEdge
+                : index.graph_component_edges[rec.edge_begin + localEdge];
+            if (graphEdgeId >= graphEdges.size()) {
+                componentOk = false;
+                break;
+            }
+            const auto &edge = graphEdges[graphEdgeId];
+            std::uint32_t srcLocal = 0;
+            std::uint32_t dstLocal = 0;
+            if (!localForGraphNode(edge.src, rec, srcLocal) ||
+                !localForGraphNode(edge.dst, rec, dstLocal)) {
+                componentOk = false;
+                break;
+            }
+            endpoints.push_back(srcLocal);
+            endpoints.push_back(dstLocal);
+            ccEdgeToGraphEdge.push_back(graphEdgeId);
+        }
+        if (!componentOk || ccEdgeToGraphEdge.size() != edgeCount) {
+            failed = true;
+            continue;
+        }
+
+        if (edgeCount != 0)
+            gcc.newEdgesBatchFlat(endpoints.data(), edgeCount);
+
+        BCTree bc(gcc);
+        for (node bNode : bc.bcTree().nodes) {
+            if (bc.typeOfBNode(bNode) != BCTree::BNodeType::BComp)
+                continue;
+
+            blockNodes.clear();
+            blockEdges.clear();
+            blockOrientations.clear();
+            blockLocalEndpoints.clear();
+            const auto &hEdges = bc.hEdges(bNode);
+            blockNodes.reserve(hEdges.size() * 2u);
+            blockEdges.reserve(hEdges.size());
+            blockOrientations.reserve(hEdges.size());
+            blockLocalEndpoints.reserve(hEdges.size());
+
+            bool blockOk = true;
+            for (edge hEdge : hEdges) {
+                edge eCc = bc.original(hEdge);
+                if (!eCc ||
+                    static_cast<std::uint64_t>(eCc.idx) >=
+                        ccEdgeToGraphEdge.size()) {
+                    blockOk = false;
+                    break;
+                }
+                const std::uint32_t graphEdgeId =
+                    ccEdgeToGraphEdge[static_cast<std::size_t>(eCc.idx)];
+                const auto &graphEdge = graphEdges[graphEdgeId];
+                const std::uint32_t bctreeSrc =
+                    localToGraph[static_cast<std::size_t>(gcc.source(eCc).idx)];
+                const std::uint32_t bctreeDst =
+                    localToGraph[static_cast<std::size_t>(gcc.target(eCc).idx)];
+                if (bctreeSrc == graphEdge.src &&
+                    bctreeDst == graphEdge.dst) {
+                    blockOrientations.push_back(1u);
+                } else if (bctreeSrc == graphEdge.dst &&
+                           bctreeDst == graphEdge.src) {
+                    blockOrientations.push_back(0u);
+                } else {
+                    blockOk = false;
+                    break;
+                }
+                blockEdges.push_back(graphEdgeId);
+                blockNodes.push_back(graphEdge.src);
+                blockNodes.push_back(graphEdge.dst);
+            }
+            if (!blockOk) {
+                failed = true;
+                continue;
+            }
+
+            std::sort(blockNodes.begin(), blockNodes.end());
+            blockNodes.erase(
+                std::unique(blockNodes.begin(), blockNodes.end()),
+                blockNodes.end());
+
+            const std::uint32_t indexBlock =
+                index.find_block_by_sorted_node_names(blockNodes);
+            if (indexBlock == spqr_index::invalid_id ||
+                indexBlock >= blockCount) {
+                failed = true;
+                continue;
+            }
+            if (matched[indexBlock] != 0u) {
+                failed = true;
+                continue;
+            }
+
+            const auto indexBlockRec = index.block_at(indexBlock);
+            indexBlockLocalByGraph.clear();
+            indexBlockLocalByGraph.reserve(
+                indexBlockRec.node_end - indexBlockRec.node_begin);
+            for (std::uint32_t local = 0;
+                 local < indexBlockRec.node_end - indexBlockRec.node_begin;
+                 ++local) {
+                indexBlockLocalByGraph.emplace_back(
+                    index.block_nodes[indexBlockRec.node_begin + local],
+                    local);
+            }
+            std::sort(indexBlockLocalByGraph.begin(),
+                      indexBlockLocalByGraph.end(),
+                      [](const auto &a, const auto &b) {
+                          return a.first < b.first;
+                      });
+            auto findIndexBlockLocal =
+                [&](std::uint32_t graphNode,
+                    std::uint32_t &local) -> bool {
+                auto it = std::lower_bound(
+                    indexBlockLocalByGraph.begin(),
+                    indexBlockLocalByGraph.end(),
+                    graphNode,
+                    [](const auto &item, std::uint32_t value) {
+                        return item.first < value;
+                    });
+                if (it == indexBlockLocalByGraph.end() ||
+                    it->first != graphNode) {
+                    return false;
+                }
+                local = it->second;
+                return true;
+            };
+
+            blockLocalEndpoints.clear();
+            bool localEndpointsOk = true;
+            for (std::uint32_t graphEdgeId : blockEdges) {
+                const auto &graphEdge = graphEdges[graphEdgeId];
+                std::uint32_t srcLocal = 0;
+                std::uint32_t dstLocal = 0;
+                if (!findIndexBlockLocal(graphEdge.src, srcLocal) ||
+                    !findIndexBlockLocal(graphEdge.dst, dstLocal)) {
+                    localEndpointsOk = false;
+                    break;
+                }
+                blockLocalEndpoints.push_back(
+                    spqr_index::GraphEdgeRecord{srcLocal, dstLocal});
+            }
+            if (!localEndpointsOk ||
+                blockLocalEndpoints.size() != blockEdges.size()) {
+                failed = true;
+                continue;
+            }
+
+            matched[indexBlock] = 1u;
+            ++matchedBlocks;
+            stagedBegins[indexBlock] = graph_index::require_spqr_count_size(
+                stagedEdges.size(), "SPQR block input-edge staging offset");
+            stagedCounts[indexBlock] = graph_index::require_spqr_count_size(
+                blockEdges.size(), "SPQR block input-edge count");
+            stagedEdges.insert(stagedEdges.end(),
+                               blockEdges.begin(),
+                               blockEdges.end());
+            stagedOrientations.insert(stagedOrientations.end(),
+                                      blockOrientations.begin(),
+                                      blockOrientations.end());
+            stagedLocalEndpoints.insert(stagedLocalEndpoints.end(),
+                                        blockLocalEndpoints.begin(),
+                                        blockLocalEndpoints.end());
+        }
+    }
+
+    if (failed || matchedBlocks != blockCount) {
+        index.block_input_edge_offsets.clear();
+        index.block_input_edges.clear();
+        index.block_input_edge_orientations.clear();
+        index.block_input_edge_local_endpoints.clear();
+        return false;
+    }
+
+    std::vector<std::uint32_t> offsets;
+    offsets.resize(static_cast<std::size_t>(blockCount) + 1u, 0u);
+    std::uint64_t total = 0;
+    for (std::uint32_t bi = 0; bi < blockCount; ++bi) {
+        offsets[bi] = graph_index::require_spqr_count(
+            total, "SPQR block input-edge offset");
+        if (stagedBegins[bi] == spqr_index::invalid_id) {
+            index.block_input_edge_offsets.clear();
+            index.block_input_edges.clear();
+            index.block_input_edge_orientations.clear();
+            index.block_input_edge_local_endpoints.clear();
+            return false;
+        }
+        total += stagedCounts[bi];
+    }
+    offsets[blockCount] = graph_index::require_spqr_count(
+        total, "SPQR block input-edge offset");
+
+    std::vector<std::uint32_t> edges;
+    std::vector<std::uint8_t> orientations;
+    std::vector<spqr_index::GraphEdgeRecord> localEndpoints;
+    edges.resize(graph_index::require_spqr_count(
+        total, "SPQR block input-edge total"));
+    orientations.resize(graph_index::require_spqr_count(
+        total, "SPQR block input-edge orientation total"));
+    localEndpoints.resize(graph_index::require_spqr_count(
+        total, "SPQR block input-edge local-endpoint total"));
+    for (std::uint32_t bi = 0; bi < blockCount; ++bi) {
+        const std::uint32_t begin = stagedBegins[bi];
+        const std::uint32_t count = stagedCounts[bi];
+        std::copy_n(stagedEdges.begin() + begin,
+                    count,
+                    edges.begin() + offsets[bi]);
+        std::copy_n(stagedOrientations.begin() + begin,
+                    count,
+                    orientations.begin() + offsets[bi]);
+        std::copy_n(stagedLocalEndpoints.begin() + begin,
+                    count,
+                    localEndpoints.begin() + offsets[bi]);
+    }
+
+    index.block_input_edge_offsets = std::move(offsets);
+    index.block_input_edges = std::move(edges);
+    index.block_input_edge_orientations = std::move(orientations);
+    index.block_input_edge_local_endpoints = std::move(localEndpoints);
+    return true;
 }
 
+static void runSpqrIndexCommand()
+{
+    auto &C = ctx();
+
+    auto envSet = [](const char *name) {
+        const char *value = std::getenv(name);
+        return value != nullptr && *value != '\0';
+    };
+    struct stat inputStat {};
+    struct stat outputStat {};
+    const bool sameOutput =
+        C.graphPath == C.outputPath ||
+        (::stat(C.graphPath.c_str(), &inputStat) == 0 &&
+         ::stat(C.outputPath.c_str(), &outputStat) == 0 &&
+         inputStat.st_dev == outputStat.st_dev &&
+         inputStat.st_ino == outputStat.st_ino);
+    const bool canFastCopy =
+        !envSet("BF_SPQRI_SECTION_CODEC") &&
+        !envSet("BF_SPQRI_ZSTD_LEVEL") &&
+        !envSet("BF_SPQRI_ZSTD_WORKERS") &&
+        !envSet("BF_SPQRI_ZSTD_CHUNK_BYTES") &&
+        !C.spqrTreeViewExplicit &&
+        !sameOutput &&
+        spqr_index::IndexedSpqrTree::is_current_binary_cache(C.graphPath);
+
+    if (canFastCopy)
+    {
+        copyBinaryFile(C.graphPath, C.outputPath);
+        std::cerr << "[spqr-index] wrote " << C.outputPath << "\n";
+        return;
+    }
+
+    spqr_index::LoadOptions loadOptions;
+    loadOptions.load_graph_components = true;
+    loadOptions.load_haplotypes = C.spqrHaplotypes;
+    auto index = std::make_unique<spqr_index::IndexedSpqrTree>(
+        spqr_index::IndexedSpqrTree::load(C.graphPath, loadOptions));
+    if (C.spqrTreeViewExplicit)
+        index->graph_view = C.spqrTreeView;
+
+    const bool hasBlockInputOrder =
+        !index->block_input_edge_offsets.empty() &&
+        !index->block_input_edges.empty() &&
+        index->block_input_edge_orientations.size() ==
+            index->block_input_edges.size() &&
+        index->block_input_edge_local_endpoints.size() ==
+            index->block_input_edges.size();
+    if (!hasBlockInputOrder)
+        populateSpqriBlockInputEdgeOrderFromBCTree(*index);
+    index->drop_bubble_edge_type_records();
+    index->save_binary(C.outputPath);
+    std::cerr << "[spqr-index] wrote " << C.outputPath << "\n";
+
+    index.release();
+}
+
+static void maybeLoadOptionalSpqrIndex()
+{
+    auto &C = ctx();
+    if (C.spqrIndexPath.empty())
+        return;
+
+    spqr_index::LoadOptions loadOptions;
+    loadOptions.skip_graph_edge_tables = true;
+    loadOptions.skip_graph_node_degrees = true;
+    loadOptions.prefer_precomputed_graph_node_numeric_lookup = true;
+    loadOptions.load_haplotypes = C.spqrHaplotypes;
+    if (C.bubbleType == Context::BubbleType::SUPERBUBBLE)
+    {
+        loadOptions.skip_real_edge_types = true;
+        loadOptions.eager_graph_node_name_lookup = true;
+        loadOptions.eager_block_hash_lookup = true;
+        loadOptions.eager_lookup_view_filter =
+            (C.inputFormat == Context::InputFormat::GfaDirected)
+                ? spqr_index::EagerLookupViewFilter::OrientedDirected
+                : spqr_index::EagerLookupViewFilter::OrientedBidirected;
+    }
+    else if (C.bubbleType == Context::BubbleType::SNARL &&
+             C.spCompressMode == Context::SpCompressMode::Off)
+    {
+        loadOptions.eager_graph_node_name_lookup = true;
+        loadOptions.eager_block_hash_lookup = true;
+        loadOptions.eager_lookup_view_filter =
+            spqr_index::EagerLookupViewFilter::RawOrParallelSubdivided;
+    }
+
+    C.spqrIndex = std::make_unique<spqr_index::IndexedSpqrTree>(
+        spqr_index::IndexedSpqrTree::load(C.spqrIndexPath, loadOptions));
+    C.spqrIndexHasCompleteBubbleEdgeTypes =
+        C.spqrIndex->has_complete_bubble_edge_types();
+    C.spqrIndexBubbleEdgeTypesChecked = true;
+}
 
 int main(int argc, char **argv)
 {
+    try
+    {
     rlimit rl;
     rl.rlim_cur = RLIM_INFINITY;
     rl.rlim_max = RLIM_INFINITY;
@@ -20121,9 +20574,9 @@ int main(int argc, char **argv)
 
         readArgs(argc, argv);
 
-        {
-            std::string err;
+        std::string err;
 
+        {
             if (!inputFileReadable(ctx().graphPath, err))
             {
                 std::cerr << "Error: cannot open input graph file '"
@@ -20151,7 +20604,24 @@ int main(int argc, char **argv)
                 }
             }
         }
+
+        if (!ctx().spqrIndexPath.empty() &&
+            !inputFileReadable(ctx().spqrIndexPath, err))
+        {
+            std::cerr << "Error: cannot open optional SPQR index file '"
+                      << ctx().spqrIndexPath << "' for reading: "
+                      << err << "\n";
+            return 1;
+        }
     }
+
+    if (ctx().bubbleType == Context::BubbleType::SPQR_INDEX)
+    {
+        runSpqrIndexCommand();
+        fastSuccessfulExit(0);
+    }
+
+    maybeLoadOptionalSpqrIndex();
 
     {
         MARK_SCOPE_MEM("io/read_graph");
@@ -20215,18 +20685,27 @@ int main(int argc, char **argv)
                   << std::endl;
     }
 
-    {
-        PROFILING_REPORT();
+    PROFILING_REPORT();
 
     logger::info("Process PeakRSS: {:.2f} GiB",
                  memtime::peakRSSBytes() / (1024.0 * 1024.0 * 1024.0));
 
-        mark::report();
-        if (!g_report_json_path.empty())
-        {
-            mark::report_to_json(g_report_json_path);
-        }
+    mark::report();
+    if (!g_report_json_path.empty())
+    {
+        mark::report_to_json(g_report_json_path);
     }
 
-    return 0;
+    fastSuccessfulExit(0);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+    catch (...)
+    {
+        std::cerr << "Error: unknown exception\n";
+        return 1;
+    }
 }
