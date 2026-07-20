@@ -16660,8 +16660,8 @@ namespace solver
                                         const int blockPlanThreads =
                                             (blk.spCompressHandle &&
                                              blk.macroTreeView.macros_len >= 1000000u)
-                                                ? P
-                                                : planThreads;
+                                            ? P
+                                            : planThreads;
                                         IntraPlan plan;
                                         plan.critical = blockPlanThreads > 1;
                                         plan.quantum = Q;
@@ -16672,10 +16672,10 @@ namespace solver
                                         BF_INSTR(auto __solve_t0 = std::chrono::high_resolution_clock::now();)
                                         SPQRsolve::solveSPQR(blk, *prep.cc, plan);
                                         BF_INSTR(
-                                        auto __solve_t1 = std::chrono::high_resolution_clock::now();
-                                        uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
-                                        profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
-                                        if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
+                                            auto __solve_t1 = std::chrono::high_resolution_clock::now();
+                                            uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
+                                            profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
+                                            if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
                                         )
                                     }
 
@@ -16683,11 +16683,11 @@ namespace solver
                                     prep.blk.reset();
                                     releaseBlockComponent(prep);
                                     BF_INSTR(
-                                    auto __destr_t1 = std::chrono::high_resolution_clock::now();
-                                    uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
-                                    profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
-                                    profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
-                                    if (bt_d) bt_d->destruct_ns = __dt_destr;
+                                        auto __destr_t1 = std::chrono::high_resolution_clock::now();
+                                        uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
+                                        profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
+                                        profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
+                                        if (bt_d) bt_d->destruct_ns = __dt_destr;
                                     )
 
                                     if (bufferingStringSnarls ||
@@ -16777,7 +16777,7 @@ namespace solver
                     {
                         std::vector<std::vector<std::string>> localSnarls;
                         std::vector<uint64_t> localFastSnarlPairs;
-                        std::vector<std::vector<uint64_t>> localFastSnarlCliques;
+                        std::vector<std::vector<uint32_t>> localFastSnarlCliques;
                         tls_snarl_buffer = &localSnarls;
                         tls_fast_snarl_pair_buffer =
                             C.fastSnarlPairsEnabled ? &localFastSnarlPairs : nullptr;
@@ -16807,21 +16807,21 @@ namespace solver
                                             BF_INSTR(auto __solve_t0 = std::chrono::high_resolution_clock::now();)
                                             SPQRsolve::solveSPQR(blk, *prep.cc, plan);
                                             BF_INSTR(
-                                            auto __solve_t1 = std::chrono::high_resolution_clock::now();
-                                            uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
-                                            profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
-                                            if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
+                                                auto __solve_t1 = std::chrono::high_resolution_clock::now();
+                                                uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
+                                                profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
+                                                if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
                                             )
                                         }
                                         BF_INSTR(auto __destr_t0 = std::chrono::high_resolution_clock::now();)
                                         prep.blk.reset();
                                         releaseBlockComponent(prep);
                                         BF_INSTR(
-                                        auto __destr_t1 = std::chrono::high_resolution_clock::now();
-                                        uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
-                                        profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
-                                        profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
-                                        if (bt_d) bt_d->destruct_ns = __dt_destr;
+                                            auto __destr_t1 = std::chrono::high_resolution_clock::now();
+                                            uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
+                                            profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
+                                            profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
+                                            if (bt_d) bt_d->destruct_ns = __dt_destr;
                                         )
                                         ++processed;
                                     }
@@ -16844,7 +16844,7 @@ namespace solver
                                 BlockData &blk = *prep.blk;
                                 if (blk.Gblk && blockNodeCount(blk) >= 3) {
                                     IntraPlan plan;
-                                    plan.critical = false; 
+                                    plan.critical = false;
                                     plan.quantum = Q;
                                     plan.numThreads = P;
                                     plan.activeIntraTaskloops = &activeIntraTaskloops;
@@ -16852,21 +16852,21 @@ namespace solver
                                     BF_INSTR(auto __solve_t0 = std::chrono::high_resolution_clock::now();)
                                     SPQRsolve::solveSPQR(blk, *prep.cc, plan);
                                     BF_INSTR(
-                                    auto __solve_t1 = std::chrono::high_resolution_clock::now();
-                                    uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
-                                    profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
-                                    if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
+                                        auto __solve_t1 = std::chrono::high_resolution_clock::now();
+                                        uint64_t __dt_solve = std::chrono::duration_cast<std::chrono::nanoseconds>(__solve_t1 - __solve_t0).count();
+                                        profiling_patch::BlockTiming *bt_disp = profiling_patch::try_get_block_timing(bid);
+                                        if (bt_disp) bt_disp->solve_total_ns = __dt_solve;
                                     )
                                 }
                                 BF_INSTR(auto __destr_t0 = std::chrono::high_resolution_clock::now();)
                                 prep.blk.reset();
                                 releaseBlockComponent(prep);
                                 BF_INSTR(
-                                auto __destr_t1 = std::chrono::high_resolution_clock::now();
-                                uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
-                                profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
-                                profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
-                                if (bt_d) bt_d->destruct_ns = __dt_destr;
+                                    auto __destr_t1 = std::chrono::high_resolution_clock::now();
+                                    uint64_t __dt_destr = std::chrono::duration_cast<std::chrono::nanoseconds>(__destr_t1 - __destr_t0).count();
+                                    profiling_patch::sub_destruct_ns.fetch_add(__dt_destr, std::memory_order_relaxed);
+                                    profiling_patch::BlockTiming *bt_d = profiling_patch::try_get_block_timing(bid);
+                                    if (bt_d) bt_d->destruct_ns = __dt_destr;
                                 )
                                 ++processed;
                             }
@@ -16929,10 +16929,53 @@ namespace solver
             auto &C = ctx();
             std::ostream *out_ptr = nullptr;
             std::ofstream out_file;
+            std::unique_ptr<spqr_index::IndexedSpqrTree> directIndex;
 
             std::vector<char> outBuffer;
 
-            if (C.outputPath.empty())
+            const bool directBinaryIndex =
+                !C.outputPath.empty() &&
+                spqr_index::detail::ends_with(C.outputPath, ".spqri");
+            const bool writeEndpointEdgeTypes =
+                spqr_index::graph_profile_is_raw_or_parallel_subdivided(
+                    C.spqrTreeView);
+            const std::size_t directGraphNodeCount =
+                static_cast<std::size_t>(C.G.numberOfNodes());
+            const bool directCompactGraphNames =
+                directBinaryIndex &&
+                C.node2name.empty() &&
+                C.nodeNumericNamesByIndex.size() == directGraphNodeCount &&
+                spqr_index::graph_profile_is_oriented_double(C.spqrTreeView);
+
+            if (directBinaryIndex)
+            {
+                directIndex = std::make_unique<spqr_index::IndexedSpqrTree>();
+                directIndex->format_version = "v0.4";
+                directIndex->format_url = "https://github.com/sebschmi/SPQR-tree-file-format";
+                directIndex->graph_view = spqr_index::canonical_graph_profile(C.spqrTreeView);
+
+                const std::size_t nodeCount =
+                    static_cast<std::size_t>(C.G.numberOfNodes());
+                const std::size_t edgeCount =
+                    static_cast<std::size_t>(C.G.numberOfEdges());
+                directIndex->strings.reserve(graph_index::checked_add_size(
+                    graph_index::checked_add_size(
+                        directCompactGraphNames ? 0u : nodeCount,
+                        edgeCount,
+                        "spqr-tree direct index string reserve"),
+                    1024u, "spqr-tree direct index string reserve"));
+                directIndex->component_nodes.reserve(nodeCount);
+                directIndex->real_edges.reserve(edgeCount);
+                directIndex->graph_edges.reserve(edgeCount);
+                if (writeEndpointEdgeTypes) {
+                    directIndex->graph_edge_type_pairs.reserve(edgeCount);
+                    directIndex->bubble_edge_types.reserve(edgeCount);
+                }
+
+                std::cerr << "[spqr-tree] Output: " << C.outputPath
+                          << " (direct .spqri index)\n";
+            }
+            else if (C.outputPath.empty())
             {
                 out_ptr = &std::cout;
                 std::cerr << "[spqr-tree] Output: stdout\n";
@@ -16954,25 +16997,28 @@ namespace solver
                 std::cerr << "[spqr-tree] Output: " << C.outputPath << "\n";
             }
 
-            std::ostream &out = *out_ptr;
+            if (!directBinaryIndex)
+            {
+                *out_ptr << "H v0.4 https://github.com/sebschmi/SPQR-tree-file-format\n";
+                *out_ptr << "X GRAPH_PROFILE "
+                         << spqr_index::canonical_graph_profile(C.spqrTreeView)
+                         << "\n";
+            }
 
-            out << "H v0.4 https://github.com/sebschmi/SPQR-tree-file-format\n";
-
+            graph_index::require_spqr_graph(C.G.numberOfNodes(),
+                                            C.G.numberOfEdges(),
+                                            "spqr-tree input graph");
 
             std::string prefix = "__BF__";
-            auto startsWith = [](const std::string &s, const std::string &p) -> bool
-            {
-                return s.size() >= p.size() && std::memcmp(s.data(), p.data(), p.size()) == 0;
-            };
 
             bool conflict = true;
-            while (conflict)
+            while (!directCompactGraphNames && conflict)
             {
                 conflict = false;
                 for (spqr_compat::node v : C.G.nodes)
                 {
                     const std::string &name = C.node2name[v];
-                    if (startsWith(name, prefix))
+                    if (name.rfind(prefix, 0) == 0)
                     {
                         conflict = true;
                         break;
@@ -16989,20 +17035,400 @@ namespace solver
                 return prefix + tag + std::to_string(x);
             };
 
+            std::vector<std::string> spqrOutputNodeName;
+            if (!directCompactGraphNames)
+            {
+                spqrOutputNodeName.resize(C.G.numberOfNodes());
+                for (spqr_compat::node v : C.G.nodes)
+                {
+                    const std::string &name = C.node2name[v];
+                    spqrOutputNodeName[v.idx] =
+                        (name == "_trash") ? makeId("N", v.idx) : name;
+                }
+            }
+            auto outNodeName = [&](spqr_compat::node v) -> const std::string&
+            {
+                return spqrOutputNodeName[v.idx];
+            };
+
+            std::vector<std::uint32_t> directNodeNameIds;
+            if (directBinaryIndex && !directCompactGraphNames)
+            {
+                directNodeNameIds.resize(C.G.numberOfNodes(), spqr_index::invalid_id);
+                for (spqr_compat::node v : C.G.nodes)
+                {
+                    directNodeNameIds[v.idx] = directIndex->intern(outNodeName(v));
+                }
+            }
+            auto graphNodeNameId = [&](spqr_compat::node v) -> std::uint32_t
+            {
+                if (directCompactGraphNames) {
+                    return static_cast<std::uint32_t>(v.idx);
+                }
+                return directNodeNameIds[v.idx];
+            };
+
+            auto appendHaplotypesToDirectIndex = [&]()
+            {
+                if (!directBinaryIndex || !C.spqrHaplotypes ||
+                    C.inputHaplotypePaths.empty() ||
+                    C.inputHaplotypeSteps.empty()) {
+                    return;
+                }
+                directIndex->haplotype_paths.reserve(C.inputHaplotypePaths.size());
+                directIndex->haplotype_steps.reserve(C.inputHaplotypeSteps.size());
+                auto intern_optional = [&](const std::string& value) -> std::uint32_t {
+                    if (value.empty()) return spqr_index::invalid_id;
+                    return directIndex->intern(value);
+                };
+                const std::size_t graph_node_count =
+                    static_cast<std::size_t>(C.G.numberOfNodes());
+                for (const InputHaplotypePath& in_path : C.inputHaplotypePaths)
+                {
+                    if (in_path.step_begin > in_path.step_end ||
+                        in_path.step_end > C.inputHaplotypeSteps.size()) {
+                        throw std::runtime_error(
+                            "input haplotype path range is invalid");
+                    }
+                    spqr_index::HaplotypePathRecord rec;
+                    rec.name = intern_optional(in_path.name);
+                    rec.sample = intern_optional(in_path.sample);
+                    rec.locus = intern_optional(in_path.locus);
+                    rec.haplotype = in_path.haplotype;
+                    rec.phase_block = in_path.phase_block;
+                    rec.sense = in_path.sense;
+                    rec.step_begin =
+                        static_cast<std::uint64_t>(directIndex->haplotype_steps.size());
+                    for (std::uint64_t i = in_path.step_begin;
+                         i < in_path.step_end;
+                         ++i) {
+                        const InputHaplotypeStep& in_step =
+                            C.inputHaplotypeSteps[static_cast<std::size_t>(i)];
+                        if (in_step.node >= graph_node_count ||
+                            in_step.is_reverse > 1u) {
+                            throw std::runtime_error(
+                                "input haplotype step references an invalid graph node");
+                        }
+                        spqr_index::HaplotypeStepRecord step;
+                        step.node = graphNodeNameId(spqr_compat::node(in_step.node));
+                        step.is_reverse = in_step.is_reverse;
+                        directIndex->haplotype_steps.push_back(step);
+                    }
+                    rec.step_end =
+                        static_cast<std::uint64_t>(directIndex->haplotype_steps.size());
+                    if (rec.step_end > rec.step_begin) {
+                        directIndex->haplotype_paths.push_back(rec);
+                    }
+                }
+                std::vector<InputHaplotypePath>().swap(C.inputHaplotypePaths);
+                std::vector<InputHaplotypeStep>().swap(C.inputHaplotypeSteps);
+            };
+
             uint64_t compCtr = 0;
             uint64_t blockCtr = 0;
+            uint64_t cutCtr = 0;
             uint64_t spqrNodeCtr = 0;
             uint64_t virtEdgeCtr = 0;
             uint64_t edgeCtr = 0;
-
+            const bool writeMacroTreeCache =
+                directBinaryIndex &&
+                spqr_index::graph_profile_is_parallel_subdivided(C.spqrTreeView);
+            static constexpr uint64_t macroTreeCacheMinEdges = 64;
             std::string line;
             line.reserve(256);
 
+            auto endpointTypeChar = [](EdgePartType type) -> char
+            {
+                if (type == EdgePartType::PLUS) return '+';
+                if (type == EdgePartType::MINUS) return '-';
+                return '.';
+            };
+
+            if (directBinaryIndex)
+            {
+                for (spqr_compat::edge e : C.G.edges)
+                {
+                    spqr_index::GraphEdgeRecord rec;
+                    rec.src = graphNodeNameId(C.G.source(e));
+                    rec.dst = graphNodeNameId(C.G.target(e));
+                    directIndex->graph_edges.push_back(rec);
+
+                    if (writeEndpointEdgeTypes) {
+                        const auto types = edgePartTypes(C, e);
+                        directIndex->graph_edge_type_pairs.push_back(
+                            static_cast<std::uint8_t>(
+                                (edgePartTypeToStoredEndpointType(types.first) << 4u) |
+                                (edgePartTypeToStoredEndpointType(types.second) & 0x0fu)));
+                    }
+                }
+
+                if (writeEndpointEdgeTypes && !directIndex->graph_edges.empty())
+                {
+                    auto encodePair = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t
+                    {
+                        if (a > b) std::swap(a, b);
+                        return (static_cast<std::uint64_t>(a) << 32) |
+                               static_cast<std::uint64_t>(b);
+                    };
+
+                    const std::size_t edge_count = directIndex->graph_edges.size();
+                    std::vector<std::uint64_t> pair_keys(edge_count);
+                    #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_count > 100000)
+                    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i)
+                    {
+                        const std::size_t i = static_cast<std::size_t>(i_i);
+                        const auto &edge = directIndex->graph_edges[i];
+                        pair_keys[i] = encodePair(edge.src, edge.dst);
+                    }
+
+#if defined(_OPENMP) && defined(__GLIBCXX__)
+                    __gnu_parallel::sort(pair_keys.begin(), pair_keys.end());
+#else
+                    std::sort(pair_keys.begin(), pair_keys.end());
+#endif
+
+                    std::vector<std::uint64_t> multi_pairs;
+                    for (std::size_t i = 1; i < pair_keys.size(); ++i)
+                    {
+                        if (pair_keys[i] == pair_keys[i - 1] &&
+                            (multi_pairs.empty() || multi_pairs.back() != pair_keys[i]))
+                        {
+                            multi_pairs.push_back(pair_keys[i]);
+                        }
+                    }
+                    std::vector<std::uint64_t>().swap(pair_keys);
+
+                    directIndex->graph_edge_multi_flags.assign(edge_count, 0);
+                    if (!multi_pairs.empty())
+                    {
+                        #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_count > 100000)
+                        for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i)
+                        {
+                            const std::size_t i = static_cast<std::size_t>(i_i);
+                            const auto &edge = directIndex->graph_edges[i];
+                            directIndex->graph_edge_multi_flags[i] =
+                                std::binary_search(multi_pairs.begin(), multi_pairs.end(),
+                                                   encodePair(edge.src, edge.dst)) ? 1u : 0u;
+                        }
+                    }
+                }
+            }
+
+            auto rangeBegin = [](std::size_t value, const char *what) -> std::uint32_t
+            {
+                return graph_index::require_spqr_count_size(value, what);
+            };
+
+            auto emitComponent = [&](const std::string &compName,
+                                     const std::vector<spqr_compat::node> &nodes)
+            {
+                if (directBinaryIndex)
+                {
+                    spqr_index::ComponentRecord rec;
+                    rec.name = directIndex->intern(compName);
+                    rec.node_begin = rangeBegin(directIndex->component_nodes.size(),
+                                                "SPQR direct index component node range");
+                    for (spqr_compat::node v : nodes)
+                        directIndex->component_nodes.push_back(graphNodeNameId(v));
+                    rec.node_end = rangeBegin(directIndex->component_nodes.size(),
+                                              "SPQR direct index component node range");
+                    directIndex->components.push_back(rec);
+                    return;
+                }
+
+                line.clear();
+                line.append("G ");
+                line.append(compName);
+                for (spqr_compat::node v : nodes)
+                {
+                    line.push_back(' ');
+                    line.append(outNodeName(v));
+                }
+                line.push_back('\n');
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
+            auto emitBlock = [&](const std::string &blockName,
+                                 const std::string &compName,
+                                 const std::vector<spqr_compat::node> &nodes,
+                                 const auto &origNodeOf)
+            {
+                if (directBinaryIndex)
+                {
+                    spqr_index::BlockRecord rec;
+                    rec.name = directIndex->intern(blockName);
+                    rec.node_begin = rangeBegin(directIndex->block_nodes.size(),
+                                                "SPQR direct index block node range");
+                    for (spqr_compat::node v : nodes)
+                        directIndex->block_nodes.push_back(graphNodeNameId(origNodeOf(v)));
+                    rec.node_end = rangeBegin(directIndex->block_nodes.size(),
+                                              "SPQR direct index block node range");
+                    directIndex->blocks.push_back(rec);
+                    return;
+                }
+
+                line.clear();
+                line.append("B ");
+                line.append(blockName);
+                line.push_back(' ');
+                line.append(compName);
+                for (spqr_compat::node v : nodes)
+                {
+                    line.push_back(' ');
+                    line.append(outNodeName(origNodeOf(v)));
+                }
+                line.push_back('\n');
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
+            auto emitCut = [&](const std::string &cutName,
+                               const std::vector<std::string> &blockNames)
+            {
+                if (directBinaryIndex)
+                {
+                    spqr_index::CutRecord rec;
+                    rec.name = directIndex->intern(cutName);
+                    rec.block_begin = rangeBegin(directIndex->cut_blocks.size(),
+                                                 "SPQR direct index cut block range");
+                    for (const std::string &blockName : blockNames)
+                        directIndex->cut_blocks.push_back(directIndex->intern(blockName));
+                    rec.block_end = rangeBegin(directIndex->cut_blocks.size(),
+                                               "SPQR direct index cut block range");
+                    directIndex->cuts.push_back(rec);
+                    return;
+                }
+
+                line.clear();
+                line.append("C ");
+                line.append(cutName);
+                for (const std::string &blockName : blockNames)
+                {
+                    line.push_back(' ');
+                    line.append(blockName);
+                }
+                line.push_back('\n');
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
+            auto emitTreeNode = [&](char typeChar,
+                                    const std::string &spqrName,
+                                    const std::string &blockName,
+                                    const std::vector<spqr_compat::node> &nodes,
+                                    const auto &origNodeOf)
+            {
+                if (directBinaryIndex)
+                {
+                    spqr_index::TreeNodeRecord rec;
+                    rec.name = directIndex->intern(spqrName);
+                    rec.block = directIndex->intern(blockName);
+                    rec.type = static_cast<std::uint8_t>(typeChar);
+                    rec.node_begin = rangeBegin(directIndex->tree_node_original_nodes.size(),
+                                                "SPQR direct index tree-node original range");
+                    for (spqr_compat::node v : nodes)
+                        directIndex->tree_node_original_nodes.push_back(
+                            graphNodeNameId(origNodeOf(v)));
+                    rec.node_end = rangeBegin(directIndex->tree_node_original_nodes.size(),
+                                              "SPQR direct index tree-node original range");
+                    directIndex->tree_nodes.push_back(rec);
+                    return;
+                }
+
+                line.clear();
+                line.push_back(typeChar);
+                line.push_back(' ');
+                line.append(spqrName);
+                line.push_back(' ');
+                line.append(blockName);
+                for (spqr_compat::node v : nodes)
+                {
+                    line.push_back(' ');
+                    line.append(outNodeName(origNodeOf(v)));
+                }
+                line.push_back('\n');
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+            };
+
             auto writeE = [&](const std::string &edgeName,
                             const std::string &container,
-                            const std::string &uName,
-                            const std::string &vName)
+                            spqr_compat::node uOrig,
+                            spqr_compat::node vOrig,
+                            spqr_compat::edge originalEdge)
             {
+                if (originalEdge)
+                {
+                    std::pair<EdgePartType, EdgePartType> types{
+                        EdgePartType::NONE, EdgePartType::NONE};
+                    if (writeEndpointEdgeTypes) {
+                        types = edgePartTypes(C, originalEdge);
+                        if (uOrig == C.G.target(originalEdge) &&
+                            vOrig == C.G.source(originalEdge) &&
+                            C.G.source(originalEdge) != C.G.target(originalEdge))
+                        {
+                            std::swap(types.first, types.second);
+                        }
+                    }
+                    if (directBinaryIndex)
+                    {
+                        spqr_index::RealEdgeRecord rec;
+                        rec.name = directIndex->intern(edgeName);
+                        rec.container = directIndex->intern(container);
+                        rec.src = graphNodeNameId(uOrig);
+                        rec.dst = graphNodeNameId(vOrig);
+                        directIndex->real_edges.push_back(rec);
+
+                        if (types.first != EdgePartType::NONE &&
+                            types.second != EdgePartType::NONE)
+                        {
+                            spqr_index::BubbleEdgeTypeRecord typeRec;
+                            typeRec.edge = rec.name;
+                            typeRec.src_type =
+                                edgePartTypeToStoredEndpointType(types.first);
+                            typeRec.dst_type =
+                                edgePartTypeToStoredEndpointType(types.second);
+                            directIndex->bubble_edge_types.push_back(typeRec);
+                        }
+                        return;
+                    }
+
+                    line.clear();
+                    line.append("E ");
+                    line.append(edgeName);
+                    line.push_back(' ');
+                    line.append(container);
+                    line.push_back(' ');
+                    line.append(outNodeName(uOrig));
+                    line.push_back(' ');
+                    line.append(outNodeName(vOrig));
+                    line.push_back('\n');
+                    out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+
+                    if (types.first != EdgePartType::NONE &&
+                        types.second != EdgePartType::NONE)
+                    {
+                        line.clear();
+                        line.append("X BF_EDGE_TYPE ");
+                        line.append(edgeName);
+                        line.push_back(' ');
+                        line.push_back(endpointTypeChar(types.first));
+                        line.push_back(' ');
+                        line.push_back(endpointTypeChar(types.second));
+                        line.push_back('\n');
+                        out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
+                    }
+                    return;
+                }
+
+                if (directBinaryIndex)
+                {
+                    spqr_index::RealEdgeRecord rec;
+                    rec.name = directIndex->intern(edgeName);
+                    rec.container = directIndex->intern(container);
+                    rec.src = graphNodeNameId(uOrig);
+                    rec.dst = graphNodeNameId(vOrig);
+                    directIndex->real_edges.push_back(rec);
+                    return;
+                }
+
                 // E <edge> <container> <u> <v>\n
                 line.clear();
                 line.append("E ");
@@ -17010,19 +17436,31 @@ namespace solver
                 line.push_back(' ');
                 line.append(container);
                 line.push_back(' ');
-                line.append(uName);
+                line.append(outNodeName(uOrig));
                 line.push_back(' ');
-                line.append(vName);
+                line.append(outNodeName(vOrig));
                 line.push_back('\n');
-                out.write(line.data(), static_cast<std::streamsize>(line.size()));
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
             };
 
             auto writeV = [&](const std::string &vName,
                             const std::string &a,
                             const std::string &b,
-                            const std::string &uName,
-                            const std::string &vName2)
+                            spqr_compat::node uOrig,
+                            spqr_compat::node vOrig)
             {
+                if (directBinaryIndex)
+                {
+                    spqr_index::VirtualEdgeRecord rec;
+                    rec.name = directIndex->intern(vName);
+                    rec.node1 = directIndex->intern(a);
+                    rec.node2 = directIndex->intern(b);
+                    rec.pole1 = graphNodeNameId(uOrig);
+                    rec.pole2 = graphNodeNameId(vOrig);
+                    directIndex->virtual_edges.push_back(rec);
+                    return;
+                }
+
                 // V <virtEdge> <spqrNode> <spqrNode> <u> <v>\n
                 line.clear();
                 line.append("V ");
@@ -17032,15 +17470,315 @@ namespace solver
                 line.push_back(' ');
                 line.append(b);
                 line.push_back(' ');
-                line.append(uName);
+                line.append(outNodeName(uOrig));
                 line.push_back(' ');
-                line.append(vName2);
+                line.append(outNodeName(vOrig));
                 line.push_back('\n');
-                out.write(line.data(), static_cast<std::streamsize>(line.size()));
+                out_ptr->write(line.data(), static_cast<std::streamsize>(line.size()));
             };
 
-            spqr_compat::NodeArray<int> component(C.G, -1);
-            int numCC = spqr_compat::connectedComponents(C.G, component);
+            auto appendMacroTreeCache =
+                [&](std::uint32_t blockIndex,
+                    const spqr_compat::Graph &blockGraph,
+                    const std::vector<std::uint32_t> &inputEdgeIds) -> bool
+                {
+                    if (!writeMacroTreeCache || !directIndex) return false;
+                    const std::uint32_t n_blk = graph_index::require_spqr_count_size(
+                        blockGraph.numberOfNodes(), "SPQR macro-cache block node count");
+                    const std::uint32_t edge_count = graph_index::require_spqr_count_size(
+                        blockGraph.numberOfEdges(), "SPQR macro-cache block edge count");
+                    if (static_cast<std::uint64_t>(edge_count) < macroTreeCacheMinEdges)
+                        return false;
+                    if (n_blk < 3 || edge_count == 0) return false;
+                    if (inputEdgeIds.size() != edge_count) return false;
+
+                    std::vector<std::uint8_t> contractible(n_blk, 0);
+                    for (spqr_compat::node vB : blockGraph.nodes)
+                    {
+                        if (blockGraph.degree(vB) == 2u)
+                            contractible[vB.idx] = 1u;
+                    }
+
+                    std::vector<SpCompressInputEdge> edges;
+                    edges.reserve(edge_count);
+                    std::uint32_t fid = 0;
+                    for (spqr_compat::edge eB : blockGraph.edges)
+                    {
+                        edges.push_back(SpCompressInputEdge{
+                            static_cast<std::uint32_t>(blockGraph.source(eB).idx),
+                            static_cast<std::uint32_t>(blockGraph.target(eB).idx),
+                            fid++});
+                    }
+
+                    SpCompressHandle *raw_handle =
+                        sp_compress_ffi(n_blk,
+                                        edges.empty() ? nullptr : edges.data(),
+                                        edge_count,
+                                        edge_count == 0 ? 0u : edge_count - 1u,
+                                        contractible.data(),
+                                        n_blk,
+                                        1);
+                    if (!raw_handle || sp_compress_success(raw_handle) == 0)
+                    {
+                        if (raw_handle) sp_compress_free(raw_handle);
+                        return false;
+                    }
+                    std::unique_ptr<SpCompressHandle, SpCompressHandleDeleter>
+                        handle(raw_handle);
+                    SpCompressTreeView view = sp_compress_get_tree(raw_handle);
+                    if (view.macros_len == 0)
+                        return false;
+                    if (view.input_endpoints_len !=
+                        2u * static_cast<std::uint64_t>(edge_count))
+                        return false;
+
+                    spqr_index::MacroCacheBlockRecord rec{};
+                    rec.block = blockIndex;
+                    if (view.stats.fully_sp_reducible != 0) {
+                        rec.flags |=
+                            spqr_index::macro_cache_block_fully_sp_reducible_flag;
+                    }
+
+                    auto u64_size = [](std::size_t value) -> std::uint64_t {
+                        return static_cast<std::uint64_t>(value);
+                    };
+
+                    rec.macro_begin = u64_size(directIndex->macro_cache_nodes.size());
+                    for (std::uint64_t i = 0; i < view.macros_len; ++i)
+                    {
+                        const SpCompressNode &node = view.macros_ptr[i];
+                        spqr_index::MacroCacheNodeRecord out{};
+                        out.kind = node.kind;
+                        out.left = node.left;
+                        out.right = node.right;
+                        out.children_offset = node.children_offset;
+                        out.children_count = node.children_count;
+                        directIndex->macro_cache_nodes.push_back(out);
+                    }
+                    rec.macro_end = u64_size(directIndex->macro_cache_nodes.size());
+
+                    rec.child_begin = u64_size(directIndex->macro_cache_children.size());
+                    if (view.children_len != 0 && view.children_ptr != nullptr)
+                    {
+                        directIndex->macro_cache_children.insert(
+                            directIndex->macro_cache_children.end(),
+                            view.children_ptr,
+                            view.children_ptr + view.children_len);
+                    }
+                    rec.child_end = u64_size(directIndex->macro_cache_children.size());
+
+                    rec.core_edge_begin =
+                        u64_size(directIndex->macro_cache_core_edges.size());
+                    if (view.core_edges_len != 0 && view.core_edges_ptr != nullptr)
+                    {
+                        for (std::uint64_t i = 0; i < view.core_edges_len; ++i)
+                        {
+                            const SpCompressCoreEdge &edge = view.core_edges_ptr[i];
+                            spqr_index::MacroCacheCoreEdgeRecord out{};
+                            out.u = edge.u;
+                            out.v = edge.v;
+                            out.child = edge.child;
+                            directIndex->macro_cache_core_edges.push_back(out);
+                        }
+                    }
+                    rec.core_edge_end =
+                        u64_size(directIndex->macro_cache_core_edges.size());
+
+                    rec.core_node_begin =
+                        u64_size(directIndex->macro_cache_core_nodes.size());
+                    if (view.core_nodes_len != 0 && view.core_nodes_ptr != nullptr)
+                    {
+                        directIndex->macro_cache_core_nodes.insert(
+                            directIndex->macro_cache_core_nodes.end(),
+                            view.core_nodes_ptr,
+                            view.core_nodes_ptr + view.core_nodes_len);
+                    }
+                    rec.core_node_end =
+                        u64_size(directIndex->macro_cache_core_nodes.size());
+
+                    rec.input_endpoint_begin =
+                        u64_size(directIndex->macro_cache_input_endpoints.size());
+                    if (view.input_endpoints_len != 0 &&
+                        view.input_endpoints_ptr != nullptr)
+                    {
+                        directIndex->macro_cache_input_endpoints.insert(
+                            directIndex->macro_cache_input_endpoints.end(),
+                            view.input_endpoints_ptr,
+                            view.input_endpoints_ptr + view.input_endpoints_len);
+                    }
+                    rec.input_endpoint_end =
+                        u64_size(directIndex->macro_cache_input_endpoints.size());
+
+                    directIndex->macro_cache_input_edge_ids.insert(
+                        directIndex->macro_cache_input_edge_ids.end(),
+                        inputEdgeIds.begin(),
+                        inputEdgeIds.end());
+
+                    std::uint32_t coreInvLen = 0;
+                    const std::uint32_t *coreInv =
+                        sp_compress_core_node_inv(raw_handle, &coreInvLen);
+                    rec.core_node_inv_begin =
+                        u64_size(directIndex->macro_cache_core_node_inv.size());
+                    if (coreInvLen != 0 && coreInv != nullptr)
+                    {
+                        directIndex->macro_cache_core_node_inv.insert(
+                            directIndex->macro_cache_core_node_inv.end(),
+                            coreInv,
+                            coreInv + coreInvLen);
+                    }
+                    rec.core_node_inv_end =
+                        u64_size(directIndex->macro_cache_core_node_inv.size());
+
+                    const SpqrTree *coreTree =
+                        sp_compress_get_core_spqr(raw_handle);
+                    if (coreTree != nullptr)
+                    {
+                        std::uint32_t coreNodeCount = 0;
+                        std::uint32_t coreRoot = spqr_index::invalid_id;
+                        spqr_tree_info(coreTree, &coreNodeCount, &coreRoot);
+                        if (coreNodeCount != 0)
+                        {
+                            rec.core_root = coreRoot;
+                            rec.core_tree_node_count = coreNodeCount;
+                            const std::uint8_t *types =
+                                spqr_tree_node_types_raw(coreTree);
+                            const std::uint32_t *parents =
+                                spqr_tree_node_parents_raw(coreTree);
+                            const std::uint32_t *childOffsets =
+                                spqr_tree_children_offsets_raw(coreTree);
+                            std::uint32_t childrenLen = 0;
+                            const std::uint32_t *children =
+                                spqr_tree_children_raw(coreTree, &childrenLen);
+                            const std::uint32_t *skelOffsets =
+                                spqr_tree_skeleton_offsets_raw(coreTree);
+                            std::uint32_t skelEdgesLen = 0;
+                            const SkeletonEdge *skelEdges =
+                                spqr_tree_skeleton_edges_raw(coreTree,
+                                                             &skelEdgesLen);
+                            const std::uint32_t *mappingOffsets = nullptr;
+                            const std::uint32_t *mapping = nullptr;
+                            std::uint32_t mappingLen = 0;
+                            spqr_tree_node_mapping_raw(coreTree,
+                                                       &mappingOffsets,
+                                                       &mapping,
+                                                       &mappingLen);
+                            const std::uint32_t *skelNumNodes =
+                                spqr_tree_skeleton_num_nodes_raw(coreTree);
+
+                            if (!types || !parents || !childOffsets ||
+                                !skelOffsets || !mappingOffsets ||
+                                !skelNumNodes ||
+                                (childrenLen != 0 && !children) ||
+                                (skelEdgesLen != 0 && !skelEdges) ||
+                                (mappingLen != 0 && !mapping))
+                            {
+                                return false;
+                            }
+
+                            rec.core_tree_node_type_begin =
+                                u64_size(directIndex->macro_cache_core_tree_node_types.size());
+                            directIndex->macro_cache_core_tree_node_types.insert(
+                                directIndex->macro_cache_core_tree_node_types.end(),
+                                types,
+                                types + coreNodeCount);
+                            rec.core_tree_node_type_end =
+                                u64_size(directIndex->macro_cache_core_tree_node_types.size());
+
+                            rec.core_tree_parent_begin =
+                                u64_size(directIndex->macro_cache_core_tree_parents.size());
+                            directIndex->macro_cache_core_tree_parents.insert(
+                                directIndex->macro_cache_core_tree_parents.end(),
+                                parents,
+                                parents + coreNodeCount);
+                            rec.core_tree_parent_end =
+                                u64_size(directIndex->macro_cache_core_tree_parents.size());
+
+                            rec.core_tree_child_offset_begin =
+                                u64_size(directIndex->macro_cache_core_tree_child_offsets.size());
+                            directIndex->macro_cache_core_tree_child_offsets.insert(
+                                directIndex->macro_cache_core_tree_child_offsets.end(),
+                                childOffsets,
+                                childOffsets + static_cast<std::size_t>(coreNodeCount) + 1u);
+                            rec.core_tree_child_offset_end =
+                                u64_size(directIndex->macro_cache_core_tree_child_offsets.size());
+
+                            rec.core_tree_child_begin =
+                                u64_size(directIndex->macro_cache_core_tree_children.size());
+                            if (childrenLen != 0)
+                            {
+                                directIndex->macro_cache_core_tree_children.insert(
+                                    directIndex->macro_cache_core_tree_children.end(),
+                                    children,
+                                    children + childrenLen);
+                            }
+                            rec.core_tree_child_end =
+                                u64_size(directIndex->macro_cache_core_tree_children.size());
+
+                            rec.core_tree_skeleton_offset_begin =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_offsets.size());
+                            directIndex->macro_cache_core_tree_skeleton_offsets.insert(
+                                directIndex->macro_cache_core_tree_skeleton_offsets.end(),
+                                skelOffsets,
+                                skelOffsets + static_cast<std::size_t>(coreNodeCount) + 1u);
+                            rec.core_tree_skeleton_offset_end =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_offsets.size());
+
+                            rec.core_tree_skeleton_edge_begin =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_edges.size());
+                            for (std::uint32_t i = 0; i < skelEdgesLen; ++i)
+                            {
+                                const SkeletonEdge &edge = skelEdges[i];
+                                spqr_index::MacroCacheSkeletonEdgeRecord out{};
+                                out.src = edge.src;
+                                out.dst = edge.dst;
+                                out.real_edge = edge.real_edge;
+                                out.virtual_id = edge.virtual_id;
+                                out.twin_tree_node = edge.twin_tree_node;
+                                out.twin_edge_idx = edge.twin_edge_idx;
+                                directIndex->macro_cache_core_tree_skeleton_edges.push_back(out);
+                            }
+                            rec.core_tree_skeleton_edge_end =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_edges.size());
+
+                            rec.core_tree_mapping_offset_begin =
+                                u64_size(directIndex->macro_cache_core_tree_mapping_offsets.size());
+                            directIndex->macro_cache_core_tree_mapping_offsets.insert(
+                                directIndex->macro_cache_core_tree_mapping_offsets.end(),
+                                mappingOffsets,
+                                mappingOffsets + static_cast<std::size_t>(coreNodeCount) + 1u);
+                            rec.core_tree_mapping_offset_end =
+                                u64_size(directIndex->macro_cache_core_tree_mapping_offsets.size());
+
+                            rec.core_tree_mapping_begin =
+                                u64_size(directIndex->macro_cache_core_tree_mapping.size());
+                            if (mappingLen != 0)
+                            {
+                                directIndex->macro_cache_core_tree_mapping.insert(
+                                    directIndex->macro_cache_core_tree_mapping.end(),
+                                    mapping,
+                                    mapping + mappingLen);
+                            }
+                            rec.core_tree_mapping_end =
+                                u64_size(directIndex->macro_cache_core_tree_mapping.size());
+
+                            rec.core_tree_skeleton_num_nodes_begin =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_num_nodes.size());
+                            directIndex->macro_cache_core_tree_skeleton_num_nodes.insert(
+                                directIndex->macro_cache_core_tree_skeleton_num_nodes.end(),
+                                skelNumNodes,
+                                skelNumNodes + coreNodeCount);
+                            rec.core_tree_skeleton_num_nodes_end =
+                                u64_size(directIndex->macro_cache_core_tree_skeleton_num_nodes.size());
+                        }
+                    }
+
+                    directIndex->macro_cache_blocks.push_back(rec);
+                    return true;
+                };
+
+                spqr_compat::NodeArray<uint32_t> component(
+                C.G, graph_index::invalid<uint32_t>());
+            const uint32_t numCC = spqr_compat::connectedComponents(C.G, component);
             std::cerr << "[spqr-tree] Graph has " << numCC << " connected components.\n";
 
             // Group original nodes by component
@@ -17053,13 +17791,13 @@ namespace solver
             // Track which edges were output already to avoid duplicating self-loops
             std::unordered_set<spqr_compat::edge> self_loops_output;
 
-            const int kBlockProgressStep = 256;
-            const int kLogEachBlockIfLeq = 50;
-            const int kLargeBlockNodes = 200000; 
-            const int kLargeBlockEdges = 500000;
+            constexpr size_t kBlockProgressStep = 256;
+            constexpr size_t kLogEachBlockIfLeq = 50;
+            constexpr uint32_t kLargeBlockNodes = 200000;
+            constexpr uint32_t kLargeBlockEdges = 500000;
 
             // Process each connected component
-            for (int ccIdx = 0; ccIdx < numCC; ++ccIdx)
+            for (uint32_t ccIdx = 0; ccIdx < numCC; ++ccIdx)
             {
                 std::string compName = makeId("G", compCtr++);
 
@@ -17067,16 +17805,12 @@ namespace solver
                         << " (" << compName << "), nodes=" << ccNodes[ccIdx].size()
                         << " ...\n";
 
-                out << "G " << compName;
-                for (spqr_compat::node v : ccNodes[ccIdx])
-                {
-                    out << " " << C.node2name[v];
-                }
-                out << "\n";
+                emitComponent(compName, ccNodes[ccIdx]);
 
                 spqr_compat::Graph ccGraph;
                 spqr_compat::NodeArray<spqr_compat::node> ccToOrig(ccGraph);
                 spqr_compat::NodeArray<spqr_compat::node> origToCc(C.G, nullptr);
+                spqr_compat::EdgeArray<spqr_compat::edge> ccEdgeToOrig(ccGraph, nullptr);
 
                 for (spqr_compat::node vOrig : ccNodes[ccIdx])
                 {
@@ -17109,7 +17843,8 @@ namespace solver
                         spqr_compat::node tgtCc = origToCc[tgt];
                         if (srcCc && tgtCc)
                         {
-                            ccGraph.newEdge(srcCc, tgtCc);
+                            spqr_compat::edge eCc = ccGraph.newEdge(srcCc, tgtCc);
+                            ccEdgeToOrig[eCc] = e;
                         }
                         else
                         {
@@ -17120,6 +17855,10 @@ namespace solver
 
                 std::cerr << "[spqr-tree]   subgraph |V|=" << ccGraph.numberOfNodes()
                         << " |E|=" << ccGraph.numberOfEdges() << "\n";
+
+                graph_index::require_spqr_graph(ccGraph.numberOfNodes(),
+                                                ccGraph.numberOfEdges(),
+                                                "spqr-tree connected component graph");
 
                 if (ccGraph.numberOfNodes() == 1)
                 {
@@ -17133,7 +17872,7 @@ namespace solver
                         (void)localE;
 
                         std::string eName = makeId("E", edgeCtr++);
-                        writeE(eName, compName, C.node2name[uOrig], C.node2name[vOrig]);
+                        writeE(eName, compName, uOrig, vOrig, ccEdgeToOrig[eCc]);
                     }
 
                     std::cerr << "[spqr-tree]   CC done (single-node component)\n";
@@ -17144,11 +17883,28 @@ namespace solver
                 spqr_compat::BCTree bc(ccGraph);
 
                 std::map<spqr_compat::node, std::string> bcNodeToBlockName;
-                std::unordered_map<uint32_t, std::vector<spqr_compat::node>> cutVertexBlocks;
-                cutVertexBlocks.reserve(bc.numberOfCComps());
+                std::map<spqr_compat::node, std::uint32_t> bcNodeToBlockIndex;
+                const uint32_t numBlocks = bc.numberOfBComps();
+                std::vector<std::vector<spqr_compat::edge>> blockHEdges(numBlocks);
 
-                spqr_compat::NodeArray<int> markCc(ccGraph, 0);
-                int stampCc = 1;
+                std::vector<spqr_compat::node> cutNodes;
+                spqr_compat::NodeArray<uint32_t> cutOrdinal(
+                    ccGraph, graph_index::invalid<uint32_t>());
+                for (spqr_compat::node vCc : ccGraph.nodes)
+                {
+                    if (bc.typeOfGNode(vCc) == spqr_compat::BCTree::GNodeType::CutVertex)
+                    {
+                        cutOrdinal[vCc] = graph_index::require_spqr_count_size(
+                            cutNodes.size(), "spqr-tree cut vertex table");
+                        cutNodes.push_back(vCc);
+                    }
+                }
+                std::vector<std::vector<std::string>> cutBlockNamesByOrdinal(cutNodes.size());
+
+                spqr_compat::NodeArray<uint32_t> markCc(ccGraph, 0);
+                spqr_compat::NodeArray<uint32_t> blockLocalCc(
+                    ccGraph, spqr_index::invalid_id);
+                uint32_t stampCc = 1;
                 std::vector<spqr_compat::node> tmpNodes;
                 tmpNodes.reserve(1024);
 
@@ -17163,13 +17919,13 @@ namespace solver
 
                     std::string blockName = makeId("B", blockCtr++);
                     bcNodeToBlockName[bNode] = blockName;
-
-                    out << "B " << blockName << " " << compName;
+                    std::vector<spqr_compat::edge> &hEdgesForBlock = blockHEdges[bNode.idx];
+                    hEdgesForBlock = bc.hEdges(bNode);
 
                     tmpNodes.clear();
                     ++stampCc;
 
-                    for (spqr_compat::edge hEdge : bc.hEdges(bNode))
+                    for (spqr_compat::edge hEdge : hEdgesForBlock)
                     {
                         spqr_compat::edge eCc = bc.original(hEdge);
                         if (!eCc)
@@ -17190,45 +17946,112 @@ namespace solver
                         }
                     }
 
-                    for (spqr_compat::node vCc : tmpNodes)
-                    {
-                        spqr_compat::node vOrig = ccToOrig[vCc];
-                        out << " " << C.node2name[vOrig];
+                        const std::uint32_t directBlockIndex =
+                            directBinaryIndex
+                                ? graph_index::require_spqr_count_size(
+                                      directIndex->blocks.size(),
+                                      "SPQR direct index block count")
+                                : spqr_index::invalid_id;
+                            emitBlock(blockName, compName, tmpNodes,
+                                      [&](spqr_compat::node vCc) -> spqr_compat::node
+                                          {
+                                              return ccToOrig[vCc];
+                                          });
+                            if (directBinaryIndex)
+                            {
+                                bcNodeToBlockIndex[bNode] = directBlockIndex;
+                                if (directIndex->block_input_edge_offsets.empty())
+                                    directIndex->block_input_edge_offsets.push_back(0u);
+                                for (std::uint32_t local = 0;
+                                     local < tmpNodes.size();
+                                     ++local)
+                                {
+                                    blockLocalCc[tmpNodes[local]] = local;
+                                }
+                                for (spqr_compat::edge hEdge : hEdgesForBlock)
+                                {
+                                    spqr_compat::edge eCc = bc.original(hEdge);
+                                    if (!eCc) continue;
+                                    spqr_compat::edge eOrig = ccEdgeToOrig[eCc];
+                                    if (!eOrig ||
+                                        static_cast<std::uint64_t>(eOrig.idx) >
+                                            std::numeric_limits<std::uint32_t>::max())
+                                    {
+                                        throw std::runtime_error(
+                                            "SPQR direct index block input-edge id out of range");
+                                    }
+                                    directIndex->block_input_edges.push_back(
+                                        static_cast<std::uint32_t>(eOrig.idx));
+                                    const spqr_compat::node srcCc =
+                                        ccGraph.source(eCc);
+                                    const spqr_compat::node dstCc =
+                                        ccGraph.target(eCc);
+                                    const std::uint32_t srcLocal =
+                                        blockLocalCc[srcCc];
+                                    const std::uint32_t dstLocal =
+                                        blockLocalCc[dstCc];
+                                    if (srcLocal == spqr_index::invalid_id ||
+                                        dstLocal == spqr_index::invalid_id)
+                                    {
+                                        throw std::runtime_error(
+                                            "SPQR direct index block input-edge "
+                                            "local endpoint missing");
+                                    }
+                                    directIndex->block_input_edge_local_endpoints
+                                        .push_back(
+                                            spqr_index::GraphEdgeRecord{
+                                                srcLocal, dstLocal});
+                                    const spqr_compat::node bctreeSrc =
+                                        ccToOrig[srcCc];
+                                    const spqr_compat::node bctreeDst =
+                                        ccToOrig[dstCc];
+                                    const spqr_compat::node graphSrc =
+                                        ctx().G.source(eOrig);
+                                    const spqr_compat::node graphDst =
+                                        ctx().G.target(eOrig);
+                                    if (bctreeSrc == graphSrc &&
+                                        bctreeDst == graphDst) {
+                                        directIndex
+                                            ->block_input_edge_orientations
+                                            .push_back(1u);
+                                    } else if (bctreeSrc == graphDst &&
+                                               bctreeDst == graphSrc) {
+                                        directIndex
+                                            ->block_input_edge_orientations
+                                            .push_back(0u);
+                                    } else {
+                                        throw std::runtime_error(
+                                            "SPQR direct index block input-edge "
+                                            "orientation mismatch");
+                                    }
+                                }
+                                directIndex->block_input_edge_offsets.push_back(
+                                    graph_index::require_spqr_count_size(
+                                        directIndex->block_input_edges.size(),
+                                        "SPQR direct index block input-edge order"));
+                            }
 
-                        if (bc.typeOfGNode(vCc) == spqr_compat::BCTree::GNodeType::CutVertex)
-                        {
-                            cutVertexBlocks[vCc.idx].push_back(bNode);
-                        }
+                        for (spqr_compat::node vCc : tmpNodes)
+                    {
+                        const uint32_t ord = cutOrdinal[vCc];
+                        if (ord != graph_index::invalid<uint32_t>())
+                            cutBlockNamesByOrdinal[ord].push_back(blockName);
                     }
-                    out << "\n";
                 }
 
                 std::cerr << "[spqr-tree]   blocks: " << bcNodeToBlockName.size() << "\n";
 
                 // Write C-lines (cut nodes)
-                for (spqr_compat::node vCc : ccGraph.nodes)
+                for (std::size_t i = 0; i < cutNodes.size(); ++i)
                 {
-                    if (bc.typeOfGNode(vCc) == spqr_compat::BCTree::GNodeType::CutVertex)
-                    {
-                        spqr_compat::node vOrig = ccToOrig[vCc];
-                        out << "C " << C.node2name[vOrig];
-
-                        auto blocksIt = cutVertexBlocks.find(vCc.idx);
-                        if (blocksIt != cutVertexBlocks.end())
-                        {
-                            for (spqr_compat::node bNode : blocksIt->second)
-                            {
-                                auto blockNameIt = bcNodeToBlockName.find(bNode);
-                                assert(blockNameIt != bcNodeToBlockName.end());
-                                out << " " << blockNameIt->second;
-                            }
-                        }
-                        out << "\n";
-                    }
+                    spqr_compat::node vOrig = ccToOrig[cutNodes[i]];
+                    emitCut(directCompactGraphNames ? makeId("C", cutCtr++)
+                                                     : outNodeName(vOrig),
+                            cutBlockNamesByOrdinal[i]);
                 }
 
-                const int totalBlocks = (int)bcNodeToBlockName.size();
-                int processedBlocks = 0;
+                const size_t totalBlocks = bcNodeToBlockName.size();
+                size_t processedBlocks = 0;
 
                 for (spqr_compat::node bNode : bc.bcTree().nodes)
                 {
@@ -17243,14 +18066,14 @@ namespace solver
                     }
 
                     const std::string &blockName = bcNodeToBlockName[bNode];
+                    const std::vector<spqr_compat::edge> &hEdgesForBlock = blockHEdges[bNode.idx];
 
                     tmpNodes.clear();
                     ++stampCc;
 
-                    size_t edgeCountApprox = 0;
-                    for (spqr_compat::edge hEdge : bc.hEdges(bNode))
+                    const size_t edgeCountApprox = hEdgesForBlock.size();
+                    for (spqr_compat::edge hEdge : hEdgesForBlock)
                     {
-                        ++edgeCountApprox;
                         spqr_compat::edge eCc = bc.original(hEdge);
                         if (!eCc)
                             continue;
@@ -17276,7 +18099,7 @@ namespace solver
                     // Blocks with <=2 nodes: no SPQR nodes/virtual edges in v0.4 edges assigned to the block
                     if (tmpNodes.size() < 3)
                     {
-                        for (spqr_compat::edge hEdge : bc.hEdges(bNode))
+                        for (spqr_compat::edge hEdge : hEdgesForBlock)
                         {
                             spqr_compat::edge eCc = bc.original(hEdge);
                             if (!eCc)
@@ -17286,7 +18109,7 @@ namespace solver
                             spqr_compat::node vOrig = ccToOrig[ccGraph.target(eCc)];
 
                             std::string eName = makeId("E", edgeCtr++);
-                            writeE(eName, blockName, C.node2name[uOrig], C.node2name[vOrig]);
+                            writeE(eName, blockName, uOrig, vOrig, ccEdgeToOrig[eCc]);
                         }
 
                         // The BC tree contains no self-loops, hence we need to output self-loops manually.
@@ -17308,7 +18131,7 @@ namespace solver
                                 }
 
                                 std::string eName = makeId("E", edgeCtr++);
-                                writeE(eName, blockName, C.node2name[vOrig], C.node2name[vOrig]);
+                                writeE(eName, blockName, vOrig, vOrig, e);
                             });
                         }
 
@@ -17319,11 +18142,19 @@ namespace solver
                     spqr_compat::Graph blockGraph;
                     spqr_compat::NodeArray<spqr_compat::node> blockToCC(blockGraph);
                     spqr_compat::EdgeArray<spqr_compat::edge> blockEdgeToCC(blockGraph);
+                    std::vector<std::uint32_t> macroCacheInputEdgeIds;
+                    if (writeMacroTreeCache &&
+                        static_cast<std::uint64_t>(hEdgesForBlock.size()) >=
+                            macroTreeCacheMinEdges)
+                    {
+                        macroCacheInputEdgeIds.reserve(hEdgesForBlock.size());
+                    }
 
                     // Map cc node -> block node using an unordered_map sized to block
                     // (ccGraph is huge; we cannot use NodeArray per block)
                     std::unordered_map<spqr_compat::node, spqr_compat::node> ccToBlock;
-                    ccToBlock.reserve(tmpNodes.size() * 2);
+                    ccToBlock.reserve(graph_index::checked_mul_size(
+                        tmpNodes.size(), 2u, "spqr-tree block node map"));
 
                     for (spqr_compat::node vCc : tmpNodes)
                     {
@@ -17333,7 +18164,7 @@ namespace solver
                     }
 
                     // Second pass: add edges
-                    for (spqr_compat::edge hEdge : bc.hEdges(bNode))
+                    for (spqr_compat::edge hEdge : hEdgesForBlock)
                     {
                         spqr_compat::edge eCc = bc.original(hEdge);
                         if (!eCc)
@@ -17346,6 +18177,19 @@ namespace solver
 
                         spqr_compat::edge eB = blockGraph.newEdge(itS->second, itT->second);
                         blockEdgeToCC[eB] = eCc;
+                        if (writeMacroTreeCache)
+                        {
+                            spqr_compat::edge eOrig = ccEdgeToOrig[eCc];
+                            if (!eOrig ||
+                                static_cast<std::uint64_t>(eOrig.idx) >
+                                    std::numeric_limits<std::uint32_t>::max())
+                            {
+                                throw std::runtime_error(
+                                    "SPQR macro-tree cache input-edge id out of range");
+                            }
+                            macroCacheInputEdgeIds.push_back(
+                                static_cast<std::uint32_t>(eOrig.idx));
+                        }
                     }
 
                     const bool logThisBlock =
@@ -17363,15 +18207,36 @@ namespace solver
                                     << " (computing SPQR...)\n";
                         }
 
+                        graph_index::require_spqr_graph(blockGraph.numberOfNodes(),
+                                                        blockGraph.numberOfEdges(),
+                                                        "spqr-tree block graph");
+                        if (writeMacroTreeCache &&
+                            static_cast<std::uint64_t>(blockGraph.numberOfEdges()) >=
+                                macroTreeCacheMinEdges)
+                        {
+                            auto blockIndexIt = bcNodeToBlockIndex.find(bNode);
+                            if (blockIndexIt != bcNodeToBlockIndex.end())
+                            {
+                                appendMacroTreeCache(blockIndexIt->second,
+                                                     blockGraph,
+                                                     macroCacheInputEdgeIds);
+                            }
+                        }
                         spqr_compat::StaticSPQRTree spqr(blockGraph);
+                        const auto& spqrTree = spqr.tree();
+                        graph_index::require_spqr_graph(spqrTree.numberOfNodes(),
+                                                        spqrTree.numberOfEdges(),
+                                                        "spqr-tree output tree graph");
 
                         std::map<spqr_compat::node, std::string> spqrNodeNames;
 
-                        spqr_compat::NodeArray<int> markBlk(blockGraph, 0);
-                        int stampBlk = 1;
+                        spqr_compat::NodeArray<uint32_t> markBlk(blockGraph, 0);
+                        uint32_t stampBlk = 1;
+                        std::vector<spqr_compat::node> treeOriginalNodes;
+                        treeOriginalNodes.reserve(64);
 
                         // Write S/P/R-lines
-                        for (spqr_compat::node treeNode : spqr.tree().nodes)
+                        for (spqr_compat::node treeNode : spqrTree.nodes)
                         {
                             char typeChar;
                             switch (spqr.typeOf(treeNode))
@@ -17393,9 +18258,8 @@ namespace solver
                             std::string spqrName = prefix + std::string(1, typeChar) + std::to_string(spqrNodeCtr++);
                             spqrNodeNames[treeNode] = spqrName;
 
-                            out << typeChar << " " << spqrName << " " << blockName;
-
                             ++stampBlk;
+                            treeOriginalNodes.clear();
 
                             const auto &skelG = spqr.skeleton(treeNode).getGraph();
                             const spqr_compat::Skeleton &skel = spqr.skeleton(treeNode);
@@ -17412,13 +18276,17 @@ namespace solver
 
                                 spqr_compat::node vCc = blockToCC[vB];
                                 spqr_compat::node vOrig = ccToOrig[vCc];
-                                out << " " << C.node2name[vOrig];
+                                treeOriginalNodes.push_back(vOrig);
                             }
-                            out << "\n";
+                            emitTreeNode(typeChar, spqrName, blockName,
+                                         treeOriginalNodes,
+                                         [&](spqr_compat::node vOrig) -> spqr_compat::node
+                                         {
+                                             return vOrig;
+                                         });
                         }
 
                         // Write V-lines (virtual edges in SPQR tree)
-                        const auto& spqrTree = spqr.tree();
                         for (spqr_compat::edge te : spqrTree.edges)
                         {
                             spqr_compat::node src = spqrTree.source(te);
