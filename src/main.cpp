@@ -14241,108 +14241,141 @@ namespace solver
             MARK_SCOPE_MEM("sn/findCutSnarl");
             auto &C = ctx();
 
-            spqr_compat::NodeArray<std::pair<bool, bool>> visited(
-                *cc.Gcc, {false, false}); 
+            constexpr uint8_t kMinusVisited = 1u;
+            constexpr uint8_t kPlusVisited = 2u;
+            constexpr uint8_t kBothVisited = kMinusVisited | kPlusVisited;
+            constexpr uint8_t kStopNode = 4u;
+            constexpr uint8_t kTrashNode = 8u;
 
-            auto isStateVisited = [&](spqr_compat::node v, EdgePartType t) -> bool {
-                return (t == EdgePartType::PLUS) ? visited[v].second : visited[v].first;
+            const uint32_t nodeCount = cc.Gcc->numberOfNodes();
+            std::vector<uint8_t> state(nodeCount, 0);
+            for (spqr_compat::node v : cc.Gcc->nodes)
+            {
+                const uint32_t vid = v.idx;
+                uint8_t flags = 0;
+                if (cc.isGoodCutNode[v] || cc.isTip[v])
+                    flags |= kStopNode;
+                if (isTrashOriginalNode(cc.nodeToOrig[v]))
+                    flags |= kTrashNode;
+                state[vid] = flags;
+            }
+
+            struct Frame
+            {
+                uint32_t vid;
+                uint8_t bit;
             };
 
-            auto flipSign = [](EdgePartType t) {
-                return (t == EdgePartType::PLUS) ? EdgePartType::MINUS : EdgePartType::PLUS;
-            };
+            std::vector<SnarlEndpoint> goodNodes;
+            std::vector<Frame> st;
+            goodNodes.reserve(16);
+            st.reserve(1024);
+            const bool useCutAdj =
+                cc.cutAdjOffsets.size() == static_cast<size_t>(nodeCount) + 1u;
 
             for (spqr_compat::node start : cc.Gcc->nodes)
             {
-                for (auto t : {EdgePartType::PLUS, EdgePartType::MINUS})
+                const uint32_t startId = start.idx;
+                for (uint8_t startBit : {kPlusVisited, kMinusVisited})
                 {
-                    if (isStateVisited(start, t))
+                    if ((state[startId] & startBit) != 0)
                         continue;
 
-                    std::vector<SnarlEndpoint> goodNodes;
-
-                    struct Frame
-                    {
-                        spqr_compat::node v;
-                        EdgePartType edgeType;
-                    };
-                    std::vector<Frame> st;
-                    st.reserve(1024);
-                    st.push_back({start, t});
+                    goodNodes.clear();
+                    st.clear();
+                    st.push_back({startId, startBit});
 
                     while (!st.empty())
                     {
-                        auto [v, edgeType] = st.back();
+                        auto [vid, edgeBit] = st.back();
                         st.pop_back();
 
-                        bool &minusVisited = visited[v].first;
-                        bool &plusVisited = visited[v].second;
-                        bool isGoodOrTip = (cc.isGoodCutNode[v] || cc.isTip[v]);
+                        uint8_t &nodeState = state[vid];
+                        const bool isGoodOrTip = (nodeState & kStopNode) != 0;
+                        const spqr_compat::node v{vid};
 
                         if (!isGoodOrTip)
                         {
-                            if (minusVisited && plusVisited)
+                            if ((nodeState & kBothVisited) == kBothVisited)
                             {
                                 continue;
                             }
                         }
                         else
                         {
-                            if (edgeType == EdgePartType::MINUS && minusVisited)
-                                continue;
-                            if (edgeType == EdgePartType::PLUS && plusVisited)
+                            if ((nodeState & edgeBit) != 0)
                                 continue;
                         }
 
-                        if (isGoodOrTip &&
-                            !isTrashOriginalNode(cc.nodeToOrig[v]))
+                        if (isGoodOrTip && (nodeState & kTrashNode) == 0)
                         {
-
-                            goodNodes.push_back({cc.nodeToOrig[v], edgeType});
+                            goodNodes.push_back({
+                                cc.nodeToOrig[v],
+                                edgeBit == 2u ? EdgePartType::PLUS :
+                                edgeBit == 1u ? EdgePartType::MINUS : EdgePartType::NONE});
                         }
 
                         if (!isGoodOrTip)
                         {
-                            minusVisited = true;
-                            plusVisited = true;
+                            nodeState |= kBothVisited;
                         }
                         else
                         {
-                            if (edgeType == EdgePartType::MINUS)
-                                minusVisited = true;
-                            else
-                                plusVisited = true;
+                            nodeState |= edgeBit;
                         }
 
-                        bool canGoOther = !cc.isGoodCutNode[v] && !cc.isTip[v];
-                        const EdgePartType otherEdgeType = flipSign(edgeType);
+                        const bool canGoOther = !isGoodOrTip;
+                        const uint8_t otherBit = edgeBit ^ kBothVisited;
 
-                        cc.Gcc->forEachAdj(v, [&](spqr_compat::node otherNode, spqr_compat::edge eCc) {
-                            spqr_compat::edge eOrig = cc.edgeToOrig[eCc];
-                            if (!eOrig) return;
-
-                            const auto edgeTypes = C._edge2types(eOrig);
-                            auto pushIfReachable = [&](spqr_compat::node to,
-                                                       EdgePartType outType,
-                                                       EdgePartType inType) {
-                                if (outType != edgeType &&
-                                    (!canGoOther || outType != otherEdgeType)) {
-                                    return;
-                                }
-                                if (!isStateVisited(to, inType)) {
-                                    st.push_back({to, inType});
-                                }
-                            };
-
-                            if (cc.Gcc->source(eCc) == v && cc.Gcc->target(eCc) == v) {
-                                pushIfReachable(v, edgeTypes.first, edgeTypes.second);
-                                pushIfReachable(v, edgeTypes.second, edgeTypes.first);
-                            } else if (cc.Gcc->source(eCc) == v) {
-                                pushIfReachable(otherNode, edgeTypes.first, edgeTypes.second);
-                            } else {
-                                pushIfReachable(otherNode, edgeTypes.second, edgeTypes.first);
+                        auto pushIfReachable = [&](uint32_t toId,
+                                                   uint8_t outBit,
+                                                   uint8_t inBit) {
+                            if (outBit == 0u || inBit == 0u)
+                                return;
+                            if (outBit != edgeBit &&
+                                (!canGoOther || outBit != otherBit)) {
+                                return;
                             }
-                        });
+                            if ((state[toId] & inBit) == 0) {
+                                st.push_back({toId, inBit});
+                            }
+                        };
+
+                        if (useCutAdj)
+                        {
+                            const uint32_t begin = cc.cutAdjOffsets[vid];
+                            const uint32_t end = cc.cutAdjOffsets[static_cast<size_t>(vid) + 1u];
+                            for (uint32_t i = begin; i < end; ++i)
+                            {
+                                const auto &adj = cc.cutAdj[i];
+                                pushIfReachable(adj.to, adj.outBit, adj.inBit);
+                            }
+                        }
+                        else
+                        {
+                            cc.Gcc->forEachAdj(v, [&](spqr_compat::node otherNode, spqr_compat::edge eCc) {
+                                spqr_compat::edge eOrig = cc.edgeToOrig[eCc];
+                                if (!eOrig) return;
+
+                                const auto edgeTypes = edgePartTypes(C, eOrig);
+                                if (cc.Gcc->source(eCc) == v && cc.Gcc->target(eCc) == v) {
+                                    pushIfReachable(v.idx,
+                                                    endpoint_visit_bit(edgeTypes.first),
+                                                    endpoint_visit_bit(edgeTypes.second));
+                                    pushIfReachable(v.idx,
+                                                    endpoint_visit_bit(edgeTypes.second),
+                                                    endpoint_visit_bit(edgeTypes.first));
+                                } else if (cc.Gcc->source(eCc) == v) {
+                                    pushIfReachable(otherNode.idx,
+                                                    endpoint_visit_bit(edgeTypes.first),
+                                                    endpoint_visit_bit(edgeTypes.second));
+                                } else {
+                                    pushIfReachable(otherNode.idx,
+                                                    endpoint_visit_bit(edgeTypes.second),
+                                                    endpoint_visit_bit(edgeTypes.first));
+                                }
+                            });
+                        }
                     }
 
                     if (goodNodes.size() >= 2)
@@ -14351,13 +14384,6 @@ namespace solver
                     }
                 }
             }
-        }
-
-        inline bool usesCompressedSpqr(Context::SpCompressMode mode)
-        {
-            return mode == Context::SpCompressMode::On ||
-                   mode == Context::SpCompressMode::Instrument ||
-                   mode == Context::SpCompressMode::MacroDirectDebug;
         }
 
         inline void materializeFlatEdges(BlockData &blk)
@@ -14401,6 +14427,561 @@ namespace solver
             blk.flatEdges = false;
         }
 
+        inline bool buildBlockSpqrPlain(BlockData &blk)
+        {
+            materializeFlatEdges(blk);
+            graph_index::require_spqr_graph(blockNodeCount(blk),
+                                            blockEdgeCount(blk),
+                                            "block SPQR graph");
+            blk.spqr = std::make_unique<spqr_compat::StaticSPQRTree>(*blk.Gblk);
+            return true;
+        }
+
+        struct IndexedEdgeKey
+        {
+            std::uint32_t src = spqr_index::invalid_id;
+            std::uint32_t dst = spqr_index::invalid_id;
+            std::uint8_t src_type = 0;
+            std::uint8_t dst_type = 0;
+
+            bool operator==(const IndexedEdgeKey &o) const noexcept
+            {
+                return src == o.src && dst == o.dst &&
+                       src_type == o.src_type && dst_type == o.dst_type;
+            }
+        };
+
+        struct IndexedEdgeKeyHash
+        {
+            std::size_t operator()(const IndexedEdgeKey &k) const noexcept
+            {
+                std::uint64_t h = static_cast<std::uint64_t>(k.src);
+                h = (h << 32) ^ static_cast<std::uint64_t>(k.dst);
+                h ^= static_cast<std::uint64_t>(k.src_type) << 8;
+                h ^= static_cast<std::uint64_t>(k.dst_type);
+                h ^= h >> 33;
+                h *= 0xff51afd7ed558ccdULL;
+                h ^= h >> 33;
+                return static_cast<std::size_t>(h);
+            }
+        };
+
+        bool findIndexedNameForContextNode(const spqr_index::IndexedSpqrTree &index,
+                                           const Context &C,
+                                           spqr_compat::node v,
+                                           std::uint32_t &out)
+        {
+            const std::uint32_t idx = static_cast<std::uint32_t>(v.idx);
+            if (C.inputFormat == Context::InputFormat::SpqrIndex &&
+                C.spqrIndex && C.spqrIndex.get() == &index &&
+                idx < index.graph_node_count()) {
+                out = idx;
+                return true;
+            }
+
+            auto nameIt = C.node2name.find(v);
+
+            if (nameIt != C.node2name.end() &&
+                index.find_graph_node_name_id(nameIt->second, out))
+                return true;
+
+            if (nameIt == C.node2name.end()) {
+                if (findIndexedNameInContextTables(index, C, idx, out))
+                    return true;
+                if (idx >= C.isTrashNodeByIndex.size() || !C.isTrashNodeByIndex[idx])
+                    return false;
+            } else if (nameIt->second != "_trash") {
+                return false;
+            }
+
+            const std::string suffix = "N" + std::to_string(v.idx);
+            std::uint32_t found = spqr_index::invalid_id;
+            auto considerCandidate = [&](const std::string &candidate,
+                                         std::uint32_t id) {
+                if (candidate.size() < suffix.size()) return true;
+                if (candidate.compare(candidate.size() - suffix.size(),
+                                      suffix.size(),
+                                      suffix) != 0) {
+                    return true;
+                }
+                if (candidate.find("__BF") != 0) return true;
+                if (found != spqr_index::invalid_id) return false;
+                found = id;
+                return true;
+            };
+            for (std::uint32_t i = 0; i < index.strings.size(); ++i) {
+                if (!considerCandidate(index.strings[i], i)) return false;
+            }
+            for (const auto &item : index.graph_node_string_names) {
+                if (!considerCandidate(item.second, item.first)) return false;
+            }
+            if (found == spqr_index::invalid_id) return false;
+            out = found;
+            return true;
+        }
+
+        struct IndexedSkeletonNodeResolver
+        {
+            static constexpr std::size_t kHashThreshold = 8;
+
+            std::vector<std::uint32_t> &names;
+            std::unordered_map<std::uint32_t, std::uint32_t> lookup;
+            bool lookupReady = false;
+            bool sortedLookupReady = true;
+            std::size_t expectedTouches = 0;
+
+            IndexedSkeletonNodeResolver(std::vector<std::uint32_t> &nodeNames,
+                                        std::size_t expectedNodeTouches)
+                : names(nodeNames),
+                  expectedTouches(expectedNodeTouches)
+            {
+                if (expectedTouches != 0 &&
+                    names.size() + expectedTouches > kHashThreshold) {
+                    buildLookup();
+                }
+            }
+
+            void buildLookup()
+            {
+                if (lookupReady) return;
+                lookup.reserve(names.size() * 2u + 4u);
+                for (std::uint32_t i = 0; i < names.size(); ++i)
+                    lookup.emplace(names[i], i);
+                lookupReady = true;
+            }
+
+            bool findOrAdd(std::uint32_t name, std::uint32_t &out)
+            {
+                if (name == spqr_index::invalid_id) return false;
+                if (sortedLookupReady && !lookupReady) {
+                    if (names.size() <= kHashThreshold) {
+                        for (std::uint32_t i = 0; i < names.size(); ++i) {
+                            if (names[i] == name) {
+                                out = i;
+                                return true;
+                            }
+                        }
+                    } else {
+                        auto it = std::lower_bound(names.begin(), names.end(), name);
+                        if (it != names.end() && *it == name) {
+                            out = graph_index::require_spqr_count_size(
+                                static_cast<std::size_t>(it - names.begin()),
+                                "indexed SPQR skeleton node count");
+                            return true;
+                        }
+                    }
+                    sortedLookupReady = false;
+                    if (expectedTouches != 0 &&
+                        names.size() + expectedTouches > kHashThreshold) {
+                        buildLookup();
+                    }
+                }
+                if (lookupReady) {
+                    auto it = lookup.find(name);
+                    if (it != lookup.end()) {
+                        out = it->second;
+                        return true;
+                    }
+                    out = graph_index::require_spqr_count_size(
+                        names.size(), "indexed SPQR skeleton node count");
+                    names.push_back(name);
+                    lookup.emplace(name, out);
+                    return true;
+                }
+                for (std::uint32_t i = 0; i < names.size(); ++i) {
+                    if (names[i] == name) {
+                        out = i;
+                        return true;
+                    }
+                }
+                out = graph_index::require_spqr_count_size(
+                    names.size(), "indexed SPQR skeleton node count");
+                names.push_back(name);
+                if (names.size() > kHashThreshold)
+                    buildLookup();
+                return true;
+            }
+        };
+
+        inline bool loadIndexedSkeletonNodes(
+            const spqr_index::IndexedSpqrTree &index,
+            const spqr_index::TreeNodeRecord &tn,
+            std::vector<std::uint32_t> &names)
+        {
+            names.clear();
+            names.reserve(tn.node_end - tn.node_begin);
+            bool orderedUnique = true;
+            std::uint32_t previous = 0;
+            for (std::uint32_t i = tn.node_begin; i < tn.node_end; ++i) {
+                if (i >= index.tree_node_original_nodes.size()) return false;
+                const std::uint32_t name = index.tree_node_original_nodes[i];
+                if (name == spqr_index::invalid_id) return false;
+                if (!names.empty() && name <= previous)
+                    orderedUnique = false;
+                previous = name;
+                names.push_back(name);
+            }
+            if (!orderedUnique) {
+                std::sort(names.begin(), names.end());
+                names.erase(std::unique(names.begin(), names.end()), names.end());
+            }
+            return true;
+        }
+
+        bool buildBlockSpqrFromIndex(BlockData &blk,
+                                     const spqr_index::IndexedSpqrTree &index,
+                                     std::uint32_t indexBlock)
+        {
+            auto &C = ctx();
+            if (C.spqrIndex.get() == &index &&
+                C.spqrIndexBubbleEdgeTypesChecked) {
+                if (!C.spqrIndexHasCompleteBubbleEdgeTypes) return false;
+            } else if (!index.has_complete_bubble_edge_types()) {
+                return false;
+            }
+            if (indexBlock >= index.block_count()) return false;
+
+            materializeFlatEdges(blk);
+            if (!blk.Gblk || blockNodeCount(blk) < 3) return false;
+
+            const auto indexedBlock = index.block_at(indexBlock);
+            const std::uint32_t treeBegin = indexedBlock.spqr_begin;
+            const std::uint32_t treeEnd = indexedBlock.spqr_end;
+            if (treeBegin == treeEnd) return false;
+            if (treeBegin > treeEnd || treeEnd > index.tree_node_count()) return false;
+
+            const std::uint32_t treeNodeCount = treeEnd - treeBegin;
+            std::vector<std::uint32_t> globalTreeNodes;
+            bool treeNodesAreContiguous = index.block_to_tree_nodes_identity;
+            std::uint32_t firstGlobalTreeNode =
+                treeNodesAreContiguous ? treeBegin : spqr_index::invalid_id;
+            if (!treeNodesAreContiguous) {
+                globalTreeNodes.reserve(treeNodeCount);
+                for (std::uint32_t i = treeBegin; i < treeEnd; ++i) {
+                    try {
+                        globalTreeNodes.push_back(index.block_tree_node_at(i));
+                    } catch (const std::out_of_range&) {
+                        return false;
+                    }
+                }
+
+                treeNodesAreContiguous = !globalTreeNodes.empty();
+                firstGlobalTreeNode =
+                    treeNodesAreContiguous ? globalTreeNodes.front() : spqr_index::invalid_id;
+                for (std::uint32_t i = 0; i < globalTreeNodes.size(); ++i) {
+                    if (i > std::numeric_limits<std::uint32_t>::max() - firstGlobalTreeNode ||
+                        globalTreeNodes[i] != firstGlobalTreeNode + i) {
+                        treeNodesAreContiguous = false;
+                        break;
+                    }
+                }
+            }
+
+            auto globalTreeNodeAt = [&](std::uint32_t localT) -> std::uint32_t {
+                return treeNodesAreContiguous
+                    ? firstGlobalTreeNode + localT
+                    : globalTreeNodes[localT];
+            };
+
+            std::unordered_map<std::uint32_t, std::uint32_t> treeLocal;
+            if (!treeNodesAreContiguous) {
+                treeLocal.reserve(globalTreeNodes.size() * 2);
+                for (std::uint32_t i = 0; i < globalTreeNodes.size(); ++i) {
+                    treeLocal.emplace(globalTreeNodes[i], i);
+                }
+            }
+            auto findLocalTreeNode = [&](std::uint32_t global,
+                                         std::uint32_t &out) -> bool {
+                if (treeNodesAreContiguous) {
+                    if (global < firstGlobalTreeNode)
+                        return false;
+                    const std::uint32_t local = global - firstGlobalTreeNode;
+                    if (local >= treeNodeCount)
+                        return false;
+                    out = local;
+                    return true;
+                }
+                auto it = treeLocal.find(global);
+                if (it == treeLocal.end())
+                    return false;
+                out = it->second;
+                return true;
+            };
+
+            std::unordered_map<std::uint32_t, std::uint32_t> blockNodeByName;
+            blockNodeByName.reserve(blockNodeCount(blk) * 2);
+            for (spqr_compat::node vB : blk.Gblk->nodes) {
+                spqr_compat::node vOrig = blockNodeToOrig(blk, vB);
+                std::uint32_t nameId = spqr_index::invalid_id;
+                if (!findIndexedNameForContextNode(index, C, vOrig, nameId)) return false;
+                blockNodeByName.emplace(nameId, static_cast<std::uint32_t>(vB.idx));
+            }
+
+            std::unordered_map<IndexedEdgeKey, std::vector<std::uint32_t>, IndexedEdgeKeyHash> localEdges;
+            localEdges.reserve(blockEdgeCount(blk) * 2);
+            for (spqr_compat::edge eB : blk.Gblk->edges) {
+                spqr_compat::edge eOrig = blockEdgeToOrig(blk, eB);
+                if (!eOrig) return false;
+                spqr_compat::node s = C.G.source(eOrig);
+                spqr_compat::node t = C.G.target(eOrig);
+                std::uint32_t sId = spqr_index::invalid_id;
+                std::uint32_t tId = spqr_index::invalid_id;
+                if (!findIndexedNameForContextNode(index, C, s, sId) ||
+                    !findIndexedNameForContextNode(index, C, t, tId)) {
+                    return false;
+                }
+                const auto types = edgePartTypes(C, eOrig);
+                IndexedEdgeKey key{sId, tId,
+                                   edgePartTypeToStoredEndpointType(types.first),
+                                   edgePartTypeToStoredEndpointType(types.second)};
+                if (key.src_type == 0 || key.dst_type == 0) return false;
+                localEdges[key].push_back(static_cast<std::uint32_t>(eB.idx));
+            }
+
+            spqr_compat::StaticSPQRTree::FlatData flat;
+            flat.numNodes = graph_index::require_spqr_count_size(
+                treeNodeCount, "indexed SPQR tree node count");
+            flat.root = 0;
+            flat.nodeTypes.assign(flat.numNodes, 0);
+            flat.nodeParents.assign(flat.numNodes, spqr_index::invalid_id);
+            flat.skeletonNumNodes.assign(flat.numNodes, 0);
+            flat.nodeMappingOffsets.assign(static_cast<std::size_t>(flat.numNodes) + 1u, 0);
+            flat.skeletonOffsets.assign(static_cast<std::size_t>(flat.numNodes) + 1u, 0);
+            flat.edgeToTreeNode.assign(blockEdgeCount(blk), spqr_index::invalid_id);
+
+            std::vector<std::vector<std::uint32_t>> skeletonNodeNames(flat.numNodes);
+
+            for (std::uint32_t localT = 0; localT < flat.numNodes; ++localT) {
+                const auto tn = index.tree_node_at(globalTreeNodeAt(localT));
+                if (tn.type == static_cast<std::uint8_t>('S')) flat.nodeTypes[localT] = 0;
+                else if (tn.type == static_cast<std::uint8_t>('P')) flat.nodeTypes[localT] = 1;
+                else flat.nodeTypes[localT] = 2;
+
+                auto &names = skeletonNodeNames[localT];
+                if (!loadIndexedSkeletonNodes(index, tn, names))
+                    return false;
+            }
+
+            std::size_t localVirtualSides = 0;
+            for (std::uint32_t localT = 0; localT < flat.numNodes; ++localT) {
+                const auto tn = index.tree_node_at(globalTreeNodeAt(localT));
+                localVirtualSides +=
+                    static_cast<std::size_t>(tn.virtual_edge_end - tn.virtual_edge_begin);
+                const std::uint32_t edgeCount =
+                    graph_index::require_spqr_count_size(
+                        static_cast<std::size_t>(tn.real_edge_end - tn.real_edge_begin) +
+                        static_cast<std::size_t>(tn.virtual_edge_end - tn.virtual_edge_begin),
+                        "indexed SPQR skeleton edge count");
+                if (flat.skeletonOffsets[localT] >
+                    std::numeric_limits<std::uint32_t>::max() - edgeCount) {
+                    return false;
+                }
+                flat.skeletonOffsets[localT + 1] =
+                    flat.skeletonOffsets[localT] + edgeCount;
+            }
+
+            flat.skeletonEdges.reserve(flat.skeletonOffsets.back());
+            std::unordered_map<std::uint32_t, std::uint32_t> firstVirtualSkeletonEdgeById;
+            firstVirtualSkeletonEdgeById.reserve(localVirtualSides / 2u + 1u);
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> localTreeEdges;
+            localTreeEdges.reserve(localVirtualSides / 2u + 1u);
+
+            const std::uint32_t realEdgeCount = index.real_edge_count();
+            const spqr_index::GraphEdgeRecord *realEdgeRecords =
+                index.has_compact_real_edge_endpoints()
+                    ? index.real_edge_endpoints.data()
+                    : nullptr;
+            auto realEdgeAt = [&](std::uint32_t i) -> spqr_index::GraphEdgeRecord {
+                return realEdgeRecords != nullptr
+                    ? realEdgeRecords[i]
+                    : index.real_edge_endpoint_at(i);
+            };
+
+            for (std::uint32_t localT = 0; localT < flat.numNodes; ++localT) {
+                const std::uint32_t globalT = globalTreeNodeAt(localT);
+                const auto tn = index.tree_node_at(globalT);
+                auto &names = skeletonNodeNames[localT];
+                const std::size_t expectedSkeletonNodeTouches =
+                    2u * static_cast<std::size_t>(
+                        (tn.real_edge_end - tn.real_edge_begin) +
+                        (tn.virtual_edge_end - tn.virtual_edge_begin));
+                IndexedSkeletonNodeResolver local(names, expectedSkeletonNodeTouches);
+
+                for (std::uint32_t p = tn.real_edge_begin; p < tn.real_edge_end; ++p) {
+                    std::uint32_t reIdx = spqr_index::invalid_id;
+                    try {
+                        reIdx = index.tree_node_real_edge_at(globalT, p);
+                    } catch (const std::out_of_range&) {
+                        return false;
+                    }
+                    if (reIdx >= realEdgeCount) return false;
+                    const auto re = realEdgeAt(reIdx);
+                    const auto types = index.real_edge_endpoint_types(reIdx);
+                    IndexedEdgeKey key{re.src, re.dst, types.first, types.second};
+                    auto edgeIt = localEdges.find(key);
+                    if (edgeIt == localEdges.end() || edgeIt->second.empty()) return false;
+                    const std::uint32_t localEdge = edgeIt->second.back();
+                    edgeIt->second.pop_back();
+
+                    std::uint32_t srcLocal = spqr_index::invalid_id;
+                    std::uint32_t dstLocal = spqr_index::invalid_id;
+                    if (!local.findOrAdd(re.src, srcLocal) ||
+                        !local.findOrAdd(re.dst, dstLocal)) {
+                        return false;
+                    }
+                    SkeletonEdge se{};
+                    se.src = srcLocal;
+                    se.dst = dstLocal;
+                    se.real_edge = localEdge;
+                    se.virtual_id = spqr_index::invalid_id;
+                    se.twin_tree_node = spqr_index::invalid_id;
+                    se.twin_edge_idx = spqr_index::invalid_id;
+                    flat.skeletonEdges.push_back(se);
+                    if (localEdge < flat.edgeToTreeNode.size())
+                        flat.edgeToTreeNode[localEdge] = localT;
+                }
+
+                for (std::uint32_t p = tn.virtual_edge_begin; p < tn.virtual_edge_end; ++p) {
+                    if (p >= index.tree_node_virtual_edges.size()) return false;
+                    const std::uint32_t veIdx = index.tree_node_virtual_edges[p];
+                    if (veIdx >= index.virtual_edge_count()) return false;
+                    const auto ve = index.virtual_edge_at(veIdx);
+                    std::uint32_t otherGlobal = spqr_index::invalid_id;
+                    if (ve.node1_index == globalT) {
+                        otherGlobal = ve.node2_index;
+                    } else if (ve.node2_index == globalT) {
+                        otherGlobal = ve.node1_index;
+                    } else {
+                        return false;
+                    }
+                    std::uint32_t otherLocal = spqr_index::invalid_id;
+                    if (!findLocalTreeNode(otherGlobal, otherLocal)) return false;
+                    if (localT < otherLocal)
+                        localTreeEdges.emplace_back(localT, otherLocal);
+
+                    std::uint32_t pole1Local = spqr_index::invalid_id;
+                    std::uint32_t pole2Local = spqr_index::invalid_id;
+                    if (!local.findOrAdd(ve.pole1, pole1Local) ||
+                        !local.findOrAdd(ve.pole2, pole2Local)) {
+                        return false;
+                    }
+                    SkeletonEdge se{};
+                    se.src = pole1Local;
+                    se.dst = pole2Local;
+                    se.real_edge = spqr_index::invalid_id;
+                    se.virtual_id = veIdx;
+                    se.twin_tree_node = otherLocal;
+                    se.twin_edge_idx = spqr_index::invalid_id;
+                    const std::uint32_t globalSkelEdge =
+                        graph_index::require_spqr_count_size(
+                            flat.skeletonEdges.size(), "indexed SPQR skeleton edge count");
+                    auto twinIt = firstVirtualSkeletonEdgeById.find(veIdx);
+                    if (twinIt == firstVirtualSkeletonEdgeById.end()) {
+                        firstVirtualSkeletonEdgeById.emplace(veIdx, globalSkelEdge);
+                    } else {
+                        se.twin_edge_idx = twinIt->second;
+                        flat.skeletonEdges[twinIt->second].twin_edge_idx = globalSkelEdge;
+                    }
+                    flat.skeletonEdges.push_back(se);
+                }
+            }
+
+            if (flat.skeletonEdges.size() != flat.skeletonOffsets.back())
+                return false;
+
+            for (std::uint32_t localT = 0; localT < flat.numNodes; ++localT) {
+                flat.skeletonNumNodes[localT] = graph_index::require_spqr_count_size(
+                    skeletonNodeNames[localT].size(), "indexed SPQR skeleton node count");
+                flat.nodeMappingOffsets[localT + 1] =
+                    flat.nodeMappingOffsets[localT] + flat.skeletonNumNodes[localT];
+            }
+
+            flat.nodeMapping.reserve(flat.nodeMappingOffsets.back());
+            for (std::uint32_t localT = 0; localT < flat.numNodes; ++localT) {
+                for (std::uint32_t nameId : skeletonNodeNames[localT]) {
+                    auto it = blockNodeByName.find(nameId);
+                    if (it == blockNodeByName.end()) return false;
+                    flat.nodeMapping.push_back(it->second);
+                }
+            }
+
+            std::vector<std::uint32_t> treeOffsets(
+                static_cast<std::size_t>(flat.numNodes) + 1u, 0);
+            for (const auto &uv : localTreeEdges) {
+                ++treeOffsets[uv.first + 1u];
+                ++treeOffsets[uv.second + 1u];
+            }
+            for (std::uint32_t i = 0; i < flat.numNodes; ++i)
+                treeOffsets[i + 1u] += treeOffsets[i];
+            std::vector<std::uint32_t> treeAdj(treeOffsets.back(), 0);
+            std::vector<std::uint32_t> treeCursor(treeOffsets.begin(), treeOffsets.end());
+            for (const auto &uv : localTreeEdges) {
+                treeAdj[treeCursor[uv.first]++] = uv.second;
+                treeAdj[treeCursor[uv.second]++] = uv.first;
+            }
+
+            flat.nodeParents[flat.root] = flat.root;
+            std::vector<std::uint32_t> stack;
+            stack.push_back(flat.root);
+            while (!stack.empty()) {
+                const std::uint32_t u = stack.back();
+                stack.pop_back();
+                for (std::uint32_t p = treeOffsets[u]; p < treeOffsets[u + 1u]; ++p) {
+                    const std::uint32_t v = treeAdj[p];
+                    if (flat.nodeParents[v] != spqr_index::invalid_id) continue;
+                    flat.nodeParents[v] = u;
+                    stack.push_back(v);
+                }
+            }
+
+            for (std::uint32_t i = 0; i < flat.numNodes; ++i) {
+                if (flat.nodeParents[i] == spqr_index::invalid_id) return false;
+            }
+
+            std::vector<std::uint32_t> childCounts(flat.numNodes + 1u, 0);
+            for (std::uint32_t i = 0; i < flat.numNodes; ++i) {
+                if (i == flat.root) continue;
+                ++childCounts[flat.nodeParents[i] + 1u];
+            }
+            for (std::uint32_t i = 0; i < flat.numNodes; ++i)
+                childCounts[i + 1u] += childCounts[i];
+            flat.childrenOffsets = childCounts;
+            flat.children.assign(childCounts.back(), 0);
+            std::vector<std::uint32_t> cursor(childCounts.begin(), childCounts.end());
+            for (std::uint32_t i = 0; i < flat.numNodes; ++i) {
+                if (i == flat.root) continue;
+                flat.children[cursor[flat.nodeParents[i]]++] = i;
+            }
+
+            blk.spqr = std::make_unique<spqr_compat::StaticSPQRTree>(
+                std::move(flat), blk.Gblk.get());
+            return true;
+        }
+
+        bool tryBuildBlockSpqrFromLoadedIndex(BlockData &blk)
+        {
+            auto &C = ctx();
+            if (!C.spqrIndex) return false;
+            const auto &index = *C.spqrIndex;
+            if (C.spCompressMode != Context::SpCompressMode::Off ||
+                !spqr_index::graph_profile_is_raw_or_parallel_subdivided(
+                    index.graph_view))
+                return false;
+            std::vector<std::uint32_t> blockNames;
+            blockNames.reserve(blockNodeCount(blk));
+            for (spqr_compat::node vB : blk.Gblk->nodes) {
+                spqr_compat::node vOrig = blockNodeToOrig(blk, vB);
+                std::uint32_t nameId = spqr_index::invalid_id;
+                if (!findIndexedNameForContextNode(index, C, vOrig, nameId)) return false;
+                blockNames.push_back(nameId);
+            }
+            std::sort(blockNames.begin(), blockNames.end());
+            const std::uint32_t indexBlock =
+                index.find_block_by_sorted_node_names(blockNames);
+            if (indexBlock == spqr_index::invalid_id) return false;
+            return buildBlockSpqrFromIndex(blk, index, indexBlock);
+        }
+
         inline std::vector<uint8_t> buildContractibleMask(const BlockData &blk)
         {
             std::vector<uint8_t> contractible(blockNodeCount(blk), 0);
@@ -14424,7 +15005,8 @@ namespace solver
         inline std::vector<SpCompressInputEdge> buildSpCompressEdges(const BlockData &blk)
         {
             std::vector<SpCompressInputEdge> ffi_edges;
-            ffi_edges.reserve(blockEdgeCount(blk));
+            const size_t edge_count = blockEdgeCount(blk);
+            ffi_edges.reserve(edge_count);
             uint32_t fid = 0;
             if (blk.flatEdges)
             {
@@ -14446,103 +15028,33 @@ namespace solver
             return ffi_edges;
         }
 
-        inline void emitMacroDirectBuildStats(
-            uint32_t n_blk,
-            uint32_t n_edges,
-            const BlockData &blk,
-            const SpCompressTimings &timings,
-            uint64_t ffi_total_us)
-        {
-            std::fprintf(stderr,
-                "[macro_direct_build] block nodes=%u edges=%u "
-                "macros=%u core_edges=%u core_tree=%s "
-                "time_us={ffi_total:%llu,total:%llu,compress:%llu,"
-                "core_total:%llu,core_remap:%llu,core_graph:%llu,"
-                "core_spqr:%llu,handle:%llu}\n",
-                n_blk,
-                n_edges,
-                blk.macroTreeView.macros_len,
-                blk.macroTreeView.core_edges_len,
-                blk.coreSpqrTree ? "yes" : "no",
-                static_cast<unsigned long long>(ffi_total_us),
-                static_cast<unsigned long long>(timings.t_total_us),
-                static_cast<unsigned long long>(timings.t_compress_us),
-                static_cast<unsigned long long>(timings.t_build_spqr_core_us),
-                static_cast<unsigned long long>(timings.t_core_remap_us),
-                static_cast<unsigned long long>(timings.t_core_graph_build_us),
-                static_cast<unsigned long long>(timings.t_core_spqr_raw_us),
-                static_cast<unsigned long long>(timings.t_handle_wrap_us));
-            std::fprintf(stderr,
-                "[macro_direct_build_detail] block nodes=%u edges=%u "
-                "macros=%u "
-                "compress_us={input_edges:%llu,init_work:%llu,"
-                "init_dirty:%llu,reduce_series:%llu,"
-                "reduce_parallel:%llu,materialize:%llu,"
-                "cleanup:%llu,canon_series:%llu,sort_core:%llu,"
-                "collect_core_nodes:%llu,stats_shrink:%llu} "
-                "spqr_us={self_loop_scan:%llu,tree_total:%llu,"
-                "precheck:%llu,split_multi:%llu,work_graph:%llu,"
-                "triconn:%llu,relabel:%llu,combine:%llu,"
-                "merge:%llu,assemble:%llu} "
-                "split_counts={multi:%llu,triconn:%llu,precombine:%llu,"
-                "combined:%llu,merged:%llu,merged_real:%llu,"
-                "merged_virtual_inc:%llu,virtual_id_span:%llu,"
-                "tree_nodes:%llu,tree_edges:%llu,tree_skel_edges:%llu,"
-                "tree_virtual_inc:%llu}\n",
-                n_blk,
-                n_edges,
-                blk.macroTreeView.macros_len,
-                static_cast<unsigned long long>(timings.t_compress_input_edges_us),
-                static_cast<unsigned long long>(timings.t_compress_init_work_us),
-                static_cast<unsigned long long>(timings.t_compress_init_dirty_us),
-                static_cast<unsigned long long>(timings.t_compress_reduce_series_us),
-                static_cast<unsigned long long>(timings.t_compress_reduce_parallel_us),
-                static_cast<unsigned long long>(timings.t_compress_materialize_us),
-                static_cast<unsigned long long>(timings.t_compress_cleanup_us),
-                static_cast<unsigned long long>(timings.t_compress_canon_series_us),
-                static_cast<unsigned long long>(timings.t_compress_sort_core_edges_us),
-                static_cast<unsigned long long>(timings.t_compress_collect_core_nodes_us),
-                static_cast<unsigned long long>(timings.t_compress_stats_shrink_us),
-                static_cast<unsigned long long>(timings.t_spqr_self_loop_scan_us),
-                static_cast<unsigned long long>(timings.t_spqr_tree_total_us),
-                static_cast<unsigned long long>(timings.t_spqr_precheck_us),
-                static_cast<unsigned long long>(timings.t_spqr_split_multi_edges_us),
-                static_cast<unsigned long long>(timings.t_spqr_work_graph_us),
-                static_cast<unsigned long long>(timings.t_spqr_triconn_us),
-                static_cast<unsigned long long>(timings.t_spqr_relabel_us),
-                static_cast<unsigned long long>(timings.t_spqr_combine_us),
-                static_cast<unsigned long long>(timings.t_spqr_merge_us),
-                static_cast<unsigned long long>(timings.t_spqr_assemble_us),
-                static_cast<unsigned long long>(timings.c_spqr_multi_components),
-                static_cast<unsigned long long>(timings.c_spqr_triconn_components),
-                static_cast<unsigned long long>(timings.c_spqr_precombine_components),
-                static_cast<unsigned long long>(timings.c_spqr_combined_components),
-                static_cast<unsigned long long>(timings.c_spqr_merged_components),
-                static_cast<unsigned long long>(timings.c_spqr_merged_real_edges),
-                static_cast<unsigned long long>(timings.c_spqr_merged_virtual_incidences),
-                static_cast<unsigned long long>(timings.c_spqr_virtual_id_span),
-                static_cast<unsigned long long>(timings.c_spqr_tree_nodes),
-                static_cast<unsigned long long>(timings.c_spqr_tree_edges),
-                static_cast<unsigned long long>(timings.c_spqr_tree_skeleton_edges),
-                static_cast<unsigned long long>(timings.c_spqr_tree_virtual_incidences));
-        }
-
         inline bool buildBlockSpqr(BlockData &blk)
         {
             SPQR_RUST_ASSERT(blk.Gblk != nullptr);
             SPQR_RUST_ASSERT(blockNodeCount(blk) > 0);
 
-            const auto mode = ctx().spCompressMode;
-            if (!usesCompressedSpqr(mode))
+            if (tryBuildBlockSpqrFromLoadedIndex(blk))
             {
-                blk.spqr = std::make_unique<spqr_compat::StaticSPQRTree>(*blk.Gblk);
                 return true;
             }
 
-            const uint32_t n_blk = blockNodeCount(blk);
+            const auto mode = ctx().spCompressMode;
+            if (mode != Context::SpCompressMode::On &&
+                mode != Context::SpCompressMode::MacroDirect)
+            {
+                return buildBlockSpqrPlain(blk);
+            }
+
+            const uint32_t n_blk = graph_index::require_spqr_count_size(
+                blockNodeCount(blk), "block SPQR node count");
+            if (!graph_index::fits_sp_compress_count_size(blockNodeCount(blk)) ||
+                !graph_index::fits_sp_compress_count_size(blockEdgeCount(blk)))
+            {
+                return buildBlockSpqrPlain(blk);
+            }
             std::vector<uint8_t> contractible = buildContractibleMask(blk);
 
-            if (mode == Context::SpCompressMode::MacroDirectDebug)
+            if (mode == Context::SpCompressMode::MacroDirect)
             {
                 std::vector<SpCompressInputEdge> ffi_edges_storage;
                 const SpCompressInputEdge *ffi_edges_ptr = nullptr;
@@ -14558,35 +15070,22 @@ namespace solver
                     ffi_edges_ptr = ffi_edges_storage.empty() ? nullptr : ffi_edges_storage.data();
                     ffi_edges_len = static_cast<uint32_t>(ffi_edges_storage.size());
                 }
-                const bool stats_enabled = (std::getenv("BF_MACRO_DIRECT_STATS") != nullptr);
-                SpCompressTimings timings{};
-                const auto t0 = std::chrono::steady_clock::now();
+                const uint32_t max_original_edge_id =
+                    ffi_edges_len == 0 ? 0u : ffi_edges_len - 1u;
                 SpCompressHandle *raw_handle =
-                    stats_enabled
-                        ? sp_compress_timed_ffi(
-                              n_blk,
-                              ffi_edges_ptr,
-                              ffi_edges_len,
-                              contractible.data(),
-                              static_cast<uint32_t>(contractible.size()),
-                              /*build_core_spqr=*/1,
-                              &timings)
-                        : sp_compress_ffi(
-                              n_blk,
-                              ffi_edges_ptr,
-                              ffi_edges_len,
-                              contractible.data(),
-                              static_cast<uint32_t>(contractible.size()),
-                              /*build_core_spqr=*/1);
-                const auto t1 = std::chrono::steady_clock::now();
-                const uint64_t ffi_total_us =
-                    static_cast<uint64_t>(
-                        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+                    sp_compress_ffi(
+                        n_blk,
+                        ffi_edges_ptr,
+                        ffi_edges_len,
+                        max_original_edge_id,
+                        contractible.data(),
+                        n_blk,
+                        1);
 
                 if (!raw_handle || sp_compress_success(raw_handle) == 0)
                 {
                     if (raw_handle) sp_compress_free(raw_handle);
-                    throw std::runtime_error("sp_compress_ffi failed in macro-direct mode");
+                    return buildBlockSpqrPlain(blk);
                 }
 
                 blk.spCompressHandle.reset(raw_handle);
@@ -14594,15 +15093,6 @@ namespace solver
                 blk.coreSpqrTree = sp_compress_get_core_spqr(raw_handle);
                 blk.coreNodeInv = sp_compress_core_node_inv(raw_handle, &blk.coreNodeInvLen);
 
-                if (stats_enabled)
-                {
-                    emitMacroDirectBuildStats(
-                        n_blk,
-                        ffi_edges_len,
-                        blk,
-                        timings,
-                        ffi_total_us);
-                }
                 if (blk.macroTreeView.macros_len == 0)
                 {
                     blk.spCompressHandle.reset();
@@ -14623,90 +15113,53 @@ namespace solver
                 return false;
             }
 
-            if (mode == Context::SpCompressMode::Instrument)
-            {
-                std::vector<SpCompressInputEdge> ffi_edges = buildSpCompressEdges(blk);
-                const uint32_t n_edges = static_cast<uint32_t>(ffi_edges.size());
-
-                auto t0 = std::chrono::steady_clock::now();
-                auto baseline_tree = std::make_unique<spqr_compat::StaticSPQRTree>(*blk.Gblk);
-                auto t1 = std::chrono::steady_clock::now();
-
-                SpCompressStats stats{};
-                SpCompressTimings timings{};
-                auto t2 = std::chrono::steady_clock::now();
-                SpqrResult* compress_raw = sp_compress_reconstruct_with_timings_ffi(
-                    n_blk,
-                    ffi_edges.data(), n_edges,
-                    contractible.data(),
-                    static_cast<uint32_t>(contractible.size()),
-                    &stats,
-                    &timings);
-                auto t3 = std::chrono::steady_clock::now();
-
-                if (compress_raw) spqr_result_free(compress_raw);
-
-                const auto t_base_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-                const auto t_comp_us = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-                const long long gain_us = t_base_us - t_comp_us;
-                const double gain_pct =
-                    t_base_us > 0 ? (100.0 * static_cast<double>(gain_us) / static_cast<double>(t_base_us)) : 0.0;
-
-                static std::ofstream csv_stream;
-                static bool csv_init = false;
-                static int block_idx = 0;
-                if (!csv_init) {
-                    const std::string& path = ctx().spCompressInstrumentCsv;
-                    if (!path.empty()) {
-                        csv_stream.open(path);
-                    }
-                    std::ostream& os = csv_stream.is_open() ? static_cast<std::ostream&>(csv_stream) : std::cerr;
-                    os << "block_idx,n_nodes,n_edges,core_nodes,core_edges,"
-                          "macro_count,macro_series,macro_parallel,"
-                          "fully_reducible,t_baseline_us,t_spcompress_us,"
-                          "gain_us,gain_pct,"
-                          "t_compress_us,t_build_spqr_core_us,"
-                          "t_reconstruct_us,t_normalize_us,t_canonicalize_us,"
-                          "t_canon_root_us,t_canon_node_order_us,"
-                          "t_canon_edge_orient_us,t_canon_move_root_us,"
-                          "t_reconstruct_build_builder_us,"
-                          "t_reconstruct_normalize_in_place_us,"
-                          "t_reconstruct_finalize_us,"
-                          "t_reconstruct_defensive_normalize_us\n";
-                    csv_init = true;
-                }
-                std::ostream& os = csv_stream.is_open() ? static_cast<std::ostream&>(csv_stream) : std::cerr;
-                os << block_idx++ << "," << n_blk << "," << n_edges << ","
-                   << stats.core_nodes << "," << stats.core_edges_count << ","
-                   << stats.macro_count << "," << stats.macro_series << ","
-                   << stats.macro_parallel << ","
-                   << static_cast<int>(stats.fully_sp_reducible) << ","
-                   << t_base_us << "," << t_comp_us << "," << gain_us << ","
-                   << gain_pct << ","
-                   << timings.t_compress_us << ","
-                   << timings.t_build_spqr_core_us << ","
-                   << timings.t_reconstruct_us << ","
-                   << timings.t_normalize_us << ","
-                   << timings.t_canonicalize_us << ","
-                   << timings.t_canon_root_us << ","
-                   << timings.t_canon_node_order_us << ","
-                   << timings.t_canon_edge_orient_us << ","
-                   << timings.t_canon_move_root_us << ","
-                   << timings.t_reconstruct_build_builder_us << ","
-                   << timings.t_reconstruct_normalize_in_place_us << ","
-                   << timings.t_reconstruct_finalize_us << ","
-                   << timings.t_reconstruct_defensive_normalize_us << "\n";
-                if (block_idx % 100 == 0) os.flush();
-
-                blk.spqr = std::move(baseline_tree);
-                return true;
-            }
-
             blk.spqr = std::make_unique<spqr_compat::StaticSPQRTree>(
                 *blk.Gblk,
                 contractible.data(),
-                static_cast<uint32_t>(contractible.size()));
+                n_blk);
             return true;
+        }
+
+        void finishStaticBlockSpqrForDP(BlockData &blk)
+        {
+            SPQR_RUST_ASSERT(blk.spqr != nullptr);
+
+            const auto &T = blk.spqr->tree();
+
+            blk.skel2tree.clear();
+            blk.skel2tree.reserve(2 * T.numberOfEdges());
+            for (spqr_compat::edge te : T.edges)
+            {
+                if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
+                {
+                    blk.skel2tree[eSrc] = te;
+                }
+                if (auto eTgt = blk.spqr->skeletonEdgeTgt(te))
+                {
+                    blk.skel2tree[eTgt] = te;
+                }
+            }
+
+            blk.parent.init(T, nullptr);
+            spqr_compat::node root = blk.spqr->rootNode();
+            blk.parent[root] = root;
+
+            std::stack<spqr_compat::node> st;
+            st.push(root);
+
+            while (!st.empty())
+            {
+                spqr_compat::node u = st.top();
+                st.pop();
+
+                T.forEachAdj(u, [&](node v, edge) {
+                    if (blk.parent[v] == nullptr)
+                    {
+                        blk.parent[v] = u;
+                        st.push(v);
+                    }
+                });
+            }
         }
 
         void buildBlockData(BlockData &blk, CcData &cc)
@@ -14725,24 +15178,16 @@ namespace solver
             blk.blkDegPlus.init(*blk.Gblk, 0);
             blk.blkDegMinus.init(*blk.Gblk, 0);
 
-            size_t hEdgeCount = 0;
-            for (spqr_compat::edge hE : cc.bc->hEdges(blk.bNode))
-            {
-                (void)hE;
-                ++hEdgeCount;
-                if (hEdgeCount >= 1000000) break;
-            }
+            const std::vector<spqr_compat::edge> hEdgesForBlock =
+                cc.bc->hEdges(blk.bNode);
+            const size_t hEdgeCount = hEdgesForBlock.size();
 
             auto &C = ctx();
             const bool useFlatEdges =
-                C.spCompressMode == Context::SpCompressMode::MacroDirectDebug &&
-                hEdgeCount >= 1000000 &&
-                std::getenv("BF_DISABLE_FLAT_BLOCK_EDGES") == nullptr;
-            const bool useFlatNodes =
-                useFlatEdges &&
-                std::getenv("BF_DISABLE_FLAT_BLOCK_NODES") == nullptr;
+                C.spCompressMode == Context::SpCompressMode::MacroDirect &&
+                hEdgeCount >= 1000000;
             blk.flatEdges = useFlatEdges;
-            blk.flatNodes = useFlatNodes;
+            blk.flatNodes = useFlatEdges;
             if (useFlatEdges)
             {
                 blk.flatEdgeToOrig.reserve(hEdgeCount);
@@ -14765,7 +15210,7 @@ namespace solver
                     blk.edgeToOrig[eB] = eOrig;
                 }
 
-                const auto edgeTypes = C._edge2types(eOrig);
+                const auto edgeTypes = edgePartTypes(C, eOrig);
                 EdgePartType tU = edgeTypes.first;
                 EdgePartType tV = edgeTypes.second;
 
@@ -14811,6 +15256,8 @@ namespace solver
                             vB = blk.Gblk->newNode();
                             blk.toCc[vB] = vCc;
                             blk.nodeToOrig[vB] = cc.nodeToOrig[vCc];
+                            blk.blkDegPlus[vB] = 0;
+                            blk.blkDegMinus[vB] = 0;
                         }
                         cc_to_blk[vCc] = vB;
                         if (blk.flatEdges)
@@ -14822,76 +15269,78 @@ namespace solver
                     return vB;
                 };
 
-                for (spqr_compat::edge hE : cc.bc->hEdges(blk.bNode))
+                for (spqr_compat::edge hE : hEdgesForBlock)
                 {
                     spqr_compat::edge eCc = cc.bc->original(hE);
-                    addBlockEdge(eCc,
-                                 getBlockNode(cc.Gcc->source(eCc)),
-                                 getBlockNode(cc.Gcc->target(eCc)));
+                    const spqr_compat::node vB =
+                        getBlockNode(cc.Gcc->target(eCc));
+                    const spqr_compat::node uB =
+                        getBlockNode(cc.Gcc->source(eCc));
+                    addBlockEdge(eCc, uB, vB);
                 }
             }
             else
             {
-            struct EdgeRec { spqr_compat::edge eCc; spqr_compat::node uC; spqr_compat::node vC; };
-            std::vector<EdgeRec> edges_vec;
-            for (spqr_compat::edge hE : cc.bc->hEdges(blk.bNode))
-            {
-                spqr_compat::edge eCc = cc.bc->original(hE);
-                edges_vec.push_back({eCc, cc.Gcc->source(eCc), cc.Gcc->target(eCc)});
-            }
-
-            std::vector<spqr_compat::node> verts_vec;
-            verts_vec.reserve(2 * edges_vec.size());
-            for (const auto &er : edges_vec)
-            {
-                verts_vec.push_back(er.uC);
-                verts_vec.push_back(er.vC);
-            }
-            std::sort(verts_vec.begin(), verts_vec.end(),
-                      [](spqr_compat::node a, spqr_compat::node b)
-                      { return a.index() < b.index(); });
-            verts_vec.erase(std::unique(verts_vec.begin(), verts_vec.end()), verts_vec.end());
-
-            std::unordered_map<spqr_compat::node, spqr_compat::node> cc_to_blk;
-            cc_to_blk.reserve(verts_vec.size());
-
-            for (spqr_compat::node vCc : verts_vec)
-            {
-                spqr_compat::node vB;
-                if (blk.flatNodes)
+                struct EdgeRec { spqr_compat::edge eCc; spqr_compat::node uC; spqr_compat::node vC; };
+                std::vector<EdgeRec> edges_vec;
+                edges_vec.reserve(hEdgesForBlock.size());
+                for (spqr_compat::edge hE : hEdgesForBlock)
                 {
-                    uint32_t idx = static_cast<uint32_t>(blk.flatNodeToOrig.size());
-                    vB = spqr_compat::node{idx};
-                    blk.flatNodeToCc.push_back(vCc);
-                    blk.flatNodeToOrig.push_back(cc.nodeToOrig[vCc]);
+                    spqr_compat::edge eCc = cc.bc->original(hE);
+                    edges_vec.push_back({eCc, cc.Gcc->source(eCc), cc.Gcc->target(eCc)});
                 }
-                else
-                {
-                    vB = blk.Gblk->newNode();
-                    blk.toCc[vB] = vCc;
-                    blk.nodeToOrig[vB] = cc.nodeToOrig[vCc];
-                }
-                cc_to_blk[vCc] = vB;
-                if (blk.flatEdges)
-                {
-                    blk.flatDegPlus.resize(static_cast<size_t>(vB.idx) + 1, 0);
-                    blk.flatDegMinus.resize(static_cast<size_t>(vB.idx) + 1, 0);
-                }
-            }
 
-            for (const auto &er : edges_vec)
-            {
-                auto srcIt = cc_to_blk.find(er.uC);
-                auto tgtIt = cc_to_blk.find(er.vC);
-                if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end())
+                std::vector<spqr_compat::node> verts_vec;
+                verts_vec.reserve(2 * edges_vec.size());
+                for (const auto &er : edges_vec)
                 {
-                    addBlockEdge(er.eCc, srcIt->second, tgtIt->second);
+                    verts_vec.push_back(er.uC);
+                    verts_vec.push_back(er.vC);
+                }
+                std::sort(verts_vec.begin(), verts_vec.end(),
+                          [](spqr_compat::node a, spqr_compat::node b)
+                          { return a.index() < b.index(); });
+                verts_vec.erase(std::unique(verts_vec.begin(), verts_vec.end()), verts_vec.end());
+
+                std::unordered_map<spqr_compat::node, spqr_compat::node> cc_to_blk;
+                cc_to_blk.reserve(verts_vec.size());
+
+                for (spqr_compat::node vCc : verts_vec)
+                {
+                    spqr_compat::node vB;
+                    if (blk.flatNodes)
+                    {
+                        uint32_t idx = static_cast<uint32_t>(blk.flatNodeToOrig.size());
+                        vB = spqr_compat::node{idx};
+                        blk.flatNodeToCc.push_back(vCc);
+                        blk.flatNodeToOrig.push_back(cc.nodeToOrig[vCc]);
+                    }
+                    else
+                    {
+                        vB = blk.Gblk->newNode();
+                        blk.toCc[vB] = vCc;
+                        blk.nodeToOrig[vB] = cc.nodeToOrig[vCc];
+                        blk.blkDegPlus[vB] = 0;
+                        blk.blkDegMinus[vB] = 0;
+                    }
+                    cc_to_blk[vCc] = vB;
+                    if (blk.flatEdges)
+                    {
+                        blk.flatDegPlus.resize(static_cast<size_t>(vB.idx) + 1, 0);
+                        blk.flatDegMinus.resize(static_cast<size_t>(vB.idx) + 1, 0);
+                    }
+                }
+
+                for (const auto &er : edges_vec)
+                {
+                    auto srcIt = cc_to_blk.find(er.uC);
+                    auto tgtIt = cc_to_blk.find(er.vC);
+                    if (srcIt != cc_to_blk.end() && tgtIt != cc_to_blk.end())
+                    {
+                        addBlockEdge(er.eCc, srcIt->second, tgtIt->second);
+                    }
                 }
             }
-            }
-
-            VLOG << "[DEBUG][buildBlockData]  |V(Gblk)|=" << blockNodeCount(blk)
-                 << " |E(Gblk)|=" << blockEdgeCount(blk) << "\n";
 
             if (blockNodeCount(blk) >= 3)
             {
@@ -14900,46 +15349,8 @@ namespace solver
                     return;
                 }
 
-                SPQR_RUST_ASSERT(blk.spqr != nullptr);
-
-                const auto &T = blk.spqr->tree();
-
-                blk.skel2tree.clear();
-                blk.skel2tree.reserve(2 * T.numberOfEdges());
-                for (spqr_compat::edge te : T.edges)
-                {
-                    if (auto eSrc = blk.spqr->skeletonEdgeSrc(te))
-                    {
-                        blk.skel2tree[eSrc] = te;
-                    }
-                    if (auto eTgt = blk.spqr->skeletonEdgeTgt(te))
-                    {
-                        blk.skel2tree[eTgt] = te;
-                    }
-                }
-
-                blk.parent.init(T, nullptr);
-                spqr_compat::node root = blk.spqr->rootNode();
-                blk.parent[root] = root;
-
-                std::stack<spqr_compat::node> st;
-                st.push(root);
-
-                while (!st.empty())
-                {
-                    spqr_compat::node u = st.top();
-                    st.pop();
-
-                    T.forEachAdj(u, [&](node v, edge /*e*/) {
-                        if (blk.parent[v] == nullptr)
-                        {
-                            blk.parent[v] = u;
-                            st.push(v);
-                        }
-                    });
-                }
+                finishStaticBlockSpqrForDP(blk);
             }
-
         }
 
         struct BlockPrep
@@ -14947,9 +15358,7 @@ namespace solver
             CcData *cc;
             spqr_compat::node bNode;
             size_t ccIndex = 0;
-
             std::unique_ptr<BlockData> blk;
-
             uint64_t treeWeight = 0;
             uint64_t edgeWeight = 0;
             uint64_t logicWeight = 0;
@@ -14966,14 +15375,85 @@ namespace solver
             spqr_compat::NodeArray<int> blkDegPlus, blkDegMinus;
         };
 
+        struct ComponentWork
+        {
+            bool directIndexed = false;
+            const std::vector<std::vector<node>> *nodeBuckets = nullptr;
+            const std::vector<std::vector<edge>> *edgeBuckets = nullptr;
+            const std::vector<spqr_index::GraphComponentRecord> *records = nullptr;
+            const std::vector<std::uint32_t> *nodes = nullptr;
+            const std::vector<std::uint32_t> *edges = nullptr;
+            bool nodesIdentity = false;
+            bool edgesIdentity = false;
+
+            std::size_t nodeCount(std::size_t cid) const
+            {
+                if (!directIndexed)
+                    return (*nodeBuckets)[cid].size();
+                const auto &rec = (*records)[cid];
+                return static_cast<std::size_t>(rec.node_end - rec.node_begin);
+            }
+
+            std::size_t edgeCount(std::size_t cid) const
+            {
+                if (!directIndexed)
+                    return (*edgeBuckets)[cid].size();
+                const auto &rec = (*records)[cid];
+                return static_cast<std::size_t>(rec.edge_end - rec.edge_begin);
+            }
+
+            template <typename Fn>
+            void forEachNode(std::size_t cid, Fn &&fn) const
+            {
+                if (!directIndexed)
+                {
+                    for (node v : (*nodeBuckets)[cid])
+                        fn(v);
+                    return;
+                }
+                const auto &rec = (*records)[cid];
+                if (nodesIdentity)
+                {
+                    for (std::uint32_t i = rec.node_begin; i < rec.node_end; ++i)
+                        fn(node{i});
+                }
+                else
+                {
+                    for (std::uint32_t i = rec.node_begin; i < rec.node_end; ++i)
+                        fn(node{(*nodes)[i]});
+                }
+            }
+
+            template <typename Fn>
+            void forEachEdge(std::size_t cid, Fn &&fn) const
+            {
+                if (!directIndexed)
+                {
+                    for (edge e : (*edgeBuckets)[cid])
+                        fn(e);
+                    return;
+                }
+                const auto &rec = (*records)[cid];
+                if (edgesIdentity)
+                {
+                    for (std::uint32_t i = rec.edge_begin; i < rec.edge_end; ++i)
+                        fn(edge{i});
+                }
+                else
+                {
+                    for (std::uint32_t i = rec.edge_begin; i < rec.edge_end; ++i)
+                        fn(edge{(*edges)[i]});
+                }
+            }
+        };
+
         struct ThreadComponentArgs
         {
             size_t tid;
             size_t numThreads;
             int nCC;
             std::atomic<size_t> *nextIndex;
-            std::vector<std::vector<node>> *bucket;
-            std::vector<std::vector<edge>> *edgeBuckets;
+            ComponentWork *work;
             std::vector<std::unique_ptr<CcData>> *components;
         };
 
@@ -15013,8 +15493,7 @@ namespace solver
             int nCC = targs->nCC;
             std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
-            std::vector<std::vector<node>> *bucket = targs->bucket;
-            std::vector<std::vector<edge>> *edgeBuckets = targs->edgeBuckets;
+            ComponentWork *work = targs->work;
 
             size_t chunkSize = 1;
             size_t processed = 0;
@@ -15050,62 +15529,133 @@ namespace solver
                         (*components)[cid]->degMinus.init(*(*components)[cid]->Gcc, 0);
 
                         auto& G = ctx().G;
+                        std::vector<uint32_t> cutAdjWrite;
+
+                        auto prepareCutAdj = [&](auto &&nodeInComponent) {
+                            CcData &cc = *(*components)[cid];
+                            const uint32_t localNodeCount = cc.Gcc->numberOfNodes();
+                            cc.cutAdjOffsets.assign(static_cast<size_t>(localNodeCount) + 1u, 0u);
+
+                            work->forEachEdge(cid, [&](edge e) {
+                                const node uC = nodeInComponent(G.source(e));
+                                const node vC = nodeInComponent(G.target(e));
+                                ++cc.cutAdjOffsets[static_cast<size_t>(uC.idx) + 1u];
+                                ++cc.cutAdjOffsets[static_cast<size_t>(vC.idx) + 1u];
+                            });
+
+                            uint64_t totalAdj = 0;
+                            bool overflow = false;
+                            for (uint32_t i = 0; i < localNodeCount; ++i)
+                            {
+                                totalAdj += cc.cutAdjOffsets[static_cast<size_t>(i) + 1u];
+                                if (totalAdj > std::numeric_limits<uint32_t>::max())
+                                {
+                                    overflow = true;
+                                    break;
+                                }
+                                cc.cutAdjOffsets[static_cast<size_t>(i) + 1u] =
+                                    static_cast<uint32_t>(totalAdj);
+                            }
+
+                            if (overflow)
+                            {
+                                cc.cutAdjOffsets.clear();
+                                cc.cutAdj.clear();
+                                cutAdjWrite.clear();
+                                return;
+                            }
+
+                            cc.cutAdj.assign(static_cast<size_t>(totalAdj), {});
+                            cutAdjWrite = cc.cutAdjOffsets;
+                        };
+
                         auto addCcEdge = [&](edge e, node uC, node vC) {
                             auto eC = (*components)[cid]->Gcc->newEdge(uC, vC);
                             (*components)[cid]->edgeToOrig[eC] = e;
 
-                            const auto edgeTypes = ctx()._edge2types(e);
-                            if (G.source(e) == G.target(e)) {
+                            auto [srcType, dstType] = edgePartTypes(ctx(), e);
+                            if (!(*components)[cid]->cutAdjOffsets.empty())
+                            {
+                                auto &cutAdj = (*components)[cid]->cutAdj;
+                                auto addCutAdj = [&](node from,
+                                                     node to,
+                                                     EdgePartType outType,
+                                                     EdgePartType inType) {
+                                    const uint32_t pos = cutAdjWrite[from.idx]++;
+                                    cutAdj[pos] = {to.idx,
+                                                   endpoint_visit_bit(outType),
+                                                   endpoint_visit_bit(inType)};
+                                };
+                                addCutAdj(uC, vC, srcType, dstType);
+                                addCutAdj(vC, uC, dstType, srcType);
+                            }
+
+                            if (uC == vC) {
                                 addIncidentTypeCount((*components)[cid]->degPlus,
                                                      (*components)[cid]->degMinus,
-                                                     vC, edgeTypes.first);
+                                                     vC, srcType);
                                 addIncidentTypeCount((*components)[cid]->degPlus,
                                                      (*components)[cid]->degMinus,
-                                                     vC, edgeTypes.second);
+                                                     vC, dstType);
                             } else {
                                 addIncidentTypeCount((*components)[cid]->degPlus,
                                                      (*components)[cid]->degMinus,
                                                      uC,
-                                                     edgeTypes.first);
+                                                     srcType);
                                 addIncidentTypeCount((*components)[cid]->degPlus,
                                                      (*components)[cid]->degMinus,
                                                      vC,
-                                                     edgeTypes.second);
+                                                     dstType);
                             }
                         };
 
-                        if ((*bucket)[cid].size() >= 1000000)
+                        auto addMappedEdges = [&](auto &&nodeInComponent) {
+                            prepareCutAdj(nodeInComponent);
+                            work->forEachEdge(cid, [&](edge e) {
+                                addCcEdge(e,
+                                          nodeInComponent(G.source(e)),
+                                          nodeInComponent(G.target(e)));
+                            });
+                        };
+
+                        if (work->directIndexed && work->nodesIdentity)
+                        {
+                            const auto &rec = (*work->records)[cid];
+                            auto orig_to_cc = [begin = rec.node_begin](node v) {
+                                return node{v.idx - begin};
+                            };
+
+                            work->forEachNode(cid, [&](node vG) {
+                                node vC = (*components)[cid]->Gcc->newNode();
+                                (*components)[cid]->nodeToOrig[vC] = vG;
+                            });
+
+                            addMappedEdges(orig_to_cc);
+                        }
+                        else if (work->nodeCount(cid) >= 1000000)
                         {
                             spqr_compat::NodeArray<node> orig_to_cc(G, nullptr);
 
-                            for (node vG : (*bucket)[cid])
-                            {
+                            work->forEachNode(cid, [&](node vG) {
                                 node vC = (*components)[cid]->Gcc->newNode();
                                 (*components)[cid]->nodeToOrig[vC] = vG;
                                 orig_to_cc[vG] = vC;
-                            }
+                            });
 
-                            for (edge e : (*edgeBuckets)[cid])
-                            {
-                                addCcEdge(e, orig_to_cc[G.source(e)], orig_to_cc[G.target(e)]);
-                            }
+                            addMappedEdges([&](node v) { return orig_to_cc[v]; });
                         }
                         else
                         {
                             std::unordered_map<node, node> orig_to_cc;
-                            orig_to_cc.reserve((*bucket)[cid].size());
+                            orig_to_cc.reserve(work->nodeCount(cid));
 
-                            for (node vG : (*bucket)[cid])
-                            {
+                            work->forEachNode(cid, [&](node vG) {
                                 node vC = (*components)[cid]->Gcc->newNode();
                                 (*components)[cid]->nodeToOrig[vC] = vG;
                                 orig_to_cc[vG] = vC;
-                            }
+                            });
 
-                            for (edge e : (*edgeBuckets)[cid])
-                            {
-                                addCcEdge(e, orig_to_cc[G.source(e)], orig_to_cc[G.target(e)]);
-                            }
+                            addMappedEdges([&](node v) { return orig_to_cc[v]; });
                         }
                     }
                     processed++;
@@ -15136,7 +15686,6 @@ namespace solver
             std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<std::unique_ptr<CcData>> *components = targs->components;
             std::vector<BlockPrep> &myPreps = (*targs->perThreadPreps)[tid];
-
             size_t chunkSize = 1;
             size_t processed = 0;
 
@@ -15181,8 +15730,6 @@ namespace solver
                         {
                             if (cc->bc->typeOfBNode(v) == BCTree::BNodeType::BComp)
                             {
-                                VLOG << "  [DEBUG][worker_bcTree]  B-node "
-                                     << v.index() << " (block)\n";
                                 localPreps.emplace_back(cc, v, cid);
                             }
                         }
@@ -15279,14 +15826,12 @@ namespace solver
         void *worker_block_build(void *arg)
         {
             std::unique_ptr<ThreadBlocksArgs> targs(static_cast<ThreadBlocksArgs *>(arg));
-            size_t tid = targs->tid;
             size_t numThreads = targs->numThreads;
             size_t blocks = targs->blocks;
             std::atomic<size_t> *nextIndex = targs->nextIndex;
             std::vector<BlockPrep> *blockPreps = targs->blockPreps;
 
             size_t chunkSize = 1;
-            size_t processed = 0;
 
             while (true)
             {
@@ -15307,9 +15852,7 @@ namespace solver
                     blk.bNode = (*blockPreps)[bid].bNode;
 
                     BF_INSTR(auto __build_t0 = std::chrono::high_resolution_clock::now();)
-                    {
-                        buildBlockData(blk, *(*blockPreps)[bid].cc);
-                    }
+                    buildBlockData(blk, *(*blockPreps)[bid].cc);
                     BF_INSTR(
                     auto __build_t1 = std::chrono::high_resolution_clock::now();
                     uint64_t __dt_build = std::chrono::duration_cast<std::chrono::nanoseconds>(__build_t1 - __build_t0).count();
@@ -15332,8 +15875,6 @@ namespace solver
                     }
                     prepRef.edgeWeight = (blk.Gblk ? blockEdgeCount(blk) : 0);
                     prepRef.logicWeight = prepRef.treeWeight + prepRef.edgeWeight;
-
-                    ++processed;
                 }
 
                 auto chunkEnd = std::chrono::high_resolution_clock::now();
@@ -15349,7 +15890,6 @@ namespace solver
                 }
             }
 
-            std::cout << "Thread " << tid << " built " << processed << " blocks (SPQR build)\n";
             return nullptr;
         }
 
@@ -15618,60 +16158,86 @@ namespace solver
 
             ::spqr_set_canonicalize_root_enabled(C.skipCanonicalizeRoot ? 0 : 1);
 
+            const uint64_t maxPackedEndpointIdx =
+                C.G.numberOfNodes() == 0
+                    ? 0
+                    : static_cast<uint64_t>(C.G.numberOfNodes() - 1);
+            const bool fastSnarlOutputPackable =
+                graph_index::fits_packed_endpoint_id(maxPackedEndpointIdx);
             C.fastSnarlPairsEnabled =
-                (C.spCompressMode == Context::SpCompressMode::MacroDirectDebug &&
-                 std::getenv("BF_DISABLE_FAST_SNARL_OUTPUT") == nullptr);
-            if (std::getenv("BF_DEBUG_FAST_SNARL_OUTPUT")) {
-                std::cerr << "[fast_snarl_solve] enabled="
-                          << (C.fastSnarlPairsEnabled ? 1 : 0)
-                          << " include_trivial=" << (C.includeTrivial ? 1 : 0)
-                          << " sp_compress_mode=" << static_cast<int>(C.spCompressMode)
-                          << " disable_env="
-                          << (std::getenv("BF_DISABLE_FAST_SNARL_OUTPUT") ? 1 : 0)
-                          << "\n";
-            }
+                (C.spCompressMode == Context::SpCompressMode::MacroDirect &&
+                 fastSnarlOutputPackable);
             C.fastSnarlPairs.clear();
             C.fastSnarlCliques.clear();
-            if (C.spCompressMode == Context::SpCompressMode::MacroDirectDebug &&
-                std::getenv("BF_SPQR_THREADS") == nullptr)
-            {
-                const std::string spqrThreads =
-                    std::to_string(std::max<unsigned>(1u, C.threads));
-                setenv("BF_SPQR_THREADS", spqrThreads.c_str(), /*overwrite=*/0);
-            }
             const bool streamBlockBuildSolve =
-                (std::getenv("BF_DISABLE_STREAMING_BLOCK_SOLVE") == nullptr &&
-                 (C.threads <= 1 ||
-                  C.spCompressMode == Context::SpCompressMode::MacroDirectDebug));
+                C.threads <= 1 ||
+                C.spCompressMode == Context::SpCompressMode::MacroDirect;
 
             Graph &G = C.G;
             int nCC = 0;
             std::vector<std::vector<node>> bucket;
             std::vector<std::vector<edge>> edgeBuckets;
+            ComponentWork componentWork;
 
             {
                 PhaseSampler io_sampler(g_stats_io);
-                NodeArray<int> compIdx(G);
+                const bool directNodesReady =
+                    !C.directSpqrGraphComponents.empty() &&
+                    ((C.directSpqrGraphComponentNodesIdentity &&
+                      C.directSpqrGraphComponents.back().node_end == G.numberOfNodes()) ||
+                     (!C.directSpqrGraphComponentNodesIdentity &&
+                      C.directSpqrGraphComponentNodes.size() == G.numberOfNodes()));
+                const bool directEdgesReady =
+                    !C.directSpqrGraphComponents.empty() &&
+                    ((C.directSpqrGraphComponentEdgesIdentity &&
+                      C.directSpqrGraphComponents.back().edge_end == G.numberOfEdges()) ||
+                     (!C.directSpqrGraphComponentEdgesIdentity &&
+                      C.directSpqrGraphComponentEdges.size() == G.numberOfEdges()));
+                const bool directComponentPartition =
+                    !C.directSpqrGraphComponents.empty() &&
+                    directNodesReady &&
+                    directEdgesReady;
 
-                MARK_SCOPE_MEM("sn/phase/ComputeCC");
-                nCC = connectedComponents(G, compIdx);
-
-                bucket.assign(nCC, {});
+                if (directComponentPartition)
                 {
-                    MARK_SCOPE_MEM("sn/phase/BucketNodes");
-                    for (node v : G.nodes)
-                    {
-                        bucket[compIdx[v]].push_back(v);
-                    }
+                    nCC = graph_index::require_spqr_count_size(
+                        C.directSpqrGraphComponents.size(),
+                        "direct SPQRI graph component count");
+                    componentWork.directIndexed = true;
+                    componentWork.records = &C.directSpqrGraphComponents;
+                    componentWork.nodes = &C.directSpqrGraphComponentNodes;
+                    componentWork.edges = &C.directSpqrGraphComponentEdges;
+                    componentWork.nodesIdentity =
+                        C.directSpqrGraphComponentNodesIdentity;
+                    componentWork.edgesIdentity =
+                        C.directSpqrGraphComponentEdgesIdentity;
                 }
-
-                edgeBuckets.assign(nCC, {});
+                else
                 {
-                    MARK_SCOPE_MEM("sn/phase/BucketEdges");
-                    for (edge e : G.edges)
+                    NodeArray<int> compIdx(G);
+
+                    MARK_SCOPE_MEM("sn/phase/ComputeCC");
+                    nCC = connectedComponents(G, compIdx);
+
+                    bucket.assign(nCC, {});
                     {
-                        edgeBuckets[compIdx[G.source(e)]].push_back(e);
+                        MARK_SCOPE_MEM("sn/phase/BucketNodes");
+                        for (node v : G.nodes)
+                        {
+                            bucket[compIdx[v]].push_back(v);
+                        }
                     }
+
+                    edgeBuckets.assign(nCC, {});
+                    {
+                        MARK_SCOPE_MEM("sn/phase/BucketEdges");
+                        for (edge e : G.edges)
+                        {
+                            edgeBuckets[compIdx[G.source(e)]].push_back(e);
+                        }
+                    }
+                    componentWork.nodeBuckets = &bucket;
+                    componentWork.edgeBuckets = &edgeBuckets;
                 }
             }
 
@@ -15692,8 +16258,7 @@ namespace solver
                             1,
                             nCC,
                             &nextIndex,
-                                                        &bucket,
-                            &edgeBuckets,
+                            &componentWork,
                             &components,
                         };
                         worker_component(static_cast<void *>(args));
@@ -15723,8 +16288,7 @@ namespace solver
                                 numThreads,
                                 nCC,
                                 &nextIndex,
-                                                                &bucket,
-                                &edgeBuckets,
+                                &componentWork,
                                 &components,
                             };
 
@@ -15745,7 +16309,7 @@ namespace solver
                     }
                 }
 
-                if (C.threads > 1)
+                if (!componentWork.directIndexed && C.threads > 1)
                 {
                     decltype(bucket)().swap(bucket);
                     decltype(edgeBuckets)().swap(edgeBuckets);
@@ -15767,89 +16331,107 @@ namespace solver
                         (void)cc_ptr->degMinus[last];
                     }
 
-                    MARK_SCOPE_MEM("sn/phase/bcTrees");
-
-                    size_t numThreads = std::thread::hardware_concurrency();
-                    numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
-
-                    std::vector<std::vector<BlockPrep>> perThreadPreps(
-                        std::max<size_t>(numThreads, 1));
-
-                    if (numThreads <= 1)
+                    if (componentWork.directIndexed)
                     {
-                        std::atomic<size_t> nextIndex{0};
-                        ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
-                            0,
-                            1,
-                            nCC,
-                            &nextIndex,
-                            &components,
-                            &perThreadPreps};
-                        worker_bcTree(static_cast<void *>(args));
+                        C.directSpqrGraphComponents.clear();
+                        C.directSpqrGraphComponentNodes.clear();
+                        C.directSpqrGraphComponentEdges.clear();
+                        C.directSpqrGraphComponentNodesIdentity = false;
+                        C.directSpqrGraphComponentEdgesIdentity = false;
+                        componentWork.records = nullptr;
+                        componentWork.nodes = nullptr;
+                        componentWork.edges = nullptr;
+                        componentWork.nodesIdentity = false;
+                        componentWork.edgesIdentity = false;
                     }
-                    else
+
                     {
-                        std::vector<pthread_t> threads(numThreads);
+                        MARK_SCOPE_MEM("sn/phase/bcTrees");
 
-                        std::atomic<size_t> nextIndex{0};
+                        size_t numThreads = std::thread::hardware_concurrency();
+                        numThreads = std::min({(size_t)C.threads, (size_t)nCC, numThreads});
 
-                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        std::vector<std::vector<BlockPrep>> perThreadPreps(
+                            std::max<size_t>(numThreads, 1));
+
+                        if (numThreads <= 1)
                         {
-                            pthread_attr_t attr;
-                            pthread_attr_init(&attr);
-
-                            size_t stackSize = C.stackSize;
-                            if (stackSize < kMinThreadStackSize)
-                                stackSize = kMinThreadStackSize;
-                            int err = pthread_attr_setstacksize(&attr, stackSize);
-                            if (err != 0)
-                            {
-                                std::cerr << "[Error] pthread_attr_setstacksize("
-                                          << stackSize << "): " << strerror(err) << std::endl;
-                            }
-
+                            std::atomic<size_t> nextIndex{0};
                             ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
-                                tid,
-                                numThreads,
+                                0,
+                                1,
                                 nCC,
                                 &nextIndex,
                                 &components,
                                 &perThreadPreps};
+                            worker_bcTree(static_cast<void *>(args));
+                        }
+                        else
+                        {
+                            std::vector<pthread_t> threads(numThreads);
 
-                            int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
-                            if (ret != 0)
+                            std::atomic<size_t> nextIndex{0};
+
+                            for (size_t tid = 0; tid < numThreads; ++tid)
                             {
-                                std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
-                                delete args;
+                                pthread_attr_t attr;
+                                pthread_attr_init(&attr);
+
+                                size_t stackSize = C.stackSize;
+                                if (stackSize < kMinThreadStackSize)
+                                    stackSize = kMinThreadStackSize;
+                                int err = pthread_attr_setstacksize(&attr, stackSize);
+                                if (err != 0)
+                                {
+                                    std::cerr << "[Error] pthread_attr_setstacksize("
+                                              << stackSize << "): " << strerror(err) << std::endl;
+                                }
+
+                                ThreadBcTreeArgs *args = new ThreadBcTreeArgs{
+                                    tid,
+                                    numThreads,
+                                    nCC,
+                                    &nextIndex,
+                                    &components,
+                                    &perThreadPreps};
+
+                                int ret = pthread_create(&threads[tid], &attr, worker_bcTree, args);
+                                if (ret != 0)
+                                {
+                                    std::cerr << "Error creating pthread " << tid << ": " << strerror(ret) << std::endl;
+                                    delete args;
+                                }
+
+                                pthread_attr_destroy(&attr);
                             }
 
-                            pthread_attr_destroy(&attr);
+                            for (size_t tid = 0; tid < numThreads; ++tid)
+                            {
+                                pthread_join(threads[tid], nullptr);
+                            }
                         }
 
-                        for (size_t tid = 0; tid < numThreads; ++tid)
+                        size_t total = 0;
+                        for (auto &tp : perThreadPreps) total += tp.size();
+                        blockPreps.reserve(total);
+                        for (auto &tp : perThreadPreps)
                         {
-                            pthread_join(threads[tid], nullptr);
+                            blockPreps.insert(blockPreps.end(),
+                                              std::make_move_iterator(tp.begin()),
+                                              std::make_move_iterator(tp.end()));
                         }
-                    }
-
-                    size_t total = 0;
-                    for (auto &tp : perThreadPreps) total += tp.size();
-                    blockPreps.reserve(total);
-                    for (auto &tp : perThreadPreps)
-                    {
-                        blockPreps.insert(blockPreps.end(),
-                                          std::make_move_iterator(tp.begin()),
-                                          std::make_move_iterator(tp.end()));
-                    }
-                    for (const auto &prep : blockPreps)
-                    {
-                        ccBlocksRemaining[prep.ccIndex].fetch_add(1, std::memory_order_relaxed);
+                        for (const auto &prep : blockPreps)
+                        {
+                            ccBlocksRemaining[prep.ccIndex].fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                 }
 
                 if (!streamBlockBuildSolve)
                 {
                     MARK_SCOPE_MEM("sn/phase/block_SPQR_build");
+                    if (C.spqrIndex)
+                        C.spqrIndex->prepare_block_hash_lookup();
 
                     BF_INSTR(profiling_patch::reset_block_timings(blockPreps.size());)
 
@@ -15864,7 +16446,7 @@ namespace solver
                             1,
                             blockPreps.size(),
                             &nextIndex,
-                                                        &blockPreps};
+                            &blockPreps};
                         worker_block_build(static_cast<void *>(args));
                     }
                     else
@@ -15893,7 +16475,7 @@ namespace solver
                                 numThreads,
                                 blockPreps.size(),
                                 &nextIndex,
-                                                                &blockPreps};
+                                &blockPreps};
 
                             int ret = pthread_create(&threads[tid], &attr, worker_block_build, args);
                             if (ret != 0)
@@ -16002,10 +16584,11 @@ namespace solver
 
                     if (streamBlockBuildSolve)
                     {
+                        if (C.spqrIndex)
+                            C.spqrIndex->prepare_block_hash_lookup();
                         BF_INSTR(profiling_patch::reset_block_timings(blockPreps.size());)
 
-                        const bool bufferingStringSnarls =
-                            !C.fastSnarlPairsEnabled || debug_tagged_snarls_enabled();
+                        const bool bufferingStringSnarls = !C.fastSnarlPairsEnabled;
                         const uint64_t Q = 1;
                         std::atomic<size_t> nextStreamBlock{0};
                         std::atomic<int> activeIntraTaskloops{0};
@@ -16013,7 +16596,7 @@ namespace solver
                         auto runStreamWorker = [&]() {
                             std::vector<std::vector<std::string>> localSnarls;
                             std::vector<uint64_t> localFastSnarlPairs;
-                            std::vector<std::vector<uint64_t>> localFastSnarlCliques;
+                            std::vector<std::vector<uint32_t>> localFastSnarlCliques;
                             tls_snarl_buffer = &localSnarls;
                             tls_fast_snarl_pair_buffer =
                                 C.fastSnarlPairsEnabled ? &localFastSnarlPairs : nullptr;
