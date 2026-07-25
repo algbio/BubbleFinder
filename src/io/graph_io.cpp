@@ -1,5 +1,6 @@
 #include "graph_io.hpp"
 #include "util/context.hpp"
+#include "util/graph_index.hpp"
 #include "util/timer.hpp"
 #include "util/logger.hpp"
 #include "util/profiling_macros.hpp"
@@ -10,7 +11,6 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
-#include <regex>
 #include <unordered_set>
 #include <unordered_map>
 #include <sstream>
@@ -19,13 +19,11 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <charconv>
 #include <unistd.h>
 #include <atomic>
-#include <chrono>
-#include <iomanip>
 #include <iostream>
-#include <iterator>
 #include <vector>
 #if defined(_OPENMP) && defined(__GLIBCXX__)
 #include <parallel/algorithm>
@@ -34,32 +32,6 @@
 using namespace spqr_compat;
 
 namespace GraphIO {
-
-namespace {
-
-inline uint32_t require_u32_count(size_t value, const char* what) {
-    if (value > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
-        throw std::runtime_error(std::string(what) +
-                                 " exceeds current 32-bit SPQR backend limit; a true u64 backend is required");
-    }
-    return static_cast<uint32_t>(value);
-}
-
-inline size_t checked_mul_size(size_t lhs, size_t rhs, const char* what) {
-    if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
-        throw std::runtime_error(std::string(what) + " size overflow");
-    }
-    return lhs * rhs;
-}
-
-inline size_t checked_add_size(size_t lhs, size_t rhs, const char* what) {
-    if (lhs > std::numeric_limits<size_t>::max() - rhs) {
-        throw std::runtime_error(std::string(what) + " size overflow");
-    }
-    return lhs + rhs;
-}
-
-} // namespace
 
 void readStandard()
 {
@@ -118,7 +90,11 @@ void readStandard()
         if (p >= end || *p < '0' || *p > '9') return false;
         uint64_t v = 0;
         while (p < end && *p >= '0' && *p <= '9') {
-            v = v * 10u + static_cast<uint64_t>(*p - '0');
+            const uint64_t digit = static_cast<uint64_t>(*p - '0');
+            if (v > (std::numeric_limits<uint64_t>::max() - digit) / 10u) {
+                return false;
+            }
+            v = v * 10u + digit;
             ++p;
         }
         out = v;
@@ -131,12 +107,11 @@ void readStandard()
             std::string("Invalid .graph header in ") + srcName +
             ": expected 'n m' (non-negative integers) on the first line.");
     }
-    if (n64 > std::numeric_limits<uint32_t>::max()) {
-        throw std::runtime_error(std::string("n too large in ") + srcName +
-                                 " (.graph reader uses 32-bit node IDs).");
-    }
-    const uint32_t n = static_cast<uint32_t>(n64);
-    const size_t   m = static_cast<size_t>(m64);
+    const uint32_t n = graph_index::require_spqr_count(
+        n64, std::string(srcName) + " .graph declared node count");
+    const uint32_t m_u32 = graph_index::require_spqr_count(
+        m64, std::string(srcName) + " .graph declared edge count");
+    const size_t m = static_cast<size_t>(m_u32);
 
     std::vector<std::pair<uint32_t, uint32_t>> edges_raw;
     edges_raw.reserve(m);
@@ -165,7 +140,8 @@ void readStandard()
     };
 
     std::unordered_set<uint64_t> edge_set;
-    edge_set.reserve(edges_raw.size() * 2);
+    edge_set.reserve(graph_index::checked_mul_size(
+        edges_raw.size(), 2u, ".graph raw edge hash table"));
     std::vector<std::pair<uint32_t, uint32_t>> edges_ordered;
     edges_ordered.reserve(edges_raw.size());
     for (const auto &e : edges_raw) {
@@ -196,7 +172,8 @@ void readStandard()
     }
 
     std::unordered_set<uint64_t> processed;
-    processed.reserve(edges_ordered.size() * 2);
+    processed.reserve(graph_index::checked_mul_size(
+        edges_ordered.size(), 2u, ".graph processed edge hash table"));
     for (const auto &e : edges_ordered) {
         uint64_t key = encode(e.first, e.second);
         if (!processed.insert(key).second) continue;
@@ -227,6 +204,22 @@ namespace {
 inline char flipSign(char c) { return c == '+' ? '-' : '+'; }
 inline EdgePartType charToType(char c) { return c == '+' ? EdgePartType::PLUS : EdgePartType::MINUS; }
 
+void clearCompactNodeNameTables(Context &C)
+{
+    C.nodeNamesByIndex.clear();
+    C.nodeNumericNamesByIndex.clear();
+    C.nodeNumericNameValidByIndex.clear();
+    C.sparseNodeNamesByIndex.clear();
+    C.isTrashNodeByIndex.clear();
+}
+
+void clearNodeNameTables(Context &C)
+{
+    C.node2name.clear();
+    C.name2node.clear();
+    clearCompactNodeNameTables(C);
+}
+
 void ensureStringNodeNames(BiGraph& bg)
 {
     if (bg.node_names.size() == bg.n_nodes) return;
@@ -253,6 +246,19 @@ void ensureStringNodeNames(BiGraph& bg)
     std::vector<std::pair<uint32_t, std::string>>().swap(bg.string_node_names);
 }
 
+bool isGeneratedSpqrTrashName(const std::string &name, uint32_t graphOrdinal);
+std::string spqrIndexGraphNodeName(const spqr_index::IndexedSpqrTree &index,
+                                   std::uint32_t ordinal);
+bool spqrIndexHasIdentityGraphOrdinals(const spqr_index::IndexedSpqrTree &index);
+bool hasCompleteGraphEdgeTypesForDirectBuild(
+    const spqr_index::IndexedSpqrTree &index,
+    std::size_t edge_count,
+    unsigned threads);
+bool hasCompleteRealEdgeTypesForDirectBuild(
+    const spqr_index::IndexedSpqrTree &index,
+    std::size_t edge_count,
+    unsigned threads);
+
 std::string biGraphNodeName(const BiGraph& bg, uint32_t i)
 {
     if (bg.node_names.size() == bg.n_nodes) {
@@ -269,20 +275,70 @@ std::string biGraphNodeName(const BiGraph& bg, uint32_t i)
             return item.first < value;
         });
     if (it != bg.string_node_names.end() && it->first == i) {
+        if (isGeneratedSpqrTrashName(it->second, i)) return "_trash";
         return it->second;
     }
     return std::to_string(i);
+}
+
+bool isGeneratedSpqrTrashName(const std::string &name, uint32_t graphOrdinal)
+{
+    if (name.rfind("__BF__", 0) != 0) return false;
+    const std::string suffix = "N" + std::to_string(graphOrdinal);
+    if (name.size() >= suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        return true;
+    }
+
+    std::size_t n_pos = std::string::npos;
+    for (std::size_t i = 6; i < name.size(); ++i) {
+        if (name[i] == 'N') {
+            n_pos = i;
+            break;
+        }
+        if (name[i] != '_') return false;
+    }
+    if (n_pos == std::string::npos || n_pos + 1 == name.size()) return false;
+    for (std::size_t i = n_pos + 1; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') return false;
+    }
+    return true;
 }
 
 bool useCompactSnarlNameTables(const Context &C)
 {
     return C.bubbleType == Context::BubbleType::SNARL &&
            C.includeTrivial &&
-           C.spCompressMode == Context::SpCompressMode::MacroDirectDebug &&
-           std::getenv("BF_DISABLE_FAST_SNARL_OUTPUT") == nullptr &&
-           std::getenv("BF_DEBUG_TAGGED_SNARLS") == nullptr &&
-           std::getenv("BF_FORCE_SNARL_NAME_INDEX") == nullptr &&
-           std::getenv("BF_FORCE_SNARL_NODE2NAME") == nullptr;
+           C.spCompressMode == Context::SpCompressMode::MacroDirect;
+}
+
+bool useCompactSuperbubbleNameTables(const Context &C,
+                                     const BiGraph &bg,
+                                     bool directed_only)
+{
+    if (C.bubbleType != Context::BubbleType::SPQR_TREE_ONLY ||
+        C.outputPath.empty() ||
+        !spqr_index::detail::ends_with(C.outputPath, ".spqri")) {
+        return false;
+    }
+    if (!spqr_index::graph_profile_matches_oriented_double(C.spqrTreeView,
+                                                           directed_only) ||
+        bg.numeric_node_names.size() != bg.n_nodes ||
+        !bg.string_node_names.empty()) {
+        return false;
+    }
+    if (!bg.numeric_node_name_valid.empty() &&
+        !std::all_of(bg.numeric_node_name_valid.begin(),
+                     bg.numeric_node_name_valid.end(),
+                     [](std::uint8_t v) { return v != 0; })) {
+        return false;
+    }
+    for (std::uint64_t name : bg.numeric_node_names) {
+        if (name > (std::numeric_limits<std::uint64_t>::max() >> 1u)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void ensureCompactNodeSlot(Context &C, spqr_compat::node v)
@@ -355,28 +411,26 @@ void setCompactTrashNode(Context &C, spqr_compat::node v)
 
 std::vector<spqr_compat::node> createNodes(BiGraph& bg, size_t extra_nodes = 0) {
     auto &C = ctx();
-    const size_t node_storage_size = checked_add_size(
+    const size_t node_storage_size = graph_index::checked_add_size(
         static_cast<size_t>(bg.n_nodes), extra_nodes, "input graph node storage");
-    require_u32_count(bg.n_nodes, "input graph node count");
-    require_u32_count(node_storage_size, "SPQR graph node count");
+    graph_index::require_spqr_count(bg.n_nodes, "input graph node count");
+    graph_index::require_spqr_count_size(
+        graph_index::checked_add_size(
+            static_cast<size_t>(C.G.numberOfNodes()), node_storage_size,
+            "SPQR graph node count"),
+        "SPQR graph node count");
     std::vector<spqr_compat::node> id2node(bg.n_nodes);
     const bool compact_names = useCompactSnarlNameTables(C);
     const bool bg_has_numeric_names =
         bg.numeric_node_names.size() == bg.n_nodes &&
         bg.numeric_node_name_valid.size() == bg.n_nodes;
     const bool build_name_index =
-        !(C.bubbleType == Context::BubbleType::SNARL &&
-          C.includeTrivial &&
-          std::getenv("BF_FORCE_SNARL_NAME_INDEX") == nullptr);
+        !(C.bubbleType == Context::BubbleType::SNARL && C.includeTrivial);
     if (build_name_index) {
         C.name2node.reserve(bg.n_nodes);
     }
     if (compact_names) {
-        C.nodeNamesByIndex.clear();
-        C.nodeNumericNamesByIndex.clear();
-        C.nodeNumericNameValidByIndex.clear();
-        C.sparseNodeNamesByIndex.clear();
-        C.isTrashNodeByIndex.clear();
+        clearCompactNodeNameTables(C);
         if (bg_has_numeric_names) {
             C.nodeNumericNamesByIndex.resize(node_storage_size);
             C.nodeNumericNameValidByIndex.resize(node_storage_size, 0);
@@ -413,8 +467,13 @@ std::vector<spqr_compat::node> createNodes(BiGraph& bg, size_t extra_nodes = 0) 
     if (compact_names && bg_has_numeric_names && !bg.string_node_names.empty()) {
         for (auto &item : bg.string_node_names) {
             spqr_compat::node v(first.index() + item.first);
-            C.sparseNodeNamesByIndex.emplace(static_cast<uint32_t>(v.idx),
-                                             std::move(item.second));
+            if (item.second == "_trash" ||
+                isGeneratedSpqrTrashName(item.second, item.first)) {
+                setCompactTrashNode(C, v);
+            } else {
+                C.sparseNodeNamesByIndex.emplace(static_cast<uint32_t>(v.idx),
+                                                 std::move(item.second));
+            }
         }
     }
     std::vector<std::string>().swap(bg.node_names);
@@ -500,16 +559,17 @@ void buildSnarlGraph(BiGraph& bg) {
         const size_t end = (link_count * (tid + 1)) / worker_count;
         chunk_out_base[tid] = out_edges;
         chunk_mid_base[tid] = multi_links;
-        out_edges = checked_add_size(out_edges,
-                                     checked_add_size(end - begin, chunk_multi[tid],
-                                                      "snarl graph edge count"),
-                                     "snarl graph edge count");
-        multi_links = checked_add_size(multi_links, chunk_multi[tid],
-                                       "snarl multi-link node count");
+        out_edges = graph_index::checked_add_size(
+            out_edges,
+            graph_index::checked_add_size(
+                end - begin, chunk_multi[tid], "snarl graph edge count"),
+            "snarl graph edge count");
+        multi_links = graph_index::checked_add_size(
+            multi_links, chunk_multi[tid], "snarl multi-link node count");
     }
 
-    const uint32_t multi_links_u32 = require_u32_count(multi_links, "snarl multi-link node count");
-    const uint32_t out_edges_u32 = require_u32_count(out_edges, "snarl graph edge count");
+    const uint32_t multi_links_u32 =
+        graph_index::require_spqr_count_size(multi_links, "snarl multi-link node count");
     auto id2node = createNodes(bg, multi_links);
     spqr_compat::node first_mid = C.G.newNodes(multi_links_u32);
     const bool compact_names = useCompactSnarlNameTables(C);
@@ -522,12 +582,11 @@ void buildSnarlGraph(BiGraph& bg) {
         }
     }
 
-    std::vector<uint32_t> endpoints(checked_mul_size(out_edges, 2u, "snarl graph endpoint array"));
+    const uint32_t out_edges_u32 =
+        graph_index::require_spqr_count_size(out_edges, "snarl graph edge count");
+    std::vector<uint32_t> endpoints(graph_index::checked_mul_size(
+        out_edges, 2u, "snarl graph endpoint array"));
     std::vector<uint8_t> edge_types(out_edges);
-
-    auto packType = [](EdgePartType a, EdgePartType b) -> uint8_t {
-        return (static_cast<uint8_t>(a) << 2) | static_cast<uint8_t>(b);
-    };
 
     #pragma omp parallel for schedule(static) if(worker_count > 1)
     for (int64_t tid_i = 0; tid_i < static_cast<int64_t>(worker_count); ++tid_i) {
@@ -549,24 +608,24 @@ void buildSnarlGraph(BiGraph& bg) {
             if (!multi) {
                 endpoints[2 * out_i] = id2node[u].index();
                 endpoints[2 * out_i + 1] = id2node[v].index();
-                edge_types[out_i] = packType(t1, t2);
+                edge_types[out_i] = packEdgePartTypes(t1, t2);
                 ++out_i;
             } else {
                 spqr_compat::node mid(first_mid.index() + static_cast<uint32_t>(mid_i++));
                 endpoints[2 * out_i] = id2node[u].index();
                 endpoints[2 * out_i + 1] = mid.index();
-                edge_types[out_i] = packType(t1, EdgePartType::PLUS);
+                edge_types[out_i] = packEdgePartTypes(t1, EdgePartType::PLUS);
                 ++out_i;
 
                 endpoints[2 * out_i] = mid.index();
                 endpoints[2 * out_i + 1] = id2node[v].index();
-                edge_types[out_i] = packType(EdgePartType::PLUS, t2);
+                edge_types[out_i] = packEdgePartTypes(EdgePartType::PLUS, t2);
                 ++out_i;
             }
         }
     }
 
-    spqr_compat::edge first_edge = edge_types.empty()
+    spqr_compat::edge first_edge = out_edges == 0
                                 ? spqr_compat::edge(C.G.numberOfEdges())
                                 : C.G.newEdgesBatchFlat(endpoints.data(), out_edges_u32);
     C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
@@ -658,69 +717,1150 @@ void buildUltrabubbleLightGraph(BiGraph& bg) {
                  N, E, C.ubEdges.size(), tip_count);
 }
 
+bool tryBuildUltrabubbleLightGraphDirectlyFromSpqrIndex(
+    const spqr_index::IndexedSpqrTree &index)
+{
+    auto &C = ctx();
+    const std::size_t edge_count = index.graph_edges.size();
+    if (C.bubbleType != Context::BubbleType::ULTRABUBBLE ||
+        C.doubledUltrabubbles ||
+        edge_count == 0 ||
+        !hasCompleteGraphEdgeTypesForDirectBuild(index, edge_count, C.threads) ||
+        !spqrIndexHasIdentityGraphOrdinals(index)) {
+        return false;
+    }
+
+    const uint32_t N = index.graph_node_count();
+    if (N != 0 &&
+        !graph_index::fits_packed_endpoint_id(static_cast<std::uint64_t>(N - 1u))) {
+        throw std::runtime_error(
+            "SPQR-index ultrabubble direct graph has too many nodes for packed ultrabubble endpoints");
+    }
+
+    C.ubNumNodes = N;
+    C.ubNodeNames.clear();
+    C.ubNodeNames.resize(N);
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && N > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(N); ++i_i) {
+        const uint32_t i = static_cast<uint32_t>(i_i);
+        C.ubNodeNames[i] = spqrIndexGraphNodeName(index, i);
+    }
+
+    const std::vector<spqr_index::GraphEdgeRecord> &edge_records =
+        index.graph_edges;
+    std::vector<std::uint64_t> edge_keys(edge_count);
+    std::atomic<bool> invalid_edge{false};
+
+    auto packKey = [](uint32_t u, uint32_t v, uint8_t tu, uint8_t tv) -> std::uint64_t {
+        return (static_cast<std::uint64_t>(u) << 33u) |
+               (static_cast<std::uint64_t>(v) << 2u) |
+               (static_cast<std::uint64_t>(tu) << 1u) |
+               static_cast<std::uint64_t>(tv);
+    };
+
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i) {
+        const std::size_t i = static_cast<std::size_t>(i_i);
+        const auto &edge = edge_records[i];
+        if (edge.src >= N || edge.dst >= N) {
+            invalid_edge.store(true, std::memory_order_relaxed);
+            continue;
+        }
+
+        const uint8_t packed_type = index.graph_edge_type_pairs[i];
+        uint8_t tu = static_cast<uint8_t>(
+            storedEndpointTypeToPart((packed_type >> 4u) & 0x0fu));
+        uint8_t tv = static_cast<uint8_t>(
+            storedEndpointTypeToPart(packed_type & 0x0fu));
+        uint32_t u = edge.src;
+        uint32_t v = edge.dst;
+        if (u > v) {
+            std::swap(u, v);
+            std::swap(tu, tv);
+        }
+        edge_keys[i] = packKey(u, v, tu, tv);
+    }
+
+    if (invalid_edge.load(std::memory_order_relaxed)) {
+        throw std::runtime_error("SPQR index graph edge references a missing graph node");
+    }
+
+#if defined(_OPENMP) && defined(__GLIBCXX__)
+    __gnu_parallel::sort(edge_keys.begin(), edge_keys.end());
+#else
+    std::sort(edge_keys.begin(), edge_keys.end());
+#endif
+    edge_keys.erase(std::unique(edge_keys.begin(), edge_keys.end()), edge_keys.end());
+
+    auto keyU = [](std::uint64_t key) -> uint32_t {
+        return static_cast<uint32_t>(key >> 33u);
+    };
+    auto keyV = [](std::uint64_t key) -> uint32_t {
+        return static_cast<uint32_t>((key >> 2u) & graph_index::packed_endpoint_id_max);
+    };
+    auto keyTu = [](std::uint64_t key) -> uint8_t {
+        return static_cast<uint8_t>((key >> 1u) & 1u);
+    };
+    auto keyTv = [](std::uint64_t key) -> uint8_t {
+        return static_cast<uint8_t>(key & 1u);
+    };
+
+    const std::size_t adj_entries = graph_index::checked_mul_size(
+        edge_keys.size(), 2u, "SPQR-index ultrabubble CSR adjacency entries");
+    graph_index::require_spqr_count_size(
+        adj_entries, "SPQR-index ultrabubble CSR adjacency entries");
+
+    C.ubOffset.assign(static_cast<std::size_t>(N) + 1u, 0);
+    std::vector<uint8_t> endpoint_mask(N, 0);
+    for (std::uint64_t key : edge_keys) {
+        const uint32_t u = keyU(key);
+        const uint32_t v = keyV(key);
+        const uint8_t tu = keyTu(key);
+        const uint8_t tv = keyTv(key);
+        C.ubOffset[static_cast<std::size_t>(u) + 1u]++;
+        C.ubOffset[static_cast<std::size_t>(v) + 1u]++;
+        endpoint_mask[u] |= static_cast<uint8_t>(1u << tu);
+        endpoint_mask[v] |= static_cast<uint8_t>(1u << tv);
+    }
+
+    for (uint32_t i = 1; i <= N; ++i) {
+        C.ubOffset[i] += C.ubOffset[i - 1];
+    }
+
+    C.ubEdges.resize(C.ubOffset[N]);
+    std::vector<uint32_t> cursor(C.ubOffset.begin(), C.ubOffset.end());
+    for (std::uint64_t key : edge_keys) {
+        const uint32_t u = keyU(key);
+        const uint32_t v = keyV(key);
+        const uint8_t tu = keyTu(key);
+        const uint8_t tv = keyTv(key);
+        C.ubEdges[cursor[u]++] = {v, tu, tv};
+        C.ubEdges[cursor[v]++] = {u, tv, tu};
+    }
+
+    C.ubIsTip.resize(N);
+    for (uint32_t i = 0; i < N; ++i) {
+        C.ubIsTip[i] = endpoint_mask[i] != 3u;
+    }
+
+    return true;
+}
+
 void buildSuperbubbleGraph(BiGraph& bg, bool directed_only) {
     auto &C = ctx();
-    ensureStringNodeNames(bg);
-    C.name2node.reserve(bg.n_nodes * 2);
+    const bool compact_names = useCompactSuperbubbleNameTables(C, bg, directed_only);
+    if (!compact_names) {
+        ensureStringNodeNames(bg);
+    }
+    const size_t oriented_node_count = graph_index::checked_mul_size(
+        static_cast<size_t>(bg.n_nodes), 2u, "oriented superbubble graph node count");
+    graph_index::require_spqr_count_size(oriented_node_count,
+                                         "oriented superbubble graph node count");
+    clearNodeNameTables(C);
+
     std::vector<spqr_compat::node> id2plus(bg.n_nodes), id2minus(bg.n_nodes);
+    const spqr_compat::node first_node = C.G.newNodes(
+        graph_index::require_spqr_count_size(
+            oriented_node_count, "oriented superbubble graph node count"));
+    const std::size_t first_idx = static_cast<std::size_t>(first_node.index());
+
+    if (compact_names) {
+        const std::size_t storage_size = graph_index::checked_add_size(
+            first_idx, oriented_node_count, "oriented superbubble compact name table");
+        C.nodeNumericNamesByIndex.assign(storage_size, 0);
+        C.nodeNumericNameValidByIndex.assign(storage_size, 0);
+    } else {
+        C.name2node.reserve(oriented_node_count);
+        C.node2name.reserve(oriented_node_count);
+    }
 
     for (uint32_t i = 0; i < bg.n_nodes; ++i) {
-        std::string pn = bg.node_names[i] + "+", mn = bg.node_names[i] + "-";
-        spqr_compat::node vp = C.G.newNode(), vm = C.G.newNode();
+        spqr_compat::node vp(first_node.index() + 2u * i);
+        spqr_compat::node vm(first_node.index() + 2u * i + 1u);
         id2plus[i] = vp; id2minus[i] = vm;
-        C.node2name[vp] = pn; C.node2name[vm] = mn;
-        C.name2node[pn] = vp; C.name2node[mn] = vm;
+        if (compact_names) {
+            const std::uint64_t base = bg.numeric_node_names[i] << 1u;
+            C.nodeNumericNamesByIndex[vp.idx] = base;
+            C.nodeNumericNamesByIndex[vm.idx] = base | 1u;
+            C.nodeNumericNameValidByIndex[vp.idx] = 1u;
+            C.nodeNumericNameValidByIndex[vm.idx] = 1u;
+        } else {
+            std::string pn = bg.node_names[i] + "+", mn = bg.node_names[i] + "-";
+            C.node2name[vp] = pn; C.node2name[vm] = mn;
+            C.name2node[pn] = vp; C.name2node[mn] = vm;
+        }
     }
 
     auto getNode = [&](uint32_t id, char o) -> spqr_compat::node {
         return (o == '+') ? id2plus[id] : id2minus[id];
     };
 
-    struct DE { int u, v; bool operator<(const DE& o) const { return u!=o.u ? u<o.u : v<o.v; }
+    struct DE { uint32_t u, v; bool operator<(const DE& o) const { return u!=o.u ? u<o.u : v<o.v; }
                           bool operator==(const DE& o) const { return u==o.u && v==o.v; } };
     std::vector<DE> des;
-    des.reserve(directed_only ? bg.links.size() : bg.links.size() * 2);
+    const size_t oriented_edge_capacity = directed_only
+        ? bg.links.size()
+        : graph_index::checked_mul_size(
+              bg.links.size(), 2u, "oriented superbubble graph raw edge capacity");
+    graph_index::require_spqr_count_size(oriented_edge_capacity,
+                                         "oriented superbubble graph raw edge count");
+    des.reserve(oriented_edge_capacity);
 
     for (auto& lk : bg.links) {
         spqr_compat::node nSrc = getNode(lk.src, lk.orient_src);
         spqr_compat::node nDst = getNode(lk.dst, lk.orient_dst);
-        des.push_back({(int)nSrc.index(), (int)nDst.index()});
+        des.push_back({nSrc.index(), nDst.index()});
         if (!directed_only) {
             spqr_compat::node nRevSrc = getNode(lk.dst, flipSign(lk.orient_dst));
             spqr_compat::node nRevDst = getNode(lk.src, flipSign(lk.orient_src));
-            des.push_back({(int)nRevSrc.index(), (int)nRevDst.index()});
+            des.push_back({nRevSrc.index(), nRevDst.index()});
         }
     }
 
     std::sort(des.begin(), des.end());
     des.erase(std::unique(des.begin(), des.end()), des.end());
+    graph_index::require_spqr_count_size(des.size(), "oriented superbubble graph edge count");
 
-    std::unordered_map<int, spqr_compat::node> idx2n;
-    for (spqr_compat::node v : C.G.nodes) idx2n[v.index()] = v;
-    for (auto& d : des) C.G.newEdge(idx2n[d.u], idx2n[d.v]);
+    if (!des.empty()) {
+        std::vector<std::uint32_t> endpoints(graph_index::checked_mul_size(
+            des.size(), 2u, "oriented superbubble graph endpoint array"));
+        for (std::size_t i = 0; i < des.size(); ++i) {
+            endpoints[2 * i] = des[i].u;
+            endpoints[2 * i + 1] = des[i].v;
+        }
+        C.G.newEdgesBatchFlat(
+            endpoints.data(),
+            graph_index::require_spqr_count_size(
+                des.size(), "oriented superbubble graph edge count"));
+    }
+
+    std::vector<std::string>().swap(bg.node_names);
+    std::vector<std::uint64_t>().swap(bg.numeric_node_names);
+    std::vector<std::uint8_t>().swap(bg.numeric_node_name_valid);
+    std::vector<std::pair<std::uint32_t, std::string>>().swap(bg.string_node_names);
 }
 
 void buildSpqrGraph(BiGraph& bg) {
     auto &C = ctx();
+    graph_index::require_spqr_graph(bg.n_nodes, bg.links.size(), "SPQR input graph");
     auto id2node = createNodes(bg);
-    for (auto& lk : bg.links) C.G.newEdge(id2node[lk.src], id2node[lk.dst]);
+    std::vector<uint32_t> endpoints(graph_index::checked_mul_size(
+        bg.links.size(), 2u, "SPQR graph endpoint array"));
+    std::vector<uint8_t> edge_types(bg.links.size());
+
+    for (size_t i = 0; i < bg.links.size(); ++i) {
+        const auto &lk = bg.links[i];
+        endpoints[2 * i] = id2node[lk.src].index();
+        endpoints[2 * i + 1] = id2node[lk.dst].index();
+        edge_types[i] = packEdgePartTypes(charToType(lk.orient_src),
+                                          charToType(flipSign(lk.orient_dst)));
+    }
+
+    spqr_compat::edge first_edge = edge_types.empty()
+                                ? spqr_compat::edge(C.G.numberOfEdges())
+                                : C.G.newEdgesBatchFlat(endpoints.data(),
+                                                        static_cast<uint32_t>(edge_types.size()));
+    C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+    for (size_t i = 0; i < edge_types.size(); ++i) {
+        const uint8_t t = edge_types[i];
+        C._edge2types[spqr_compat::edge(first_edge.index() + static_cast<uint32_t>(i))] = {
+            static_cast<EdgePartType>(t >> 2),
+            static_cast<EdgePartType>(t & 3)
+        };
+    }
+}
+
+char edgeEndpointTypeToOrient(std::uint8_t type)
+{
+    if (type == 1u) return '+';
+    if (type == 2u) return '-';
+    throw std::runtime_error("SPQR index contains an invalid BubbleFinder edge endpoint type");
+}
+
+bool spqrIndexHasIdentityGraphOrdinals(const spqr_index::IndexedSpqrTree &index)
+{
+    if (index.node_names.empty() && index.has_compact_numeric_graph_node_names()) {
+        return true;
+    }
+    if (index.node_names.size() != index.graph_node_count()) {
+        return false;
+    }
+    for (std::uint32_t i = 0; i < index.node_names.size(); ++i) {
+        if (index.node_names[i] != i) return false;
+    }
+    return true;
+}
+
+spqr_compat::node createSnarlNodesFromIdentitySpqrIndex(
+    const spqr_index::IndexedSpqrTree &index,
+    std::size_t extra_nodes)
+{
+    auto &C = ctx();
+    const std::uint32_t n = index.graph_node_count();
+    const std::size_t node_storage_size = graph_index::checked_add_size(
+        static_cast<std::size_t>(n), extra_nodes, "SPQR-index snarl graph node storage");
+    graph_index::require_spqr_count_size(
+        graph_index::checked_add_size(
+            static_cast<std::size_t>(C.G.numberOfNodes()), node_storage_size,
+            "SPQR-index snarl graph node count"),
+        "SPQR-index snarl graph node count");
+
+    clearCompactNodeNameTables(C);
+    C.nodeNumericNamesByIndex.assign(node_storage_size, 0);
+    C.nodeNumericNameValidByIndex.assign(node_storage_size, 0);
+    C.sparseNodeNamesByIndex.reserve(index.graph_node_string_names.size());
+    C.isTrashNodeByIndex.assign(node_storage_size, 0);
+
+    spqr_compat::node first = C.G.newNodes(n);
+    const std::uint32_t first_idx = first.index();
+    const std::uint32_t graph_node_count = index.graph_node_count();
+    const bool dense_numeric_names = index.graph_node_numeric_names_dense;
+    const bool u64_numeric_names =
+        index.graph_node_numeric_names.size() == graph_node_count;
+    const bool u32_numeric_names =
+        index.graph_node_numeric_names32.size() == graph_node_count;
+    if (!dense_numeric_names && !u64_numeric_names && !u32_numeric_names) {
+        throw std::runtime_error("SPQR index compact graph node numeric name table is incomplete");
+    }
+    if (dense_numeric_names && graph_node_count > 0 &&
+        index.graph_node_numeric_name_base >
+            std::numeric_limits<std::uint64_t>::max() -
+                static_cast<std::uint64_t>(graph_node_count - 1u)) {
+        throw std::overflow_error("SPQR index dense numeric graph node name overflow");
+    }
+    const bool has_numeric_name_validity =
+        !index.graph_node_numeric_name_valid.empty();
+    if (has_numeric_name_validity &&
+        index.graph_node_numeric_name_valid.size() < graph_node_count) {
+        throw std::runtime_error(
+            "SPQR index numeric graph node validity table is truncated");
+    }
+
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && graph_node_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(graph_node_count); ++i_i) {
+        const std::uint32_t i = static_cast<std::uint32_t>(i_i);
+        const std::size_t dst = static_cast<std::size_t>(first_idx) + i;
+        C.nodeNumericNamesByIndex[dst] =
+            dense_numeric_names
+                ? index.graph_node_numeric_name_base + static_cast<std::uint64_t>(i)
+                : (u64_numeric_names
+                       ? index.graph_node_numeric_names[i]
+                       : static_cast<std::uint64_t>(index.graph_node_numeric_names32[i]));
+        C.nodeNumericNameValidByIndex[dst] =
+            has_numeric_name_validity
+                ? (index.graph_node_numeric_name_valid[i] != 0 ? 1u : 0u)
+                : 1u;
+    }
+
+    for (const auto &item : index.graph_node_string_names) {
+        const std::size_t dst = static_cast<std::size_t>(first_idx) + item.first;
+        if (dst >= C.nodeNumericNameValidByIndex.size()) {
+            throw std::runtime_error("SPQR index graph string name is out of range");
+        }
+        C.nodeNumericNameValidByIndex[dst] = 0;
+        if (item.second == "_trash" ||
+            isGeneratedSpqrTrashName(item.second, item.first)) {
+            C.isTrashNodeByIndex[dst] = 1;
+        } else {
+            C.sparseNodeNamesByIndex.emplace(static_cast<std::uint32_t>(dst),
+                                             item.second);
+        }
+    }
+
+    return first;
+}
+
+bool hasCompleteEndpointTypesForDirectBuild(
+    const std::vector<std::uint8_t> &endpoint_types,
+    std::size_t edge_count,
+    unsigned threads,
+    bool require_nonempty)
+{
+    if ((require_nonempty && edge_count == 0) ||
+        endpoint_types.size() != edge_count) {
+        return false;
+    }
+    std::atomic<bool> invalid_type{false};
+#if !defined(_OPENMP)
+    (void)threads;
+#endif
+    #pragma omp parallel for schedule(static) if(threads > 1 && edge_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i) {
+        const std::uint8_t packed =
+            endpoint_types[static_cast<std::size_t>(i_i)];
+        const std::uint8_t src = static_cast<std::uint8_t>((packed >> 4u) & 0x0fu);
+        const std::uint8_t dst = static_cast<std::uint8_t>(packed & 0x0fu);
+        if ((src != 1u && src != 2u) || (dst != 1u && dst != 2u)) {
+            invalid_type.store(true, std::memory_order_relaxed);
+        }
+    }
+    return !invalid_type.load(std::memory_order_relaxed);
+}
+
+bool hasCompleteGraphEdgeTypesForDirectBuild(
+    const spqr_index::IndexedSpqrTree &index,
+    std::size_t edge_count,
+    unsigned threads)
+{
+    return hasCompleteEndpointTypesForDirectBuild(
+        index.graph_edge_type_pairs, edge_count, threads, false);
+}
+
+bool hasCompleteRealEdgeTypesForDirectBuild(
+    const spqr_index::IndexedSpqrTree &index,
+    std::size_t edge_count,
+    unsigned threads)
+{
+    return hasCompleteEndpointTypesForDirectBuild(
+        index.real_edge_type_pairs, edge_count, threads, true);
+}
+
+bool addExactGraphEdgesFromSpqrIndex(
+    spqr_index::IndexedSpqrTree &index,
+    const std::vector<spqr_index::GraphEdgeRecord> &edge_records,
+    std::uint32_t graph_node_count,
+    spqr_compat::node first_node,
+    bool allow_packed_direct_edge_types)
+{
+    auto &C = ctx();
+    const std::size_t edge_count = edge_records.size();
+    const std::uint32_t edge_count_u32 =
+        graph_index::require_spqr_count_size(
+            edge_count, "SPQR-index exact graph edge count");
+    const std::uint32_t first_node_index = first_node.index();
+
+    static_assert(std::is_standard_layout<spqr_index::GraphEdgeRecord>::value,
+                  "GraphEdgeRecord must be a standard-layout src/dst pair");
+    static_assert(sizeof(spqr_index::GraphEdgeRecord) == 2 * sizeof(std::uint32_t),
+                  "GraphEdgeRecord must stay compatible with flat endpoint batches");
+    std::vector<std::uint32_t> endpoints;
+    std::uint32_t *endpoint_data = nullptr;
+    if (first_node_index != 0u) {
+        endpoints.resize(graph_index::checked_mul_size(
+            edge_count, 2u, "SPQR-index exact graph endpoint array"));
+        endpoint_data = endpoints.empty() ? nullptr : endpoints.data();
+    }
+    std::atomic<bool> invalid_edge{false};
+
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i) {
+        const std::size_t i = static_cast<std::size_t>(i_i);
+        const auto &edge = edge_records[i];
+        if (edge.src >= graph_node_count || edge.dst >= graph_node_count) {
+            invalid_edge.store(true, std::memory_order_relaxed);
+            continue;
+        }
+        if (first_node_index != 0u) {
+            endpoint_data[2 * i] = first_node_index + edge.src;
+            endpoint_data[2 * i + 1] = first_node_index + edge.dst;
+        }
+    }
+    if (invalid_edge.load(std::memory_order_relaxed)) {
+        throw std::runtime_error("SPQR index graph edge references a missing graph node");
+    }
+
+    const std::uint32_t *batch_endpoints = first_node_index == 0u
+        ? reinterpret_cast<const std::uint32_t *>(edge_records.data())
+        : endpoints.data();
+    spqr_compat::edge first_edge = edge_count == 0
+                                ? spqr_compat::edge(C.G.numberOfEdges())
+                                : C.G.newEdgesBatchFlat(
+                                      batch_endpoints, edge_count_u32);
+    const std::uint32_t first_edge_index = first_edge.index();
+    if (allow_packed_direct_edge_types &&
+        edge_count != 0 &&
+        first_edge_index == 0u) {
+        C.directSpqrGraphEdgeTypePairs =
+            std::move(index.graph_edge_type_pairs);
+        return true;
+    }
+
+    C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+    auto edge_type_begin = C._edge2types.begin();
+    auto *edge_type_data =
+        C._edge2types.size() == 0 ? nullptr : &*edge_type_begin;
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i) {
+        const std::size_t i = static_cast<std::size_t>(i_i);
+        const std::uint8_t t = index.graph_edge_type_pairs[i];
+        edge_type_data[first_edge_index + static_cast<std::uint32_t>(i)] =
+            storedEndpointTypesToParts(t);
+    }
+
+    return true;
+}
+
+bool tryBuildExactGraphDirectlyFromSpqrIndex(spqr_index::IndexedSpqrTree &index)
+{
+    auto &C = ctx();
+    const std::uint32_t graph_node_count = index.graph_node_count();
+    const std::vector<spqr_index::GraphEdgeRecord> &edge_records =
+        index.graph_edges;
+    const std::size_t edge_count = edge_records.size();
+    if (C.bubbleType != Context::BubbleType::SNARL ||
+        C.spCompressMode != Context::SpCompressMode::MacroDirect ||
+        (graph_node_count != 0 &&
+         !graph_index::fits_packed_endpoint_id(
+             static_cast<std::uint64_t>(graph_node_count - 1))) ||
+        !index.has_compact_numeric_graph_node_names() ||
+        !spqrIndexHasIdentityGraphOrdinals(index) ||
+        !hasCompleteGraphEdgeTypesForDirectBuild(
+            index, edge_count, C.threads)) {
+        return false;
+    }
+
+    spqr_compat::node first_node = createSnarlNodesFromIdentitySpqrIndex(index, 0);
+    return addExactGraphEdgesFromSpqrIndex(
+        index, edge_records, graph_node_count, first_node, true);
+}
+
+std::string spqrIndexGraphNodeName(const spqr_index::IndexedSpqrTree &index,
+                                   std::uint32_t ordinal)
+{
+    const std::uint32_t n = index.graph_node_count();
+    if (ordinal >= n) {
+        throw std::runtime_error("SPQR index graph node ordinal is out of range");
+    }
+
+    if (index.node_names.size() == n) {
+        std::string name = index.name(index.node_names[ordinal]);
+        if (isGeneratedSpqrTrashName(name, ordinal)) return "_trash";
+        return name;
+    }
+
+    if (index.has_compact_numeric_graph_node_names()) {
+        const auto sparse_string = std::lower_bound(
+            index.graph_node_string_names.begin(),
+            index.graph_node_string_names.end(),
+            ordinal,
+            [](const auto &item, std::uint32_t value) {
+                return item.first < value;
+            });
+        const bool has_sparse_string =
+            sparse_string != index.graph_node_string_names.end() &&
+            sparse_string->first == ordinal;
+        bool numeric_valid = !has_sparse_string;
+        if (numeric_valid && !index.graph_node_numeric_name_valid.empty()) {
+            if (ordinal >= index.graph_node_numeric_name_valid.size()) {
+                throw std::runtime_error(
+                    "SPQR index numeric graph node validity table is truncated");
+            }
+            numeric_valid = index.graph_node_numeric_name_valid[ordinal] != 0;
+        }
+        if (numeric_valid) {
+            const std::uint64_t numeric = index.graph_node_numeric_name_at(ordinal);
+            if (index.uses_oriented_numeric_graph_node_names()) {
+                return spqr_index::IndexedSpqrTree::oriented_numeric_graph_node_name(numeric);
+            }
+            return std::to_string(numeric);
+        }
+        if (has_sparse_string) {
+            if (isGeneratedSpqrTrashName(sparse_string->second, ordinal)) return "_trash";
+            return sparse_string->second;
+        }
+    }
+
+    return std::to_string(ordinal);
+}
+
+bool tryBuildNamedExactGraphDirectlyFromSpqrIndex(
+    spqr_index::IndexedSpqrTree &index)
+{
+    auto &C = ctx();
+
+    const std::uint32_t graph_node_count = index.graph_node_count();
+    const std::vector<spqr_index::GraphEdgeRecord> &edge_records =
+        index.graph_edges;
+    const std::size_t edge_count = edge_records.size();
+    graph_index::require_spqr_count_size(edge_count,
+                                         "SPQR-index exact graph edge count");
+
+    const bool indexBackedNames =
+        C.inputFormat == Context::InputFormat::SpqrIndex &&
+        C.spqrIndex == nullptr &&
+        spqr_index::graph_profile_is_oriented_double(C.spqrIndexInputGraphView);
+
+    C.directSpqrInputGraphUsesIndexNames = indexBackedNames;
+    C.directSpqrInputGraphEdgesMaterialized = !indexBackedNames;
+    clearNodeNameTables(C);
+
+    if (!indexBackedNames) {
+        C.node2name.reserve(graph_node_count);
+        C.name2node.reserve(graph_node_count);
+    }
+
+    if (!indexBackedNames && edge_records.empty() && index.graph_edge_count() != 0) {
+        return false;
+    }
+    if (!indexBackedNames && edge_count != 0 &&
+        !hasCompleteGraphEdgeTypesForDirectBuild(
+            index, edge_count, C.threads)) {
+        return false;
+    }
+    spqr_compat::node first_node = C.G.newNodes(graph_node_count);
+
+    if (first_node.index() != 0u && indexBackedNames) {
+        throw std::runtime_error(
+            "SPQR-index node-only graph reconstruction requires an empty target graph");
+    }
+
+    if (!indexBackedNames) {
+        for (std::uint32_t i = 0; i < graph_node_count; ++i) {
+            spqr_compat::node v(first_node.index() + i);
+            std::string name = spqrIndexGraphNodeName(index, i);
+            auto it = C.node2name.emplace(v, std::move(name)).first;
+            if (it->second != "_trash") {
+                C.name2node.emplace(it->second, v);
+            }
+        }
+    }
+
+    if (indexBackedNames) {
+        C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+        return true;
+    }
+
+    return addExactGraphEdgesFromSpqrIndex(
+        index,
+        edge_records,
+        graph_node_count,
+        first_node,
+        C.bubbleType == Context::BubbleType::SNARL &&
+            C.spCompressMode == Context::SpCompressMode::MacroDirect);
+}
+
+bool tryBuildSnarlGraphDirectlyFromSpqrIndex(const spqr_index::IndexedSpqrTree &index)
+{
+    auto &C = ctx();
+    const bool use_graph_edges = !index.graph_edges.empty();
+    const std::vector<spqr_index::GraphEdgeRecord> &graph_edge_records =
+        index.graph_edges;
+    const std::size_t link_count = use_graph_edges
+        ? graph_edge_records.size()
+        : index.real_edge_count();
+    if (C.bubbleType != Context::BubbleType::SNARL ||
+        !useCompactSnarlNameTables(C) ||
+        !index.has_compact_numeric_graph_node_names() ||
+        !spqrIndexHasIdentityGraphOrdinals(index)) {
+        return false;
+    }
+    if (use_graph_edges) {
+        if (!hasCompleteGraphEdgeTypesForDirectBuild(index, link_count, C.threads))
+            return false;
+    } else if (!hasCompleteRealEdgeTypesForDirectBuild(index, link_count, C.threads)) {
+        return false;
+    }
+
+    const std::uint32_t graph_node_count = index.graph_node_count();
+    const spqr_index::GraphEdgeRecord *edge_records =
+        use_graph_edges
+            ? graph_edge_records.data()
+            : (index.has_compact_real_edge_endpoints()
+                   ? index.real_edge_endpoints.data()
+                   : nullptr);
+    auto edge_at = [&](std::size_t i) -> spqr_index::GraphEdgeRecord {
+        return edge_records != nullptr
+            ? edge_records[i]
+            : index.real_edge_endpoint_at(static_cast<std::uint32_t>(i));
+    };
+    auto link_endpoint_types = [&](std::size_t i) -> std::pair<EdgePartType, EdgePartType> {
+        const std::uint8_t packed = use_graph_edges
+            ? index.graph_edge_type_pairs[i]
+            : index.real_edge_type_pairs[i];
+        return storedEndpointTypesToParts(packed);
+    };
+    auto encodePair = [](std::uint32_t a, std::uint32_t b) -> std::uint64_t {
+        return (static_cast<std::uint64_t>(a) << 32) | static_cast<std::uint64_t>(b);
+    };
+
+    std::atomic<bool> invalid_edge{false};
+    const bool use_multi_flags =
+        use_graph_edges &&
+        index.graph_edge_multi_flags.size() == link_count;
+    std::vector<std::uint64_t> pair_keys;
+    if (!use_multi_flags) pair_keys.resize(link_count);
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && link_count > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(link_count); ++i_i) {
+        const std::size_t i = static_cast<std::size_t>(i_i);
+        const auto edge = edge_at(i);
+        const std::uint32_t src = edge.src;
+        const std::uint32_t dst = edge.dst;
+        if (src >= graph_node_count || dst >= graph_node_count) {
+            invalid_edge.store(true, std::memory_order_relaxed);
+            continue;
+        }
+        const std::uint32_t a = std::min(src, dst);
+        const std::uint32_t b = std::max(src, dst);
+        if (!use_multi_flags) pair_keys[i] = encodePair(a, b);
+    }
+    if (invalid_edge.load(std::memory_order_relaxed)) {
+        throw std::runtime_error("SPQR index real edge references a missing graph node");
+    }
+
+    std::vector<std::uint64_t> multis;
+    if (!use_multi_flags) {
+#if defined(_OPENMP) && defined(__GLIBCXX__)
+        __gnu_parallel::sort(pair_keys.begin(), pair_keys.end());
+#else
+        std::sort(pair_keys.begin(), pair_keys.end());
+#endif
+
+        for (std::size_t i = 1; i < pair_keys.size(); ++i) {
+            if (pair_keys[i] == pair_keys[i - 1] &&
+                (multis.empty() || multis.back() != pair_keys[i])) {
+                multis.push_back(pair_keys[i]);
+            }
+        }
+        std::vector<std::uint64_t>().swap(pair_keys);
+    }
+
+    auto is_multi = [&](std::uint32_t a, std::uint32_t b) -> bool {
+        const std::uint32_t lo = std::min(a, b);
+        const std::uint32_t hi = std::max(a, b);
+        return std::binary_search(multis.begin(), multis.end(), encodePair(lo, hi));
+    };
+
+    const std::size_t worker_count =
+        (C.threads > 1 && link_count > 100000)
+            ? std::min<std::size_t>(static_cast<std::size_t>(C.threads), link_count)
+            : 1;
+
+    std::vector<std::uint8_t> link_is_multi;
+    std::vector<std::size_t> chunk_multi(worker_count, 0);
+    std::vector<std::size_t> chunk_out_base(worker_count, 0);
+    std::vector<std::size_t> chunk_mid_base(worker_count, 0);
+
+    if (use_multi_flags) {
+        #pragma omp parallel for schedule(static) if(worker_count > 1)
+        for (int64_t tid_i = 0; tid_i < static_cast<int64_t>(worker_count); ++tid_i) {
+            const std::size_t tid = static_cast<std::size_t>(tid_i);
+            const std::size_t begin = (link_count * tid) / worker_count;
+            const std::size_t end = (link_count * (tid + 1)) / worker_count;
+            std::size_t local_multi = 0;
+            for (std::size_t i = begin; i < end; ++i) {
+                local_multi += index.graph_edge_multi_flags[i] != 0 ? 1u : 0u;
+            }
+            chunk_multi[tid] = local_multi;
+        }
+    } else if (!multis.empty()) {
+        link_is_multi.resize(link_count, 0);
+        #pragma omp parallel for schedule(static) if(worker_count > 1)
+        for (int64_t tid_i = 0; tid_i < static_cast<int64_t>(worker_count); ++tid_i) {
+            const std::size_t tid = static_cast<std::size_t>(tid_i);
+            const std::size_t begin = (link_count * tid) / worker_count;
+            const std::size_t end = (link_count * (tid + 1)) / worker_count;
+            std::size_t local_multi = 0;
+            for (std::size_t i = begin; i < end; ++i) {
+                const auto edge = edge_at(i);
+                const bool multi = is_multi(edge.src, edge.dst);
+                link_is_multi[i] = static_cast<std::uint8_t>(multi);
+                local_multi += multi ? 1u : 0u;
+            }
+            chunk_multi[tid] = local_multi;
+        }
+    }
+
+    std::size_t multi_links = 0;
+    std::size_t out_edges = 0;
+    for (std::size_t tid = 0; tid < worker_count; ++tid) {
+        const std::size_t begin = (link_count * tid) / worker_count;
+        const std::size_t end = (link_count * (tid + 1)) / worker_count;
+        chunk_out_base[tid] = out_edges;
+        chunk_mid_base[tid] = multi_links;
+        out_edges += (end - begin) + chunk_multi[tid];
+        multi_links += chunk_multi[tid];
+    }
+
+    const std::uint32_t multi_links_u32 =
+        graph_index::require_spqr_count_size(multi_links,
+                                             "SPQR-index snarl multi-link node count");
+    spqr_compat::node first_node =
+        createSnarlNodesFromIdentitySpqrIndex(index, multi_links);
+    spqr_compat::node first_mid = C.G.newNodes(multi_links_u32);
+    for (std::size_t i = 0; i < multi_links; ++i) {
+        spqr_compat::node mid(first_mid.index() + static_cast<std::uint32_t>(i));
+        setCompactTrashNode(C, mid);
+    }
+
+    const std::uint32_t out_edges_u32 =
+        graph_index::require_spqr_count_size(out_edges,
+                                             "SPQR-index snarl graph edge count");
+    std::vector<std::uint32_t> endpoints(graph_index::checked_mul_size(
+        out_edges, 2u, "SPQR-index snarl graph endpoint array"));
+    std::vector<std::uint8_t> edge_types(out_edges);
+
+    #pragma omp parallel for schedule(static) if(worker_count > 1)
+    for (int64_t tid_i = 0; tid_i < static_cast<int64_t>(worker_count); ++tid_i) {
+        const std::size_t tid = static_cast<std::size_t>(tid_i);
+        const std::size_t begin = (link_count * tid) / worker_count;
+        const std::size_t end = (link_count * (tid + 1)) / worker_count;
+        std::size_t out_i = chunk_out_base[tid];
+        std::size_t mid_i = chunk_mid_base[tid];
+
+        for (std::size_t i = begin; i < end; ++i) {
+            auto types = link_endpoint_types(i);
+            EdgePartType t1 = types.first;
+            EdgePartType t2 = types.second;
+            const auto edge = edge_at(i);
+            std::uint32_t u = edge.src;
+            std::uint32_t v = edge.dst;
+            if (u > v) {
+                std::swap(u, v);
+                std::swap(t1, t2);
+            }
+
+            const bool multi = use_multi_flags
+                ? index.graph_edge_multi_flags[i] != 0
+                : (!link_is_multi.empty() && link_is_multi[i] != 0);
+            if (!multi) {
+                endpoints[2 * out_i] = first_node.index() + u;
+                endpoints[2 * out_i + 1] = first_node.index() + v;
+                edge_types[out_i] = packEdgePartTypes(t1, t2);
+                ++out_i;
+            } else {
+                spqr_compat::node mid(first_mid.index() + static_cast<std::uint32_t>(mid_i++));
+                endpoints[2 * out_i] = first_node.index() + u;
+                endpoints[2 * out_i + 1] = mid.index();
+                edge_types[out_i] = packEdgePartTypes(t1, EdgePartType::PLUS);
+                ++out_i;
+
+                endpoints[2 * out_i] = mid.index();
+                endpoints[2 * out_i + 1] = first_node.index() + v;
+                edge_types[out_i] = packEdgePartTypes(EdgePartType::PLUS, t2);
+                ++out_i;
+            }
+        }
+    }
+
+    spqr_compat::edge first_edge = edge_types.empty()
+                                ? spqr_compat::edge(C.G.numberOfEdges())
+                                : C.G.newEdgesBatchFlat(endpoints.data(), out_edges_u32);
+    C._edge2types.init(C.G, std::make_pair(EdgePartType::NONE, EdgePartType::NONE));
+    #pragma omp parallel for schedule(static) if(C.threads > 1 && edge_types.size() > 100000)
+    for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_types.size()); ++i_i) {
+        const std::size_t i = static_cast<std::size_t>(i_i);
+        std::uint8_t t = edge_types[i];
+        C._edge2types[spqr_compat::edge(first_edge.index() + static_cast<std::uint32_t>(i))] = {
+            static_cast<EdgePartType>(t >> 2),
+            static_cast<EdgePartType>(t & 3)
+        };
+    }
+
+    return true;
+}
+
+BiGraph buildBiGraphFromSpqrIndex(const spqr_index::IndexedSpqrTree &index)
+{
+    const bool use_graph_edges = !index.graph_edges.empty();
+    const std::vector<spqr_index::GraphEdgeRecord> &graph_edge_records =
+        index.graph_edges;
+    const std::size_t graph_edge_count = use_graph_edges
+        ? graph_edge_records.size()
+        : index.real_edge_count();
+    const spqr_index::GraphEdgeRecord *edge_records =
+        use_graph_edges
+            ? graph_edge_records.data()
+            : (index.has_compact_real_edge_endpoints()
+                   ? index.real_edge_endpoints.data()
+                   : nullptr);
+    auto edge_at = [&](std::size_t i) -> spqr_index::GraphEdgeRecord {
+        return edge_records != nullptr
+            ? edge_records[i]
+            : index.real_edge_endpoint_at(static_cast<std::uint32_t>(i));
+    };
+    if (use_graph_edges &&
+        !hasCompleteGraphEdgeTypesForDirectBuild(index, graph_edge_count, ctx().threads)) {
+        throw std::runtime_error(
+            ".spqr/.spqri input contains raw graph edges without complete BF_EDGE_TYPE metadata; "
+            "recreate it with the updated 'spqr-tree' command");
+    }
+    if (!use_graph_edges &&
+        !hasCompleteRealEdgeTypesForDirectBuild(index, graph_edge_count, ctx().threads)) {
+        throw std::runtime_error(
+            ".spqr/.spqri input does not contain complete BF_EDGE_TYPE metadata; "
+            "recreate it with the updated 'spqr-tree' command");
+    }
+
+    BiGraph bg;
+    bg.n_nodes = graph_index::require_spqr_count_size(
+        index.graph_node_count(), "SPQR-index reconstructed graph node count");
+    const bool compact_numeric_names = index.has_compact_numeric_graph_node_names();
+    if (compact_numeric_names) {
+        index.copy_graph_node_numeric_names(bg.numeric_node_names);
+        if (index.graph_node_numeric_name_valid.size() == index.graph_node_count()) {
+            bg.numeric_node_name_valid = index.graph_node_numeric_name_valid;
+        } else {
+            bg.numeric_node_name_valid.assign(index.graph_node_count(), 1u);
+            for (const auto &item : index.graph_node_string_names) {
+                if (item.first < bg.numeric_node_name_valid.size()) {
+                    bg.numeric_node_name_valid[item.first] = 0;
+                }
+            }
+        }
+        bg.string_node_names = index.graph_node_string_names;
+    } else {
+        bg.node_names.reserve(index.node_names.size());
+    }
+
+    bool identity_node_names = true;
+    if (index.node_names.empty() && compact_numeric_names) {
+        identity_node_names = true;
+    } else {
+        for (std::uint32_t i = 0; i < index.node_names.size(); ++i) {
+            const std::uint32_t name_id = index.node_names[i];
+            if (name_id != i) identity_node_names = false;
+            if (!compact_numeric_names) {
+                bg.node_names.push_back(index.name(name_id));
+            }
+        }
+    }
+    if (!compact_numeric_names && bg.node_names.size() != bg.n_nodes) {
+        throw std::runtime_error("SPQR index graph node table is incomplete");
+    }
+
+    std::unordered_map<std::uint32_t, std::uint32_t> ordinal_by_name;
+    if (!identity_node_names) {
+        ordinal_by_name.reserve(index.node_names.size());
+        for (std::uint32_t i = 0; i < index.node_names.size(); ++i) {
+            ordinal_by_name[index.node_names[i]] = i;
+        }
+    }
+
+    bg.links.reserve(graph_edge_count);
+    for (std::uint32_t i = 0; i < graph_edge_count; ++i) {
+        const auto edge = edge_at(i);
+        std::uint32_t src = spqr_index::invalid_id;
+        std::uint32_t dst = spqr_index::invalid_id;
+        if (identity_node_names) {
+            if (edge.src >= bg.n_nodes || edge.dst >= bg.n_nodes) {
+                throw std::runtime_error("SPQR index real edge references a missing graph node");
+            }
+            src = edge.src;
+            dst = edge.dst;
+        } else {
+            const auto src_it = ordinal_by_name.find(edge.src);
+            const auto dst_it = ordinal_by_name.find(edge.dst);
+            if (src_it == ordinal_by_name.end() || dst_it == ordinal_by_name.end()) {
+                throw std::runtime_error("SPQR index real edge references a missing graph node");
+            }
+            src = src_it->second;
+            dst = dst_it->second;
+        }
+
+        char src_orient = '+';
+        char stored_dst_type = '+';
+        const auto types = use_graph_edges
+            ? std::make_pair(
+                  static_cast<std::uint8_t>((index.graph_edge_type_pairs[i] >> 4) & 0x0fu),
+                  static_cast<std::uint8_t>(index.graph_edge_type_pairs[i] & 0x0fu))
+            : index.real_edge_endpoint_types(i);
+        src_orient = edgeEndpointTypeToOrient(types.first);
+        stored_dst_type = edgeEndpointTypeToOrient(types.second);
+        bg.links.push_back(BiLink{
+            src,
+            dst,
+            src_orient,
+            flipSign(stored_dst_type)
+        });
+    }
+
+    return bg;
+}
+
+void readSpqrIndexGraph()
+{
+    auto &C = ctx();
+    if (C.graphPath.empty())
+        throw std::runtime_error("SPQR-index input needs -g <file>");
+    C.directSpqrGraphComponents.clear();
+    C.directSpqrGraphComponentNodes.clear();
+    C.directSpqrGraphComponentEdges.clear();
+    C.directSpqrGraphEdgeTypePairs.clear();
+    C.directSpqrGraphComponentNodesIdentity = false;
+    C.directSpqrGraphComponentEdgesIdentity = false;
+
+    spqr_index::LoadOptions loadOptions;
+    const bool keepDirectInputIndex =
+        C.spqrHaplotypes ||
+        (C.bubbleType == Context::BubbleType::SNARL &&
+         C.spCompressMode == Context::SpCompressMode::Off);
+    loadOptions.skip_graph_edge_tables_for_oriented_views =
+        C.bubbleType == Context::BubbleType::SUPERBUBBLE;
+    loadOptions.skip_macro_tree_cache = true;
+    loadOptions.graph_only =
+        C.bubbleType == Context::BubbleType::SNARL &&
+        !keepDirectInputIndex;
+    loadOptions.load_graph_components =
+        C.bubbleType == Context::BubbleType::SNARL;
+    loadOptions.load_haplotypes = C.spqrHaplotypes;
+    if (C.bubbleType == Context::BubbleType::SUPERBUBBLE)
+    {
+        loadOptions.eager_block_hash_lookup = true;
+        loadOptions.eager_lookup_view_filter =
+            C.directedSuperbubbles
+                ? spqr_index::EagerLookupViewFilter::OrientedDirected
+                : spqr_index::EagerLookupViewFilter::OrientedBidirected;
+    }
+
+    auto loaded = std::make_unique<spqr_index::IndexedSpqrTree>(
+        spqr_index::IndexedSpqrTree::load(C.graphPath, loadOptions));
+    C.spqrIndexInputLoaded = true;
+    C.spqrIndexInputGraphView =
+        spqr_index::canonical_graph_profile(loaded->graph_view);
+
+    const std::string view = C.spqrIndexInputGraphView;
+    const std::uint64_t indexedGraphEdges =
+        !loaded->graph_edges.empty()
+            ? static_cast<std::uint64_t>(loaded->graph_edges.size())
+            : loaded->graph_edge_count_hint;
+    const bool viewMatchesSuperbubble =
+        C.bubbleType == Context::BubbleType::SUPERBUBBLE &&
+        spqr_index::graph_profile_matches_oriented_double(
+            view, C.directedSuperbubbles);
+    const bool hasDirectGraphEdges =
+        !loaded->graph_edges.empty();
+    if (!hasDirectGraphEdges &&
+        (!viewMatchesSuperbubble ||
+         loaded->real_edge_count() != indexedGraphEdges)) {
+        throw std::runtime_error(
+            ".spqr/.spqri direct graph input requires exact graph-edge tables; "
+            "rebuild the cache with 'spqr-tree --spqr-profile " + view +
+            "' command.");
+    }
+    if (!spqr_index::graph_profile_is_raw(view) &&
+        !(spqr_index::graph_profile_is_parallel_subdivided(view) &&
+          C.bubbleType == Context::BubbleType::SNARL) &&
+        !viewMatchesSuperbubble) {
+        throw std::runtime_error(
+            ".spqr/.spqri direct graph input supports raw graph profiles, "
+            "endpoint-typed parallel-subdivided profiles for the snarls command, "
+            "and oriented-double profiles for the "
+            "matching superbubble command; "
+            "this index uses profile '" + view +
+            "'. Use the original graph with --spqr-index, or rebuild the cache with a compatible --spqr-profile.");
+    }
+    if (spqr_index::graph_profile_is_parallel_subdivided(view) &&
+        C.bubbleType == Context::BubbleType::SNARL &&
+        C.spCompressMode != Context::SpCompressMode::MacroDirect &&
+        C.spCompressMode != Context::SpCompressMode::Off) {
+        throw std::runtime_error(
+            ".spqr/.spqri endpoint-typed parallel-subdivided direct input is currently supported only by "
+            "the default snarls macro-direct mode or --sp-compress off.");
+    }
+
+    const bool dropInputIndex =
+        C.spqrIndex == nullptr &&
+        loadOptions.graph_only;
+
+    auto dropLoadedGraphEdgeTablesIfUsed = [&]() {
+        if (!C.directSpqrInputGraphEdgesMaterialized ||
+            loaded->graph_edges.empty()) {
+            return;
+        }
+        loaded->drop_graph_edge_tables();
+    };
+
+    auto finishLoadedInput = [&]() {
+        dropLoadedGraphEdgeTablesIfUsed();
+        if (!C.spqrIndex && !dropInputIndex) {
+            C.spqrIndexHasCompleteBubbleEdgeTypes =
+                loaded->has_complete_bubble_edge_types();
+            C.spqrIndexBubbleEdgeTypesChecked = true;
+            C.spqrIndex = std::move(loaded);
+        }
+    };
+
+    auto retainDirectGraphComponents = [&](spqr_index::IndexedSpqrTree &index,
+                                           bool exact_edge_order) {
+        if (!exact_edge_order ||
+            C.bubbleType != Context::BubbleType::SNARL ||
+            !index.has_graph_components() ||
+            C.G.numberOfNodes() != index.graph_node_count() ||
+            C.G.numberOfEdges() != index.graph_edge_count()) {
+            return;
+        }
+        C.directSpqrGraphComponents = std::move(index.graph_components);
+        C.directSpqrGraphComponentNodes = std::move(index.graph_component_nodes);
+        C.directSpqrGraphComponentEdges = std::move(index.graph_component_edges);
+        C.directSpqrGraphComponentNodesIdentity =
+            index.graph_component_nodes_identity;
+        C.directSpqrGraphComponentEdgesIdentity =
+            index.graph_component_edges_identity;
+    };
+
+    if (spqr_index::graph_profile_is_parallel_subdivided(view)) {
+        bool exact_graph = tryBuildExactGraphDirectlyFromSpqrIndex(*loaded);
+        if (!exact_graph) {
+            exact_graph = tryBuildNamedExactGraphDirectlyFromSpqrIndex(*loaded);
+        }
+        if (!exact_graph) {
+            BiGraph bg = buildBiGraphFromSpqrIndex(*loaded);
+            buildSpqrGraph(bg);
+        }
+        retainDirectGraphComponents(*loaded, exact_graph);
+        finishLoadedInput();
+        return;
+    }
+
+    if (viewMatchesSuperbubble) {
+        if (!tryBuildNamedExactGraphDirectlyFromSpqrIndex(*loaded)) {
+            throw std::runtime_error(
+                ".spqr/.spqri oriented-double profile direct input cannot be reconstructed "
+                "from this cache; rebuild it with 'spqr-tree --spqr-profile " +
+                view + "' command.");
+        }
+        finishLoadedInput();
+        return;
+    }
+
+    if (tryBuildSnarlGraphDirectlyFromSpqrIndex(*loaded)) {
+        finishLoadedInput();
+        return;
+    }
+
+    if (spqr_index::graph_profile_is_raw(view) &&
+        C.bubbleType == Context::BubbleType::ULTRABUBBLE &&
+        !C.doubledUltrabubbles &&
+        tryBuildUltrabubbleLightGraphDirectlyFromSpqrIndex(*loaded)) {
+        return;
+    }
+
+    BiGraph bg = buildBiGraphFromSpqrIndex(*loaded);
+    finishLoadedInput();
+
+    switch (C.bubbleType) {
+        case Context::BubbleType::ULTRABUBBLE:
+            if (C.doubledUltrabubbles) {
+                buildSuperbubbleGraph(bg, false);
+            } else {
+                buildUltrabubbleLightGraph(bg);
+                return;
+            }
+            break;
+        case Context::BubbleType::SNARL:
+            buildSnarlGraph(bg);
+            break;
+        case Context::BubbleType::SUPERBUBBLE:
+            buildSuperbubbleGraph(bg, C.directedSuperbubbles);
+            break;
+        default:
+            throw std::runtime_error(".spqr/.spqri graph input is only supported for bubble commands");
+    }
 }
 
 }
-
-
 
 namespace {
 
-inline bool ends_with(const std::string& s, const std::string& suffix) {
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
 BiGraph parse_graph_input(const std::string& path, int threads) {
-    if (ends_with(path, ".gbz")) {
+    if (spqr_index::detail::ends_with(path, ".gbz")) {
+        const auto &C = ctx();
+        const bool load_haplotypes =
+            C.spqrHaplotypes &&
+            C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY &&
+            spqr_index::detail::ends_with(C.outputPath, ".spqri");
         logger::info("GBZ parser: reading '{}'", path);
-        auto bg = GBZParser::parse_file(path, threads);
+        auto bg = GBZParser::parse_file(path, threads, load_haplotypes);
         logger::info("GBZ parser: {} segments, {} links", bg.n_nodes, bg.links.size());
         return bg;
     }
@@ -739,28 +1879,38 @@ void readGFA()
     if (C.graphPath.empty())
         throw std::runtime_error("GFA input needs -g <file>");
 
-    const bool gfaReadStats = (std::getenv("BF_GFA_READ_STATS") != nullptr);
-    const auto parseStart = std::chrono::steady_clock::now();
     auto bg = parse_graph_input(C.graphPath, (int)C.threads);
-    const auto parseEnd = std::chrono::steady_clock::now();
+    C.inputHaplotypePaths.clear();
+    C.inputHaplotypeSteps.clear();
     if (bg.n_nodes == 0) { logger::info("Empty graph"); return; }
+    if (!bg.haplotype_paths.empty()) {
+        C.inputHaplotypePaths.reserve(bg.haplotype_paths.size());
+        for (auto &path_rec : bg.haplotype_paths) {
+            InputHaplotypePath rec;
+            rec.name = std::move(path_rec.name);
+            rec.sample = std::move(path_rec.sample);
+            rec.locus = std::move(path_rec.locus);
+            rec.haplotype = path_rec.haplotype;
+            rec.phase_block = path_rec.phase_block;
+            rec.sense = path_rec.sense;
+            rec.step_begin = path_rec.step_begin;
+            rec.step_end = path_rec.step_end;
+            C.inputHaplotypePaths.push_back(std::move(rec));
+        }
+        C.inputHaplotypeSteps.reserve(bg.haplotype_steps.size());
+        for (const auto &step : bg.haplotype_steps) {
+            C.inputHaplotypeSteps.push_back({step.node, step.is_reverse});
+        }
+        std::vector<BiHaplotypePath>().swap(bg.haplotype_paths);
+        std::vector<BiHaplotypeStep>().swap(bg.haplotype_steps);
+    }
 
-    const auto buildStart = std::chrono::steady_clock::now();
     switch (C.bubbleType) {
         case Context::BubbleType::ULTRABUBBLE:
             if (C.doubledUltrabubbles) {
                 buildSuperbubbleGraph(bg, false);
             } else {
                 buildUltrabubbleLightGraph(bg);
-                if (gfaReadStats) {
-                    const auto buildEnd = std::chrono::steady_clock::now();
-                    auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        parseEnd - parseStart).count();
-                    auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        buildEnd - buildStart).count();
-                    std::cerr << "[gfa_read] parse_ms=" << parseMs
-                              << " build_ms=" << buildMs << "\n";
-                }
                 return;
             }
             break;
@@ -771,19 +1921,18 @@ void readGFA()
             buildSuperbubbleGraph(bg, C.inputFormat == Context::InputFormat::GfaDirected);
             break;
         case Context::BubbleType::SPQR_TREE_ONLY:
-            buildSpqrGraph(bg);
+            if (spqr_index::graph_profile_is_parallel_subdivided(C.spqrTreeView)) {
+                buildSnarlGraph(bg);
+            } else if (spqr_index::graph_profile_is_oriented_bidirected(C.spqrTreeView)) {
+                buildSuperbubbleGraph(bg, false);
+            } else if (spqr_index::graph_profile_is_oriented_directed(C.spqrTreeView)) {
+                buildSuperbubbleGraph(bg, true);
+            } else {
+                buildSpqrGraph(bg);
+            }
             break;
         default:
             break;
-    }
-    const auto buildEnd = std::chrono::steady_clock::now();
-    if (gfaReadStats) {
-        auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            parseEnd - parseStart).count();
-        auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            buildEnd - buildStart).count();
-        std::cerr << "[gfa_read] parse_ms=" << parseMs
-                  << " build_ms=" << buildMs << "\n";
     }
 
     logger::info("spqr-rust graph built: {} nodes, {} edges", C.G.numberOfNodes(), C.G.numberOfEdges());
@@ -879,305 +2028,284 @@ namespace {
 
 }
 
-
-#ifdef BUBBLEFINDER_INSTRUMENT
-namespace {
-
-struct ChainAuditResult {
-    uint64_t totalNodes = 0;
-    uint64_t totalEdges = 0;
-    uint64_t trashNodes = 0;
-    uint64_t contractibleNodes = 0;
-    uint64_t entryNodes = 0;
-    uint64_t branchingNodes = 0;
-    uint64_t isolatedNodes = 0;
-    uint64_t selfLoopOnContract = 0;
-    uint64_t parallelEdgeOnContract = 0;
-    uint64_t numChains = 0;
-    uint64_t maxChainLen = 0;
-    uint64_t sumChainLen = 0;
-    uint64_t chainLenHist[16] = {0};
-    uint64_t chainLenP50 = 0;
-    uint64_t chainLenP90 = 0;
-    uint64_t chainLenP99 = 0;
-    uint64_t edgesAfterContract = 0;
-    uint64_t auditTimeMs = 0;
-};
-
-inline EdgePartType edgeTypeAtNode(const spqr_compat::Graph &G,
-                                   const spqr_compat::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
-                                   spqr_compat::edge e,
-                                   spqr_compat::node v)
+static bool tryLoadGraphDegreesFromSpqrIndex(
+    Context &C,
+    const spqr_index::IndexedSpqrTree &index)
 {
-    if (G.source(e) == v) return e2t[e].first;
-    if (G.target(e) == v) return e2t[e].second;
-    return EdgePartType::NONE;
-}
-
-inline bool isContractible(const spqr_compat::Graph &G,
-                           const spqr_compat::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
-                           spqr_compat::node v)
-{
-    int dPlus = 0, dMinus = 0, dOther = 0;
-    int total = 0;
-    bool hasSelfLoop = false;
-    G.forEachAdj(v, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-        if (nbr == v) hasSelfLoop = true;
-        ++total;
-        EdgePartType t = edgeTypeAtNode(G, e2t, e, v);
-        if (t == EdgePartType::PLUS) ++dPlus;
-        else if (t == EdgePartType::MINUS) ++dMinus;
-        else ++dOther;
-    });
-    if (hasSelfLoop) return false;
-    if (dOther != 0) return false;
-    if (total != 2) return false;
-    return dPlus == 1 && dMinus == 1;
-}
-
-inline spqr_compat::node otherEndOnSide(const spqr_compat::Graph &G,
-                                 const spqr_compat::EdgeArray<std::pair<EdgePartType, EdgePartType>> &e2t,
-                                 spqr_compat::node v,
-                                 EdgePartType wantedSide,
-                                 spqr_compat::edge &outEdge)
-{
-    spqr_compat::node res = nullptr;
-    outEdge = nullptr;
-    G.forEachAdj(v, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-        if (res != nullptr) return;
-        if (edgeTypeAtNode(G, e2t, e, v) == wantedSide) {
-            res = nbr;
-            outEdge = e;
-        }
-    });
-    return res;
-}
-
-void auditDeg2ContractionPotential(ChainAuditResult &R)
-{
-    using namespace std::chrono;
-    auto t0 = high_resolution_clock::now();
-    auto &C = ctx();
-    const spqr_compat::Graph &G = C.G;
-    const auto &e2t = C._edge2types;
-
-    R.totalNodes = G.numberOfNodes();
-    R.totalEdges = G.numberOfEdges();
-
-    std::vector<bool> trash(G.numberOfNodes() + 1, false);
-    for (const auto &kv : C.node2name) {
-        if (kv.second == "_trash") {
-            if (kv.first.idx >= 0 && static_cast<size_t>(kv.first.idx) < trash.size())
-                trash[kv.first.idx] = true;
-        }
-    }
-    for (size_t i = 0; i < trash.size(); ++i) if (trash[i]) ++R.trashNodes;
-
-    std::vector<bool> isCtr(G.numberOfNodes() + 1, false);
-    for (spqr_compat::node v : G.nodes) {
-        size_t idx = static_cast<size_t>(v.idx);
-        if (idx >= isCtr.size()) continue;
-        if (idx < trash.size() && trash[idx]) continue;
-        int total = 0;
-        G.forEachAdj(v, [&](spqr_compat::node, spqr_compat::edge) { ++total; });
-        if (total == 0) { ++R.isolatedNodes; continue; }
-        if (isContractible(G, e2t, v)) {
-            isCtr[idx] = true;
-            ++R.contractibleNodes;
-        } else {
-            if (total >= 3) ++R.branchingNodes;
-            else ++R.entryNodes;
-        }
+    const std::uint32_t graph_node_count = index.graph_node_count();
+    if (C.G.numberOfNodes() != graph_node_count ||
+        C.inDeg.size() < graph_node_count ||
+        C.outDeg.size() < graph_node_count) {
+        return false;
     }
 
-    std::vector<bool> visited(G.numberOfNodes() + 1, false);
-    std::vector<uint64_t> chainLens;
-    chainLens.reserve(R.contractibleNodes / 2 + 1);
-
-    for (spqr_compat::node start : G.nodes) {
-        size_t sIdx = static_cast<size_t>(start.idx);
-        if (sIdx >= isCtr.size()) continue;
-        if (!isCtr[sIdx]) continue;
-        if (visited[sIdx]) continue;
-
-        std::vector<spqr_compat::node> chain;
-        chain.push_back(start);
-        visited[sIdx] = true;
-
-        spqr_compat::edge ePlus = nullptr;
-        spqr_compat::node curPlus = otherEndOnSide(G, e2t, start, EdgePartType::PLUS, ePlus);
-        while (curPlus != nullptr) {
-            size_t cIdx = static_cast<size_t>(curPlus.idx);
-            if (cIdx >= isCtr.size() || !isCtr[cIdx] || visited[cIdx]) break;
-            visited[cIdx] = true;
-            chain.push_back(curPlus);
-            spqr_compat::edge nextE = nullptr;
-            spqr_compat::node nx = nullptr;
-            G.forEachAdj(curPlus, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-                if (e == ePlus) return;
-                if (nx != nullptr) return;
-                nx = nbr;
-                nextE = e;
-            });
-            if (nx == nullptr) break;
-            curPlus = nx;
-            ePlus = nextE;
-        }
-
-        spqr_compat::edge eMinus = nullptr;
-        spqr_compat::node curMinus = otherEndOnSide(G, e2t, start, EdgePartType::MINUS, eMinus);
-        while (curMinus != nullptr) {
-            size_t cIdx = static_cast<size_t>(curMinus.idx);
-            if (cIdx >= isCtr.size() || !isCtr[cIdx] || visited[cIdx]) break;
-            visited[cIdx] = true;
-            chain.push_back(curMinus);
-            spqr_compat::edge nextE = nullptr;
-            spqr_compat::node nx = nullptr;
-            G.forEachAdj(curMinus, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-                if (e == eMinus) return;
-                if (nx != nullptr) return;
-                nx = nbr;
-                nextE = e;
-            });
-            if (nx == nullptr) break;
-            curMinus = nx;
-            eMinus = nextE;
-        }
-
-        spqr_compat::node leftAnchor = nullptr;
-        spqr_compat::node rightAnchor = nullptr;
-        spqr_compat::edge eL = nullptr, eR = nullptr;
-        spqr_compat::node leftEnd = chain.back();
-        spqr_compat::node rightEnd = chain.front();
-        if (chain.size() == 1) {
-            leftEnd = start; rightEnd = start;
-        } else {
-            leftEnd = chain.back();
-            rightEnd = chain.front();
-        }
-        G.forEachAdj(leftEnd, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-            size_t nIdx = static_cast<size_t>(nbr.idx);
-            if (nIdx < isCtr.size() && isCtr[nIdx] && visited[nIdx] && nbr != leftEnd) return;
-            if (nIdx >= isCtr.size() || !isCtr[nIdx]) {
-                leftAnchor = nbr;
-                eL = e;
-            }
-        });
-        G.forEachAdj(rightEnd, [&](spqr_compat::node nbr, spqr_compat::edge e) {
-            size_t nIdx = static_cast<size_t>(nbr.idx);
-            if (nIdx < isCtr.size() && isCtr[nIdx] && visited[nIdx] && nbr != rightEnd) return;
-            if (nIdx >= isCtr.size() || !isCtr[nIdx]) {
-                rightAnchor = nbr;
-                eR = e;
-            }
-        });
-
-        if (leftAnchor != nullptr && leftAnchor == rightAnchor) {
-            ++R.selfLoopOnContract;
-        }
-
-        uint64_t L = chain.size();
-        chainLens.push_back(L);
-        ++R.numChains;
-        R.sumChainLen += L;
-        if (L > R.maxChainLen) R.maxChainLen = L;
-        size_t bucket = (L >= 16) ? 15 : static_cast<size_t>(L);
-        R.chainLenHist[bucket] += 1;
-    }
-
-    if (!chainLens.empty()) {
-        std::sort(chainLens.begin(), chainLens.end());
-        auto pick = [&](double q) -> uint64_t {
-            if (chainLens.empty()) return 0;
-            size_t i = static_cast<size_t>(q * (chainLens.size() - 1));
-            return chainLens[i];
-        };
-        R.chainLenP50 = pick(0.50);
-        R.chainLenP90 = pick(0.90);
-        R.chainLenP99 = pick(0.99);
-    }
-
-    R.edgesAfterContract = R.totalEdges;
-    if (R.contractibleNodes > 0 && R.numChains > 0) {
-        R.edgesAfterContract = (R.totalEdges > R.contractibleNodes)
-            ? (R.totalEdges - R.contractibleNodes)
-            : R.totalEdges;
-    }
-
-    auto t1 = high_resolution_clock::now();
-    R.auditTimeMs = static_cast<uint64_t>(duration_cast<milliseconds>(t1 - t0).count());
-}
-
-void printAuditReport(const ChainAuditResult &R)
-{
-    std::ostream &os = std::cout;
-    auto old_flags = os.flags();
-    auto old_prec = os.precision();
-
-    auto pct = [](double n, double d) -> double {
-        return d > 0.0 ? (100.0 * n / d) : 0.0;
+    int *in_data = C.inDeg.size() == 0 ? nullptr : &*C.inDeg.begin();
+    int *out_data = C.outDeg.size() == 0 ? nullptr : &*C.outDeg.begin();
+    auto has_u8_degree_table = [graph_node_count](
+        const std::vector<std::uint8_t> &base,
+        const std::vector<std::uint32_t> &overflow_nodes,
+        const std::vector<std::uint32_t> &overflow_values) {
+        return base.size() == graph_node_count &&
+               overflow_nodes.size() == overflow_values.size();
+    };
+    auto has_degree_fragment = [](
+        const std::vector<std::uint8_t> &base,
+        const std::vector<std::uint32_t> &overflow_nodes,
+        const std::vector<std::uint32_t> &overflow_values,
+        const std::vector<std::uint32_t> &raw) {
+        return !base.empty() || !overflow_nodes.empty() ||
+               !overflow_values.empty() || !raw.empty();
     };
 
-    os << "\n => Deg 2 information\n";
-    os << "  time" << R.auditTimeMs << " ms\n";
-    os << "\n  Input graph\n";
-    os << " nodes total: " << R.totalNodes << "\n";
-    os << " edges total: " << R.totalEdges << "\n";
-    os << " trash nodes: " << R.trashNodes
-       << " (" << std::fixed << std::setprecision(2) << pct(R.trashNodes, R.totalNodes) << "%)\n";
+    const bool has_raw_in_degrees =
+        index.graph_node_in_degrees.size() == graph_node_count;
+    const bool has_raw_out_degrees =
+        index.graph_node_out_degrees.size() == graph_node_count;
+    const bool has_u8_in_degrees =
+        has_u8_degree_table(
+            index.graph_node_in_degrees8,
+            index.graph_node_in_degree_overflow_nodes,
+            index.graph_node_in_degree_overflow_values);
+    const bool has_u8_out_degrees =
+        has_u8_degree_table(
+            index.graph_node_out_degrees8,
+            index.graph_node_out_degree_overflow_nodes,
+            index.graph_node_out_degree_overflow_values);
+    const bool has_stored_in_degrees =
+        has_raw_in_degrees || has_u8_in_degrees;
+    const bool has_stored_out_degrees =
+        has_raw_out_degrees || has_u8_out_degrees;
 
-    os << "\n  classification\n";
-    os << " contractible (deg+=1, deg-=1): " << R.contractibleNodes
-       << " (" << std::fixed << std::setprecision(2) << pct(R.contractibleNodes, R.totalNodes) << "%)\n";
-    os << " branching (>=3 edges): " << R.branchingNodes
-       << " (" << std::fixed << std::setprecision(2) << pct(R.branchingNodes, R.totalNodes) << "%)\n";
-    os << " end / single-side: " << R.entryNodes
-       << " (" << std::fixed << std::setprecision(2) << pct(R.entryNodes, R.totalNodes) << "%)\n";
-    os << " isolated: " << R.isolatedNodes << "\n";
+    if (has_stored_in_degrees != has_stored_out_degrees ||
+        (!has_stored_in_degrees &&
+         (has_degree_fragment(
+              index.graph_node_in_degrees8,
+              index.graph_node_in_degree_overflow_nodes,
+              index.graph_node_in_degree_overflow_values,
+              index.graph_node_in_degrees) ||
+          has_degree_fragment(
+              index.graph_node_out_degrees8,
+              index.graph_node_out_degree_overflow_nodes,
+              index.graph_node_out_degree_overflow_values,
+              index.graph_node_out_degrees)))) {
+        throw std::runtime_error(
+            "SPQR index graph node degree table does not match graph node count");
+    }
 
-    os << "\n  Chain extraction\n";
-    os << " chains found: " << R.numChains << "\n";
-    if (R.numChains > 0) {
-        double avg = static_cast<double>(R.sumChainLen) / static_cast<double>(R.numChains);
-        os << " avg chain length: " << std::fixed << std::setprecision(2) << avg << "\n";
-        os << " max chain length: " << R.maxChainLen << "\n";
-        os << " p50 / p90 / p99: " << R.chainLenP50 << " / "
-           << R.chainLenP90 << " / " << R.chainLenP99 << "\n";
-        os << " histogram (chain len -> count):\n";
-        for (size_t i = 1; i < 16; ++i) {
-            if (R.chainLenHist[i] == 0) continue;
-            const char *prefix = (i == 15) ? ">=15" : "    ";
-            os << "      len " << prefix << " " << std::setw(4) << i << " : "
-               << R.chainLenHist[i] << "\n";
+    if (!has_stored_in_degrees) {
+        return false;
+    }
+
+    constexpr int max_degree = std::numeric_limits<int>::max();
+    auto copy_degrees = [graph_node_count, max_degree, threads = C.threads](
+        const std::vector<std::uint8_t> &base,
+        const std::vector<std::uint32_t> &overflow_nodes,
+        const std::vector<std::uint32_t> &overflow_values,
+        const std::vector<std::uint32_t> &raw,
+        int *dst) {
+        if (raw.size() == graph_node_count) {
+            std::atomic<bool> invalid_degree{false};
+            #pragma omp parallel for schedule(static) if(threads > 1 && graph_node_count > 1000000u)
+            for (int64_t i_i = 0; i_i < static_cast<int64_t>(graph_node_count); ++i_i) {
+                const std::uint32_t i = static_cast<std::uint32_t>(i_i);
+                const std::uint32_t degree = raw[i];
+                if (degree > static_cast<std::uint32_t>(max_degree)) {
+                    invalid_degree.store(true, std::memory_order_relaxed);
+                    continue;
+                }
+                dst[i] = static_cast<int>(degree);
+            }
+            if (invalid_degree.load(std::memory_order_relaxed)) {
+                throw std::runtime_error(
+                    "SPQR index graph node degree exceeds BubbleFinder degree storage");
+            }
+            return;
         }
-        os << " self loops created: " << R.selfLoopOnContract << "\n";
-    }
+        if (base.size() != graph_node_count ||
+            overflow_nodes.size() != overflow_values.size()) {
+            throw std::runtime_error(
+                "SPQR index graph node degree table does not match graph node count");
+        }
+        #pragma omp parallel for schedule(static) if(threads > 1 && graph_node_count > 1000000u)
+        for (int64_t i_i = 0; i_i < static_cast<int64_t>(graph_node_count); ++i_i) {
+            const std::uint32_t i = static_cast<std::uint32_t>(i_i);
+            dst[i] = static_cast<int>(base[i]);
+        }
+        for (std::uint32_t i = 0; i < overflow_nodes.size(); ++i) {
+            const std::uint32_t node = overflow_nodes[i];
+            const std::uint32_t degree = overflow_values[i];
+            if (node >= graph_node_count ||
+                degree > static_cast<std::uint32_t>(max_degree)) {
+                throw std::runtime_error(
+                    "SPQR index graph node degree table is invalid");
+            }
+            dst[node] = static_cast<int>(degree);
+        }
+    };
 
-    os << "\n  Reduction if contraction is applied \n";
-    uint64_t nodesAfter = (R.totalNodes > R.contractibleNodes)
-        ? (R.totalNodes - R.contractibleNodes) : R.totalNodes;
-    os << " nodes:" << R.totalNodes << " -> " << nodesAfter
-       << "  (-" << std::fixed << std::setprecision(2) << pct(R.contractibleNodes, R.totalNodes) << "%)\n";
-    os << " edges:" << R.totalEdges << " -> " << R.edgesAfterContract
-       << "  (-" << std::fixed << std::setprecision(2) << pct(R.totalEdges - R.edgesAfterContract, R.totalEdges) << "%)\n";
-
-    if (R.totalNodes > 0 && nodesAfter > 0) {
-        double speedup = static_cast<double>(R.totalNodes) / static_cast<double>(nodesAfter);
-        os << " raw size ratio: " << std::fixed << std::setprecision(2) << speedup << "x\n";
-    }
-
-    os.precision(old_prec);
-    os.flags(old_flags);
+    copy_degrees(index.graph_node_in_degrees8,
+                 index.graph_node_in_degree_overflow_nodes,
+                 index.graph_node_in_degree_overflow_values,
+                 index.graph_node_in_degrees,
+                 in_data);
+    copy_degrees(index.graph_node_out_degrees8,
+                 index.graph_node_out_degree_overflow_nodes,
+                 index.graph_node_out_degree_overflow_values,
+                 index.graph_node_out_degrees,
+                 out_data);
+    return true;
 }
-
-}
-#endif
 
 void readGraph() {
     auto &C = ctx();
     TIME_BLOCK("Graph read");
 
     logger::info("Starting to read graph");
+
+    if (C.inputFormat == Context::InputFormat::SpqrIndex)
+    {
+        readSpqrIndexGraph();
+
+        if (C.bubbleType == Context::BubbleType::ULTRABUBBLE && !C.doubledUltrabubbles) return;
+
+        C.isEntry = NodeArray<bool>(C.G, false);
+        C.isExit= NodeArray<bool>(C.G, false);
+        C.inDeg = NodeArray<int>(C.G, 0);
+        C.outDeg= NodeArray<int>(C.G, 0);
+
+        bool loaded_spqr_degrees = false;
+        if (C.spqrIndex) {
+            loaded_spqr_degrees = tryLoadGraphDegreesFromSpqrIndex(C, *C.spqrIndex);
+            if (loaded_spqr_degrees) {
+                auto &index = *C.spqrIndex;
+                std::vector<std::uint32_t>().swap(index.graph_node_in_degrees);
+                std::vector<std::uint32_t>().swap(index.graph_node_out_degrees);
+                std::vector<std::uint8_t>().swap(index.graph_node_in_degrees8);
+                std::vector<std::uint8_t>().swap(index.graph_node_out_degrees8);
+                std::vector<std::uint32_t>().swap(index.graph_node_in_degree_overflow_nodes);
+                std::vector<std::uint32_t>().swap(index.graph_node_in_degree_overflow_values);
+                std::vector<std::uint32_t>().swap(index.graph_node_out_degree_overflow_nodes);
+                std::vector<std::uint32_t>().swap(index.graph_node_out_degree_overflow_values);
+            }
+        }
+
+        if (!C.directSpqrInputGraphEdgesMaterialized) {
+            if (!C.spqrIndex) {
+                throw std::runtime_error(
+                    "SPQR-index node-only graph needs the loaded index to compute degrees");
+            }
+            const auto &index = *C.spqrIndex;
+            const std::uint32_t graph_node_count = index.graph_node_count();
+            if (C.G.numberOfNodes() != graph_node_count) {
+                throw std::runtime_error(
+                    "SPQR-index node-only graph node count does not match its index");
+            }
+            int *in_data = C.inDeg.size() == 0 ? nullptr : &*C.inDeg.begin();
+            int *out_data = C.outDeg.size() == 0 ? nullptr : &*C.outDeg.begin();
+            if (!loaded_spqr_degrees) {
+                if (!index.graph_edges.empty()) {
+                    const std::size_t edge_count = index.graph_edges.size();
+                    if (C.threads > 1 && edge_count > 1000000) {
+                        std::atomic<bool> invalid_edge{false};
+                        #pragma omp parallel for schedule(static)
+                        for (int64_t i_i = 0; i_i < static_cast<int64_t>(edge_count); ++i_i) {
+                            const auto &ge = index.graph_edges[static_cast<std::size_t>(i_i)];
+                            if (ge.src >= graph_node_count || ge.dst >= graph_node_count) {
+                                invalid_edge.store(true, std::memory_order_relaxed);
+                                continue;
+                            }
+                            #pragma omp atomic update
+                            out_data[ge.src] += 1;
+                            #pragma omp atomic update
+                            in_data[ge.dst] += 1;
+                        }
+                        if (invalid_edge.load(std::memory_order_relaxed)) {
+                            throw std::runtime_error(
+                                "SPQR index graph edge references a missing graph node");
+                        }
+                    } else {
+                        for (const auto &ge : index.graph_edges) {
+                            if (ge.src >= graph_node_count || ge.dst >= graph_node_count) {
+                                throw std::runtime_error(
+                                    "SPQR index graph edge references a missing graph node");
+                            }
+                            ++out_data[ge.src];
+                            ++in_data[ge.dst];
+                        }
+                    }
+                } else if (spqr_index::graph_profile_is_oriented_double(
+                               C.spqrIndexInputGraphView) &&
+                           index.real_edge_count() == index.graph_edge_count()) {
+                    const std::uint32_t real_edge_count =
+                        graph_index::require_spqr_count(
+                            index.real_edge_count(),
+                            "SPQR-index direct graph real-edge count");
+                    const spqr_index::GraphEdgeRecord *real_edge_records =
+                        index.has_compact_real_edge_endpoints()
+                            ? index.real_edge_endpoints.data()
+                            : nullptr;
+                    if (C.threads > 1 && real_edge_count > 1000000u) {
+                        std::atomic<bool> invalid_edge{false};
+                        #pragma omp parallel for schedule(static)
+                        for (int64_t i_i = 0; i_i < static_cast<int64_t>(real_edge_count); ++i_i) {
+                            const auto re = real_edge_records != nullptr
+                                ? real_edge_records[static_cast<std::size_t>(i_i)]
+                                : index.real_edge_endpoint_at(static_cast<std::uint32_t>(i_i));
+                            if (re.src >= graph_node_count || re.dst >= graph_node_count) {
+                                invalid_edge.store(true, std::memory_order_relaxed);
+                                continue;
+                            }
+                            #pragma omp atomic update
+                            out_data[re.src] += 1;
+                            #pragma omp atomic update
+                            in_data[re.dst] += 1;
+                        }
+                        if (invalid_edge.load(std::memory_order_relaxed)) {
+                            throw std::runtime_error(
+                                "SPQR index real edge references a missing graph node");
+                        }
+                    } else {
+                        for (std::uint32_t i = 0; i < real_edge_count; ++i) {
+                            const auto re = real_edge_records != nullptr
+                                ? real_edge_records[static_cast<std::size_t>(i)]
+                                : index.real_edge_endpoint_at(i);
+                            if (re.src >= graph_node_count || re.dst >= graph_node_count) {
+                                throw std::runtime_error(
+                                    "SPQR index real edge references a missing graph node");
+                            }
+                            ++out_data[re.src];
+                            ++in_data[re.dst];
+                        }
+                    }
+                } else {
+                    throw std::runtime_error(
+                        "SPQR-index node-only graph needs graph-edge tables or matching real-edge endpoints to compute degrees");
+                }
+            }
+        } else {
+            if (!loaded_spqr_degrees) {
+                for (edge e : C.G.edges) {
+                    C.outDeg[C.G.source(e)]++;
+                    C.inDeg [C.G.target(e)]++;
+                }
+            }
+        }
+
+        if (C.spqrIndex &&
+            C.spqrIndexPath.empty() &&
+            C.bubbleType == Context::BubbleType::SNARL &&
+            !C.directSpqrInputGraphUsesIndexNames) {
+            const bool keep_for_stored_spqr =
+                C.spCompressMode == Context::SpCompressMode::Off &&
+                spqr_index::graph_profile_is_raw_or_parallel_subdivided(
+                    C.spqrIndexInputGraphView);
+            if (!keep_for_stored_spqr) {
+                C.spqrIndex.reset();
+            }
+        }
+
+        return;
+    }
 
     if (C.inputFormat == Context::InputFormat::Gfa ||
         C.inputFormat == Context::InputFormat::GfaDirected)
@@ -1197,14 +2325,6 @@ void readGraph() {
             C.outDeg[C.G.source(e)]++;
             C.inDeg [C.G.target(e)]++;
         }
-
-        BF_INSTR(
-        if (C.bubbleType == Context::BubbleType::SNARL) {
-            ChainAuditResult R;
-            auditDeg2ContractionPotential(R);
-            printAuditReport(R);
-        }
-        )
 
         logger::info("Graph read");
         return;
@@ -1303,7 +2423,7 @@ project_bubblegun_pairs_from_doubled() {
 
 namespace {
 
-constexpr size_t kIoChunkHighWater = 64ull * 1024ull * 1024ull;  // 64 MiB
+constexpr size_t kIoChunkHighWater = 64ull * 1024ull * 1024ull;
 
 inline void flushStringBuf(std::ostream &out, std::string &buf) {
     if (!buf.empty()) {
@@ -1312,25 +2432,31 @@ inline void flushStringBuf(std::ostream &out, std::string &buf) {
     }
 }
 
+template <typename EndpointT>
 struct ChainEdge {
-    uint64_t endpoint[2];
+    EndpointT endpoint[2];
     size_t next[2];
 };
 
+template <typename EndpointT>
 struct ChainOcc {
-    uint64_t key;
+    EndpointT key;
     size_t edge;
     uint8_t side;
 };
 
-void compactEndpointPairChains(std::vector<std::pair<uint64_t, uint64_t>> &pairs)
+template <typename EndpointT>
+void compactEndpointPairChains(std::vector<std::pair<EndpointT, EndpointT>> &pairs)
 {
+    static_assert(std::is_unsigned<EndpointT>::value,
+                  "packed endpoint keys must be unsigned");
     if (pairs.size() < 2) return;
 
     const size_t none = std::numeric_limits<size_t>::max();
-    std::vector<ChainEdge> edges;
+    constexpr EndpointT strand_mask = static_cast<EndpointT>(1);
+    std::vector<ChainEdge<EndpointT>> edges;
     edges.reserve(pairs.size());
-    std::vector<ChainOcc> occ;
+    std::vector<ChainOcc<EndpointT>> occ;
     occ.reserve(pairs.size() * 2);
 
     for (const auto &p : pairs) {
@@ -1340,15 +2466,16 @@ void compactEndpointPairChains(std::vector<std::pair<uint64_t, uint64_t>> &pairs
         occ.push_back({p.second, idx, 1});
     }
 
-    std::sort(occ.begin(), occ.end(), [](const ChainOcc &a, const ChainOcc &b) {
+    std::sort(occ.begin(), occ.end(), [](const ChainOcc<EndpointT> &a,
+                                          const ChainOcc<EndpointT> &b) {
         if (a.key != b.key) return a.key < b.key;
         if (a.edge != b.edge) return a.edge < b.edge;
         return a.side < b.side;
     });
 
-    auto uniqueOcc = [&](uint64_t key) -> std::pair<size_t, uint8_t> {
+    auto uniqueOcc = [&](EndpointT key) -> std::pair<size_t, uint8_t> {
         auto it = std::lower_bound(occ.begin(), occ.end(), key,
-                                   [](const ChainOcc &a, uint64_t b) {
+                                   [](const ChainOcc<EndpointT> &a, EndpointT b) {
                                        return a.key < b;
                                    });
         if (it == occ.end() || it->key != key) return {none, 0};
@@ -1360,8 +2487,10 @@ void compactEndpointPairChains(std::vector<std::pair<uint64_t, uint64_t>> &pairs
 
     for (size_t i = 0; i < edges.size(); ++i) {
         for (uint8_t side = 0; side < 2; ++side) {
-            auto [other, other_side] = uniqueOcc(edges[i].endpoint[side] ^ 1ull);
-            if (other != none && other != i && edges[other].endpoint[other_side] == (edges[i].endpoint[side] ^ 1ull)) {
+            const EndpointT mate =
+                static_cast<EndpointT>(edges[i].endpoint[side] ^ strand_mask);
+            auto [other, other_side] = uniqueOcc(mate);
+            if (other != none && other != i && edges[other].endpoint[other_side] == mate) {
                 edges[i].next[side] = other;
             }
         }
@@ -1373,7 +2502,7 @@ void compactEndpointPairChains(std::vector<std::pair<uint64_t, uint64_t>> &pairs
     };
 
     std::vector<uint8_t> seen(edges.size(), 0);
-    std::vector<std::pair<uint64_t, uint64_t>> out;
+    std::vector<std::pair<EndpointT, EndpointT>> out;
     out.reserve(pairs.size());
 
     for (size_t i = 0; i < edges.size(); ++i) {
@@ -1381,8 +2510,8 @@ void compactEndpointPairChains(std::vector<std::pair<uint64_t, uint64_t>> &pairs
 
         size_t cur = i;
         uint8_t entry = edges[cur].next[0] == none ? 0 : 1;
-        uint64_t first = edges[cur].endpoint[entry];
-        uint64_t last = edges[cur].endpoint[entry ^ 1u];
+        EndpointT first = edges[cur].endpoint[entry];
+        EndpointT last = edges[cur].endpoint[entry ^ 1u];
 
         while (true) {
             seen[cur] = 1;
@@ -1529,6 +2658,9 @@ struct FastSnarlOutputTables {
     size_t max_idx = 0;
 };
 
+using FastEndpointKey = std::uint32_t;
+using FastPairKey = std::uint64_t;
+
 inline bool tableIsTrash(const FastSnarlOutputTables &t, uint32_t idx)
 {
     if (idx < t.is_trash.size() && t.is_trash[idx]) return true;
@@ -1621,29 +2753,27 @@ inline void appendU64(uint64_t value, std::string &buf)
     }
 }
 
-inline uint64_t packFastPairKey(uint32_t a_idx, uint8_t a_sign,
-                                uint32_t b_idx, uint8_t b_sign)
+inline FastEndpointKey packFastEndpointKey(uint32_t idx, uint8_t sign)
 {
-    uint64_t a = (static_cast<uint64_t>(a_idx) << 1) |
-                 static_cast<uint64_t>(a_sign);
-    uint64_t b = (static_cast<uint64_t>(b_idx) << 1) |
-                 static_cast<uint64_t>(b_sign);
-    if (a > b) std::swap(a, b);
-    return (a << 32) | b;
+    return static_cast<FastEndpointKey>((static_cast<uint64_t>(idx) << 1) |
+                                        static_cast<uint64_t>(sign));
 }
 
-inline uint64_t packFastPairEndpointKeys(uint64_t a, uint64_t b)
+inline FastPairKey packFastPairKey(uint32_t a_idx, uint8_t a_sign,
+                                   uint32_t b_idx, uint8_t b_sign)
 {
+    FastEndpointKey a = packFastEndpointKey(a_idx, a_sign);
+    FastEndpointKey b = packFastEndpointKey(b_idx, b_sign);
     if (a > b) std::swap(a, b);
-    return (a << 32) | b;
+    return (static_cast<uint64_t>(a) << 32) | static_cast<uint64_t>(b);
 }
 
-inline uint32_t fastEndpointIdx(uint64_t key)
+inline uint32_t fastEndpointIdx(FastEndpointKey key)
 {
     return static_cast<uint32_t>(key >> 1);
 }
 
-inline uint8_t fastEndpointSign(uint64_t key)
+inline uint8_t fastEndpointSign(FastEndpointKey key)
 {
     return static_cast<uint8_t>(key & 1u);
 }
@@ -1667,6 +2797,8 @@ inline bool parseFastEndpoint(const Context &C,
     if (name == "_trash") return false;
     auto it = C.name2node.find(name);
     if (it == C.name2node.end()) return false;
+    if (!graph_index::fits_packed_endpoint_id(static_cast<uint64_t>(it->second.idx)))
+        return false;
     idx = static_cast<uint32_t>(it->second.idx);
     return true;
 }
@@ -1730,9 +2862,10 @@ FastSnarlOutputTables buildFastSnarlOutputTables(Context &C, bool need_trivial_f
         int countMinus = 0;
 
         C.G.forEachAdj(u, [&](spqr_compat::node other, spqr_compat::edge e) {
+            const auto types = edgePartTypes(C, e);
             EdgePartType typeAtU = (C.G.source(e) == u)
-                ? C._edge2types[e].first
-                : C._edge2types[e].second;
+                ? types.first
+                : types.second;
             int *cnt = nullptr;
             spqr_compat::node *slot = nullptr;
             if (typeAtU == EdgePartType::PLUS) {
@@ -1828,8 +2961,8 @@ inline bool fastEndpointLess(const FastSnarlOutputTables &t,
 }
 
 inline bool fastEndpointKeyLess(const FastSnarlOutputTables &t,
-                                uint64_t a,
-                                uint64_t b)
+                                FastEndpointKey a,
+                                FastEndpointKey b)
 {
     return fastEndpointLess(t,
                             fastEndpointIdx(a), fastEndpointSign(a),
@@ -1854,13 +2987,6 @@ inline bool fastPairIsTrivial(const FastSnarlOutputTables &t, uint64_t key)
            b_nbr == static_cast<int32_t>(a_idx);
 }
 
-inline bool fastEndpointPairIsTrivial(const FastSnarlOutputTables &t,
-                                      uint64_t a,
-                                      uint64_t b)
-{
-    return fastPairIsTrivial(t, packFastPairEndpointKeys(a, b));
-}
-
 inline void appendFastEndpoint(const FastSnarlOutputTables &t,
                                uint32_t idx,
                                uint8_t sign,
@@ -1883,7 +3009,7 @@ inline void appendFastEndpoint(const FastSnarlOutputTables &t,
 }
 
 inline void appendFastEndpointKey(const FastSnarlOutputTables &t,
-                                  uint64_t key,
+                                  FastEndpointKey key,
                                   std::string &buf)
 {
     appendFastEndpoint(t, fastEndpointIdx(key), fastEndpointSign(key), buf);
@@ -1911,11 +3037,11 @@ void appendFallbackStringSnarlsToFastPairs(Context &C)
                 endpoints[0].first, endpoints[0].second,
                 endpoints[1].first, endpoints[1].second));
         } else if (endpoints.size() > 2) {
-            std::vector<uint64_t> clique;
+            std::vector<FastEndpointKey> clique;
             clique.reserve(endpoints.size());
             for (const auto &endpoint : endpoints) {
-                clique.push_back((static_cast<uint64_t>(endpoint.first) << 1) |
-                                 static_cast<uint64_t>(endpoint.second));
+                clique.push_back(packFastEndpointKey(endpoint.first,
+                                                     endpoint.second));
             }
             C.fastSnarlCliques.push_back(std::move(clique));
         }
@@ -1932,11 +3058,11 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
     auto &pairs = C.fastSnarlPairs;
     auto &cliques = C.fastSnarlCliques;
 
-    auto endpointLess = [&](uint64_t a, uint64_t b) {
+    auto endpointLess = [&](FastEndpointKey a, FastEndpointKey b) {
         return fastEndpointKeyLess(tables, a, b);
     };
-    auto cliqueLess = [&](const std::vector<uint64_t> &a,
-                          const std::vector<uint64_t> &b) {
+    auto cliqueLess = [&](const std::vector<FastEndpointKey> &a,
+                          const std::vector<FastEndpointKey> &b) {
         return std::lexicographical_compare(a.begin(), a.end(),
                                             b.begin(), b.end(),
                                             endpointLess);
@@ -1947,16 +3073,16 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
         clique.erase(std::unique(clique.begin(), clique.end()), clique.end());
     }
     cliques.erase(std::remove_if(cliques.begin(), cliques.end(),
-                                 [](const std::vector<uint64_t> &clique) {
+                                 [](const std::vector<FastEndpointKey> &clique) {
                                      return clique.size() < 2;
                                  }),
                   cliques.end());
     std::sort(cliques.begin(), cliques.end(), cliqueLess);
     cliques.erase(std::unique(cliques.begin(), cliques.end()), cliques.end());
 
-    std::vector<uint64_t> coveredPairs;
-    std::vector<std::vector<uint64_t>> outputCliques;
-    std::vector<uint64_t> cliquePairs;
+    std::vector<FastPairKey> coveredPairs;
+    std::vector<std::vector<FastEndpointKey>> outputCliques;
+    std::vector<FastPairKey> cliquePairs;
 
     for (auto &clique : cliques) {
         cliquePairs.clear();
@@ -1965,7 +3091,11 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
 
         for (size_t i = 0; i < clique.size(); ++i) {
             for (size_t j = i + 1; j < clique.size(); ++j) {
-                uint64_t key = packFastPairEndpointKeys(clique[i], clique[j]);
+                FastEndpointKey a = clique[i];
+                FastEndpointKey b = clique[j];
+                if (a > b) std::swap(a, b);
+                FastPairKey key =
+                    (static_cast<uint64_t>(a) << 32) | static_cast<uint64_t>(b);
                 if (filter_trivial && fastPairIsTrivial(tables, key)) {
                     canCompact = false;
                 } else {
@@ -1980,7 +3110,7 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
 
         if (canCompact) {
             bool overlaps = false;
-            for (uint64_t key : cliquePairs) {
+            for (FastPairKey key : cliquePairs) {
                 if (std::binary_search(coveredPairs.begin(), coveredPairs.end(), key)) {
                     overlaps = true;
                     break;
@@ -1990,7 +3120,7 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
             if (!overlaps) {
                 outputCliques.push_back(std::move(clique));
 
-                std::vector<uint64_t> merged;
+                std::vector<FastPairKey> merged;
                 merged.reserve(coveredPairs.size() + cliquePairs.size());
                 std::merge(coveredPairs.begin(), coveredPairs.end(),
                            cliquePairs.begin(), cliquePairs.end(),
@@ -2016,16 +3146,16 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
     pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
 
     size_t pair_count = 0;
-    std::vector<std::pair<uint64_t, uint64_t>> outputPairs;
+    std::vector<std::pair<FastEndpointKey, FastEndpointKey>> outputPairs;
     const bool write_all_pairs =
         !filter_trivial && !C.compactOutputChains && coveredPairs.empty();
     if (C.compactOutputChains) {
         outputPairs.reserve(pairs.size());
-        for (uint64_t key : pairs) {
+        for (FastPairKey key : pairs) {
             if ((!filter_trivial || !fastPairIsTrivial(tables, key)) &&
                 !std::binary_search(coveredPairs.begin(), coveredPairs.end(), key)) {
-                outputPairs.emplace_back(static_cast<uint32_t>(key >> 32),
-                                         static_cast<uint32_t>(key & 0xffffffffu));
+                outputPairs.emplace_back(static_cast<FastEndpointKey>(key >> 32),
+                                         static_cast<FastEndpointKey>(key & 0xffffffffu));
             }
         }
         compactEndpointPairChains(outputPairs);
@@ -2034,7 +3164,7 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
         pair_count = pairs.size();
     } else {
         size_t covered_i = 0;
-        for (uint64_t key : pairs) {
+        for (FastPairKey key : pairs) {
             if (filter_trivial && fastPairIsTrivial(tables, key)) continue;
             while (covered_i < coveredPairs.size() && coveredPairs[covered_i] < key) {
                 ++covered_i;
@@ -2061,7 +3191,7 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
         }
     }
 
-    auto appendPairLine = [&](uint64_t a, uint64_t b, std::string &dst) {
+    auto appendPairLine = [&](FastEndpointKey a, FastEndpointKey b, std::string &dst) {
         uint32_t a_idx = static_cast<uint32_t>(a >> 1);
         uint8_t a_sign = static_cast<uint8_t>(a & 1u);
         uint32_t b_idx = static_cast<uint32_t>(b >> 1);
@@ -2078,24 +3208,24 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
         dst.push_back('\n');
     };
 
-    auto writePair = [&](uint64_t a, uint64_t b) {
+    auto writePair = [&](FastEndpointKey a, FastEndpointKey b) {
         appendPairLine(a, b, buf);
 
         if (buf.size() >= kIoChunkHighWater) flushStringBuf(out, buf);
     };
 
-    auto appendPairKeyLine = [&](uint64_t key, std::string &dst) {
-        appendPairLine(static_cast<uint32_t>(key >> 32),
-                       static_cast<uint32_t>(key & 0xffffffffu),
+    auto appendPairKeyLine = [&](FastPairKey key, std::string &dst) {
+        appendPairLine(static_cast<FastEndpointKey>(key >> 32),
+                       static_cast<FastEndpointKey>(key & 0xffffffffu),
                        dst);
     };
 
     if (C.compactOutputChains) {
         for (auto [a, b] : outputPairs) writePair(a, b);
     } else if (write_all_pairs) {
+#if defined(_OPENMP)
         const bool use_parallel_format =
             C.threads > 1 && pairs.size() > 100000;
-#if defined(_OPENMP)
         if (use_parallel_format) {
             const int workers = std::max<int>(1, static_cast<int>(C.threads));
             const size_t block_pairs = 1ull << 19;
@@ -2130,15 +3260,15 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
         } else
 #endif
         {
-            for (uint64_t key : pairs) {
+            for (FastPairKey key : pairs) {
                 appendPairKeyLine(key, buf);
                 if (buf.size() >= kIoChunkHighWater) flushStringBuf(out, buf);
             }
         }
     } else {
+#if defined(_OPENMP)
         const bool use_parallel_format =
             C.threads > 1 && pairs.size() > 100000 && !C.compactOutputChains;
-#if defined(_OPENMP)
         if (use_parallel_format) {
             const int workers = std::max<int>(1, static_cast<int>(C.threads));
             const size_t block_pairs = 1ull << 19;
@@ -2166,7 +3296,7 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
                               coveredPairs.begin(), coveredPairs.end(), pairs[begin]) -
                                               coveredPairs.begin());
                     for (size_t i = begin; i < end; ++i) {
-                        const uint64_t key = pairs[i];
+                        const FastPairKey key = pairs[i];
                         if (filter_trivial && fastPairIsTrivial(tables, key)) continue;
                         while (covered_i < coveredPairs.size() && coveredPairs[covered_i] < key) {
                             ++covered_i;
@@ -2185,21 +3315,351 @@ void writeFastSnarlPairs(std::ostream &out, Context &C)
 #endif
         {
             size_t covered_i = 0;
-            for (uint64_t key : pairs) {
+            for (FastPairKey key : pairs) {
                 if (filter_trivial && fastPairIsTrivial(tables, key)) continue;
                 while (covered_i < coveredPairs.size() && coveredPairs[covered_i] < key) {
                     ++covered_i;
                 }
                 if (covered_i < coveredPairs.size() && coveredPairs[covered_i] == key) continue;
-                writePair(static_cast<uint32_t>(key >> 32),
-                          static_cast<uint32_t>(key & 0xffffffffu));
+                writePair(static_cast<FastEndpointKey>(key >> 32),
+                          static_cast<FastEndpointKey>(key & 0xffffffffu));
             }
         }
     }
     flushStringBuf(out, buf);
 }
 
-}  
+}
+
+std::string contextGraphNodeName(const Context &C, spqr_compat::node v)
+{
+    auto direct = C.node2name.find(v);
+    if (direct != C.node2name.end()) {
+        return direct->second;
+    }
+
+    const std::uint32_t idx = static_cast<std::uint32_t>(v.idx);
+    if (C.directSpqrInputGraphUsesIndexNames &&
+        C.spqrIndex &&
+        idx < C.spqrIndex->graph_node_count()) {
+        return spqrIndexGraphNodeName(*C.spqrIndex, idx);
+    }
+
+    if (idx < C.nodeNamesByIndex.size() && !C.nodeNamesByIndex[idx].empty()) {
+        return C.nodeNamesByIndex[idx];
+    }
+
+    auto sparse = C.sparseNodeNamesByIndex.find(idx);
+    const bool hasSparse = sparse != C.sparseNodeNamesByIndex.end();
+    const bool numericAvailable =
+        idx < C.nodeNumericNamesByIndex.size() &&
+        (C.nodeNumericNameValidByIndex.empty() ||
+         (idx < C.nodeNumericNameValidByIndex.size() &&
+          C.nodeNumericNameValidByIndex[idx] != 0));
+    if (numericAvailable && !hasSparse) {
+        const std::uint64_t numeric = C.nodeNumericNamesByIndex[idx];
+        if (spqr_index::graph_profile_is_oriented_double(C.spqrIndexInputGraphView)) {
+            return spqr_index::IndexedSpqrTree::oriented_numeric_graph_node_name(numeric);
+        }
+        return std::to_string(numeric);
+    }
+
+    if (hasSparse) {
+        return sparse->second;
+    }
+
+    return std::to_string(idx);
+}
+
+void appendUInt64Decimal(std::string &out, std::uint64_t value)
+{
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+    if (ec != std::errc()) {
+        throw std::runtime_error("failed to format integer output");
+    }
+    out.append(buf, ptr);
+}
+
+bool decimalLexLess(std::uint64_t a, std::uint64_t b)
+{
+    char abuf[32];
+    char bbuf[32];
+    auto [aptr, aec] = std::to_chars(abuf, abuf + sizeof(abuf), a);
+    auto [bptr, bec] = std::to_chars(bbuf, bbuf + sizeof(bbuf), b);
+    if (aec != std::errc() || bec != std::errc()) {
+        throw std::runtime_error("failed to compare integer output names");
+    }
+    const std::size_t asz = static_cast<std::size_t>(aptr - abuf);
+    const std::size_t bsz = static_cast<std::size_t>(bptr - bbuf);
+    const int cmp = std::memcmp(abuf, bbuf, std::min(asz, bsz));
+    return cmp < 0 || (cmp == 0 && asz < bsz);
+}
+
+bool tryWriteDirectIndexedNumericSuperbubbles(std::ostream &out, const Context &C)
+{
+    if (C.compactOutputChains ||
+        C.bubbleType != Context::BubbleType::SUPERBUBBLE ||
+        C.directedSuperbubbles ||
+        C.inputFormat != Context::InputFormat::SpqrIndex ||
+        !spqr_index::graph_profile_is_oriented_bidirected(C.spqrIndexInputGraphView) ||
+        !C.directSpqrInputGraphUsesIndexNames ||
+        !C.spqrIndex ||
+        !C.spqrIndex->has_compact_numeric_graph_node_names() ||
+        !C.spqrIndex->graph_node_string_names.empty()) {
+        return false;
+    }
+
+    const auto &index = *C.spqrIndex;
+    const std::uint32_t graphNodeCount = index.graph_node_count();
+    if (!index.uses_oriented_numeric_graph_node_names()) {
+        return false;
+    }
+
+    auto encodedAt = [&](std::uint32_t idx) -> std::uint64_t {
+        if (idx >= graphNodeCount) {
+            throw std::runtime_error("superbubble endpoint is outside SPQR index graph node table");
+        }
+        return index.graph_node_numeric_name_at(idx);
+    };
+
+    if (index.graph_node_numeric_names32.size() == graphNodeCount) {
+        std::vector<std::uint64_t> keys;
+        keys.reserve(C.superbubbles.size());
+        for (const auto &sb : C.superbubbles) {
+            std::uint64_t a = encodedAt(static_cast<std::uint32_t>(sb.first.idx)) >> 1u;
+            std::uint64_t b = encodedAt(static_cast<std::uint32_t>(sb.second.idx)) >> 1u;
+            if (a == b) continue;
+            if (decimalLexLess(b, a)) {
+                std::swap(a, b);
+            }
+            keys.push_back((a << 32u) | b);
+        }
+
+#if defined(_OPENMP) && defined(__GLIBCXX__)
+        __gnu_parallel::sort(keys.begin(), keys.end());
+#else
+        std::sort(keys.begin(), keys.end());
+#endif
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+        std::string header;
+        header.reserve(32);
+        appendUInt64Decimal(header, static_cast<std::uint64_t>(keys.size()));
+        header.push_back('\n');
+        flushStringBuf(out, header);
+
+#if defined(_OPENMP)
+        const bool use_parallel_format = C.threads > 1 && keys.size() > 100000;
+        if (use_parallel_format) {
+            const int workers = std::max<int>(1, static_cast<int>(C.threads));
+            const std::size_t blockPairs = 1ull << 19;
+            const std::size_t blockCount = (keys.size() + blockPairs - 1u) / blockPairs;
+            std::vector<std::string> buffers;
+            for (std::size_t groupBegin = 0; groupBegin < blockCount;
+                 groupBegin += static_cast<std::size_t>(workers)) {
+                const std::size_t groupEnd = std::min(
+                    blockCount, groupBegin + static_cast<std::size_t>(workers));
+                const std::size_t groupSize = groupEnd - groupBegin;
+                buffers.clear();
+                buffers.resize(groupSize);
+
+                #pragma omp parallel for schedule(static) num_threads(workers)
+                for (int64_t bi_i = 0; bi_i < static_cast<int64_t>(groupSize); ++bi_i) {
+                    const std::size_t bi = static_cast<std::size_t>(bi_i);
+                    const std::size_t block = groupBegin + bi;
+                    const std::size_t begin = block * blockPairs;
+                    const std::size_t end = std::min(keys.size(), begin + blockPairs);
+                    std::string local;
+                    local.reserve((end - begin) * 24u);
+                    for (std::size_t i = begin; i < end; ++i) {
+                        appendUInt64Decimal(local, keys[i] >> 32u);
+                        local.push_back(' ');
+                        appendUInt64Decimal(local, keys[i] & 0xffffffffull);
+                        local.push_back('\n');
+                    }
+                    buffers[bi].swap(local);
+                }
+
+                for (std::string &local : buffers) {
+                    flushStringBuf(out, local);
+                }
+            }
+            return true;
+        }
+#endif
+        std::string buf;
+        buf.reserve(kIoChunkHighWater + 4096);
+        for (std::uint64_t key : keys) {
+            appendUInt64Decimal(buf, key >> 32u);
+            buf.push_back(' ');
+            appendUInt64Decimal(buf, key & 0xffffffffull);
+            buf.push_back('\n');
+            if (buf.size() >= kIoChunkHighWater) flushStringBuf(out, buf);
+        }
+        flushStringBuf(out, buf);
+        return true;
+    }
+
+    using NumPair = std::pair<std::uint64_t, std::uint64_t>;
+    std::vector<NumPair> pairs;
+    pairs.reserve(C.superbubbles.size());
+    for (const auto &sb : C.superbubbles) {
+        const std::uint64_t a = encodedAt(static_cast<std::uint32_t>(sb.first.idx)) >> 1u;
+        const std::uint64_t b = encodedAt(static_cast<std::uint32_t>(sb.second.idx)) >> 1u;
+        if (a == b) continue;
+        if (decimalLexLess(b, a)) {
+            pairs.emplace_back(b, a);
+        } else {
+            pairs.emplace_back(a, b);
+        }
+    }
+
+    auto pairLess = [](const NumPair &x, const NumPair &y) {
+        if (x.first != y.first) return x.first < y.first;
+        return x.second < y.second;
+    };
+#if defined(_OPENMP) && defined(__GLIBCXX__)
+    __gnu_parallel::sort(pairs.begin(), pairs.end(), pairLess);
+#else
+    std::sort(pairs.begin(), pairs.end(), pairLess);
+#endif
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+
+    std::string header;
+    header.reserve(32);
+    appendUInt64Decimal(header, static_cast<std::uint64_t>(pairs.size()));
+    header.push_back('\n');
+    flushStringBuf(out, header);
+
+#if defined(_OPENMP)
+    const bool use_parallel_format = C.threads > 1 && pairs.size() > 100000;
+    if (use_parallel_format) {
+        const int workers = std::max<int>(1, static_cast<int>(C.threads));
+        const std::size_t blockPairs = 1ull << 19;
+        const std::size_t blockCount = (pairs.size() + blockPairs - 1u) / blockPairs;
+        std::vector<std::string> buffers;
+        for (std::size_t groupBegin = 0; groupBegin < blockCount;
+             groupBegin += static_cast<std::size_t>(workers)) {
+            const std::size_t groupEnd = std::min(
+                blockCount, groupBegin + static_cast<std::size_t>(workers));
+            const std::size_t groupSize = groupEnd - groupBegin;
+            buffers.clear();
+            buffers.resize(groupSize);
+
+            #pragma omp parallel for schedule(static) num_threads(workers)
+            for (int64_t bi_i = 0; bi_i < static_cast<int64_t>(groupSize); ++bi_i) {
+                const std::size_t bi = static_cast<std::size_t>(bi_i);
+                const std::size_t block = groupBegin + bi;
+                const std::size_t begin = block * blockPairs;
+                const std::size_t end = std::min(pairs.size(), begin + blockPairs);
+                std::string local;
+                local.reserve((end - begin) * 24u);
+                for (std::size_t i = begin; i < end; ++i) {
+                    appendUInt64Decimal(local, pairs[i].first);
+                    local.push_back(' ');
+                    appendUInt64Decimal(local, pairs[i].second);
+                    local.push_back('\n');
+                }
+                buffers[bi].swap(local);
+            }
+
+            for (std::string &local : buffers) {
+                flushStringBuf(out, local);
+            }
+        }
+        return true;
+    }
+#endif
+
+    std::string buf;
+    buf.reserve(kIoChunkHighWater + 4096);
+    for (const auto &p : pairs) {
+        appendUInt64Decimal(buf, p.first);
+        buf.push_back(' ');
+        appendUInt64Decimal(buf, p.second);
+        buf.push_back('\n');
+        if (buf.size() >= kIoChunkHighWater) flushStringBuf(out, buf);
+    }
+    flushStringBuf(out, buf);
+
+    return true;
+}
+
+void appendUltrabubbleEndpoint(std::string &out,
+                               const Context &C,
+                               std::uint32_t packed)
+{
+    const std::uint32_t gid = packed >> 1u;
+    if (gid >= C.ubNodeNames.size()) {
+        throw std::runtime_error("ultrabubble output endpoint is out of range");
+    }
+    out.append(C.ubNodeNames[gid]);
+    out.push_back((packed & 1u) ? '+' : '-');
+}
+
+void writeUltrabubblesBuffered(
+    std::ostream &out,
+    const Context &C,
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> &pairs)
+{
+    std::string header;
+    header.reserve(32);
+    appendUInt64Decimal(header, static_cast<std::uint64_t>(pairs.size()));
+    header.push_back('\n');
+    flushStringBuf(out, header);
+
+#if defined(_OPENMP)
+    const bool use_parallel_format = C.threads > 1 && pairs.size() > 100000;
+    if (use_parallel_format) {
+        const int workers = std::max<int>(1, static_cast<int>(C.threads));
+        const std::size_t blockPairs = 1ull << 19;
+        const std::size_t blockCount = (pairs.size() + blockPairs - 1u) / blockPairs;
+        std::vector<std::string> buffers;
+        for (std::size_t groupBegin = 0; groupBegin < blockCount;
+             groupBegin += static_cast<std::size_t>(workers)) {
+            const std::size_t groupEnd = std::min(
+                blockCount, groupBegin + static_cast<std::size_t>(workers));
+            const std::size_t groupSize = groupEnd - groupBegin;
+            buffers.clear();
+            buffers.resize(groupSize);
+
+            #pragma omp parallel for schedule(static) num_threads(workers)
+            for (int64_t bi_i = 0; bi_i < static_cast<int64_t>(groupSize); ++bi_i) {
+                const std::size_t bi = static_cast<std::size_t>(bi_i);
+                const std::size_t block = groupBegin + bi;
+                const std::size_t begin = block * blockPairs;
+                const std::size_t end = std::min(pairs.size(), begin + blockPairs);
+                std::string local;
+                local.reserve((end - begin) * 24u);
+                for (std::size_t i = begin; i < end; ++i) {
+                    appendUltrabubbleEndpoint(local, C, pairs[i].first);
+                    local.push_back(' ');
+                    appendUltrabubbleEndpoint(local, C, pairs[i].second);
+                    local.push_back('\n');
+                }
+                buffers[bi].swap(local);
+            }
+
+            for (std::string &local : buffers) {
+                flushStringBuf(out, local);
+            }
+        }
+        return;
+    }
+#endif
+
+    std::string buf;
+    buf.reserve(kIoChunkHighWater + 4096);
+    for (const auto &p : pairs) {
+        appendUltrabubbleEndpoint(buf, C, p.first);
+        buf.push_back(' ');
+        appendUltrabubbleEndpoint(buf, C, p.second);
+        buf.push_back('\n');
+        if (buf.size() >= kIoChunkHighWater) flushStringBuf(out, buf);
+    }
+    flushStringBuf(out, buf);
+}
 
 void writeSuperbubbles()
 {
@@ -2212,17 +3672,6 @@ void writeSuperbubbles()
 
     if (C.bubbleType == Context::BubbleType::SNARL)
     {
-        if (std::getenv("BF_DEBUG_FAST_SNARL_OUTPUT")) {
-            std::cerr << "[fast_snarl_output] enabled="
-                      << (C.fastSnarlPairsEnabled ? 1 : 0)
-                      << " include_trivial=" << (C.includeTrivial ? 1 : 0)
-                      << " sp_compress_mode=" << static_cast<int>(C.spCompressMode)
-                      << " disable_env=" << (std::getenv("BF_DISABLE_FAST_SNARL_OUTPUT") ? 1 : 0)
-                      << " pairs=" << C.fastSnarlPairs.size()
-                      << " cliques=" << C.fastSnarlCliques.size()
-                      << " string_snarls=" << C.snarls.size()
-                      << "\n";
-        }
         if (C.fastSnarlPairsEnabled)
         {
             if (C.outputPath.empty())
@@ -2304,9 +3753,10 @@ void writeSuperbubbles()
                 spqr_compat::node nbrMinus{nullptr};
                 int countPlus = 0, countMinus = 0;
                 C.G.forEachAdj(u, [&](spqr_compat::node other, spqr_compat::edge e) {
+                    const auto types = edgePartTypes(C, e);
                     EdgePartType typeAtU = (C.G.source(e) == u)
-                        ? C._edge2types[e].first
-                        : C._edge2types[e].second;
+                        ? types.first
+                        : types.second;
                     int *cnt;
                     spqr_compat::node *slot;
                     if (typeAtU == EdgePartType::PLUS) { cnt = &countPlus;  slot = &nbrPlus;  }
@@ -2488,47 +3938,17 @@ void writeSuperbubbles()
 
     if (C.bubbleType == Context::BubbleType::ULTRABUBBLE)
     {
-        auto unpack = [](std::uint32_t p) -> std::pair<std::uint32_t, bool>
-        {
-            return {(p >> 1), (p & 1u) != 0u};
-        };
-
-        auto write_one = [&](std::ostream &os, std::uint32_t packed)
-        {
-            auto [gid, plus] = unpack(packed);
-            const std::string &name = C.ubNodeNames.at((size_t)gid);
-            os << name << (plus ? '+' : '-');
-        };
-
-        std::vector<std::pair<uint64_t, uint64_t>> compact_pairs;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> compact_pairs;
         if (C.compactOutputChains) {
-            compact_pairs.reserve(C.ultrabubbleIncPacked.size());
-            for (const auto &p : C.ultrabubbleIncPacked) {
-                compact_pairs.emplace_back(p.first, p.second);
-            }
+            compact_pairs = C.ultrabubbleIncPacked;
             compactEndpointPairChains(compact_pairs);
         }
+        const auto &output_pairs =
+            C.compactOutputChains ? compact_pairs : C.ultrabubbleIncPacked;
 
         if (C.outputPath.empty())
         {
-            std::cout << (C.compactOutputChains ? compact_pairs.size() : C.ultrabubbleIncPacked.size()) << "\n";
-            if (C.compactOutputChains) {
-                for (auto &p : compact_pairs)
-                {
-                    write_one(std::cout, static_cast<std::uint32_t>(p.first));
-                    std::cout << " ";
-                    write_one(std::cout, static_cast<std::uint32_t>(p.second));
-                    std::cout << "\n";
-                }
-            } else {
-                for (auto &p : C.ultrabubbleIncPacked)
-                {
-                    write_one(std::cout, p.first);
-                    std::cout << " ";
-                    write_one(std::cout, p.second);
-                    std::cout << "\n";
-                }
-            }
+            writeUltrabubblesBuffered(std::cout, C, output_pairs);
             if (!std::cout)
             {
                 throw std::runtime_error("Error while writing ultrabubbles to standard output");
@@ -2536,30 +3956,13 @@ void writeSuperbubbles()
         }
         else
         {
-            std::ofstream out(C.outputPath);
+            std::ofstream out(C.outputPath, std::ios::out | std::ios::binary);
             if (!out)
             {
                 throw std::runtime_error("Failed to open output file '" +
                                          C.outputPath + "' for writing");
             }
-            out << (C.compactOutputChains ? compact_pairs.size() : C.ultrabubbleIncPacked.size()) << "\n";
-            if (C.compactOutputChains) {
-                for (auto &p : compact_pairs)
-                {
-                    write_one(out, static_cast<std::uint32_t>(p.first));
-                    out << " ";
-                    write_one(out, static_cast<std::uint32_t>(p.second));
-                    out << "\n";
-                }
-            } else {
-                for (auto &p : C.ultrabubbleIncPacked)
-                {
-                    write_one(out, p.first);
-                    out << " ";
-                    write_one(out, p.second);
-                    out << "\n";
-                }
-            }
+            writeUltrabubblesBuffered(out, C, output_pairs);
             if (!out)
             {
                 throw std::runtime_error("Error while writing ultrabubbles to output file '" +
@@ -2569,9 +3972,48 @@ void writeSuperbubbles()
         return;
     }
 
+    if (C.outputPath.empty())
+    {
+        if (tryWriteDirectIndexedNumericSuperbubbles(std::cout, C))
+        {
+            if (!std::cout)
+            {
+                throw std::runtime_error("Error while writing superbubbles to standard output");
+            }
+            return;
+        }
+    }
+    else
+    {
+        std::ofstream out(C.outputPath, std::ios::out | std::ios::binary);
+        if (!out)
+        {
+            throw std::runtime_error("Failed to open output file '" +
+                                     C.outputPath + "' for writing");
+        }
+        if (tryWriteDirectIndexedNumericSuperbubbles(out, C))
+        {
+            if (!out)
+            {
+                throw std::runtime_error("Error while writing superbubbles to output file '" +
+                                         C.outputPath + "'");
+            }
+            return;
+        }
+    }
+
     std::vector<std::pair<std::string, std::string>> res;
 
-    if (C.inputFormat == Context::InputFormat::Gfa &&
+    const bool rawSpqrInput =
+        C.inputFormat == Context::InputFormat::SpqrIndex &&
+        C.spqrIndexInputLoaded &&
+        spqr_index::graph_profile_is_raw(C.spqrIndexInputGraphView);
+    const bool orientedSuperbubbleSpqrInput =
+        C.inputFormat == Context::InputFormat::SpqrIndex &&
+        C.spqrIndexInputLoaded &&
+        spqr_index::graph_profile_is_oriented_bidirected(C.spqrIndexInputGraphView);
+    if ((C.inputFormat == Context::InputFormat::Gfa || rawSpqrInput ||
+         orientedSuperbubbleSpqrInput) &&
         !C.directedSuperbubbles)
     {
         auto has_orient = [](const std::string &s)
@@ -2622,8 +4064,8 @@ void writeSuperbubbles()
 
         for (auto &w : C.superbubbles)
         {
-            const std::string s = C.node2name[w.first];
-            const std::string t = C.node2name[w.second];
+            const std::string s = contextGraphNodeName(C, w.first);
+            const std::string t = contextGraphNodeName(C, w.second);
 
             auto rep = canonical_mirror_rep(s, t);
             auto fin = transform_and_unorder(rep);
@@ -2644,7 +4086,8 @@ void writeSuperbubbles()
     {
         for (auto &w : C.superbubbles)
         {
-            res.push_back({C.node2name[w.first], C.node2name[w.second]});
+            res.push_back({contextGraphNodeName(C, w.first),
+                           contextGraphNodeName(C, w.second)});
         }
     }
 
