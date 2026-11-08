@@ -47,6 +47,13 @@ jobs:
             --n-graphs 10000 \
             --threads 1 4
 
+      - name: Run d-bubble tests
+        run: |
+          ./build/d_bubbles_test
+          ./build/d_bubble_filter_test
+          ./build/d_bubble_hierarchy_test
+          ./build/bc_tree_test
+
       - name: Run bruteforce tests (ultrabubbles)
         run: |
           python3 src/bruteforce.py \

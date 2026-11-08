@@ -176,6 +176,53 @@ struct ChunkRange {
     size_t end = 0;
 };
 
+// Release scanned file pages to limit memory use.
+struct MappedScanWindow;
+inline thread_local MappedScanWindow* active_mapped_scan = nullptr;
+
+struct MappedScanWindow {
+    static constexpr size_t batch_bytes = 16u << 20;
+    MappedScanWindow* previous;
+    uintptr_t released;
+    uintptr_t limit;
+    size_t page_bytes;
+    bool enabled;
+
+    MappedScanWindow(const char* data, size_t size, bool mapped)
+        : previous(active_mapped_scan), released(reinterpret_cast<uintptr_t>(data)),
+          limit(released + size), page_bytes(system_page_bytes()), enabled(mapped) {
+        // Release only whole pages inside this thread range.
+        released += (page_bytes - released % page_bytes) % page_bytes;
+        if (enabled) active_mapped_scan = this;
+    }
+
+    ~MappedScanWindow() {
+        if (enabled) active_mapped_scan = previous;
+    }
+
+    MappedScanWindow(const MappedScanWindow&) = delete;
+    MappedScanWindow& operator=(const MappedScanWindow&) = delete;
+
+    static size_t system_page_bytes() {
+        static const size_t value = [] {
+            const long n = sysconf(_SC_PAGESIZE);
+            return n > 0 ? static_cast<size_t>(n) : size_t(4096);
+        }();
+        return value;
+    }
+
+    void advance(const char* consumed) noexcept {
+        if (!enabled) return;
+        uintptr_t end = std::min(reinterpret_cast<uintptr_t>(consumed), limit);
+        if (end <= released || end - released < batch_bytes) return;
+        end -= end % page_bytes;
+        const int saved_errno = errno;
+        (void)madvise(reinterpret_cast<void*>(released), end - released, MADV_DONTNEED);
+        errno = saved_errno;
+        released = end;
+    }
+};
+
 struct ChunkScan {
     std::vector<SegmentRef> segments;
     size_t link_count = 0;
@@ -196,8 +243,21 @@ inline const char* next_tab(const char* p, const char* end) {
     return p;
 }
 inline const char* skip_line(const char* p, const char* end) {
-    while (p < end && *p != '\n') ++p;
-    return (p < end) ? p + 1 : p;
+    if (p >= end) return p;
+
+    if (!active_mapped_scan) {
+        const void* newline = std::memchr(p, '\n', static_cast<size_t>(end - p));
+        return newline ? static_cast<const char*>(newline) + 1 : end;
+    }
+    // Release pages even on long path lines.
+    while (p < end) {
+        const size_t n = std::min(static_cast<size_t>(end - p), MappedScanWindow::batch_bytes);
+        const void* newline = std::memchr(p, '\n', n);
+        p = newline ? static_cast<const char*>(newline) + 1 : p + n;
+        active_mapped_scan->advance(p);
+        if (newline) break;
+    }
+    return p;
 }
 
 inline bool parse_u32_token(const char*& p, const char* end, uint32_t& out) {
@@ -357,7 +417,10 @@ inline std::vector<ChunkRange> make_line_chunks(const char* data,
     bounds[workers] = end;
     for (size_t i = 1; i < workers; ++i) {
         size_t pos = begin + (size * i) / workers;
-        while (pos < end && data[pos - 1] != '\n') ++pos;
+        if (pos > begin && pos < end && data[pos - 1] != '\n') {
+            MappedScanWindow boundary(data + pos, end - pos, active_mapped_scan != nullptr);
+            pos = static_cast<size_t>(skip_line(data + pos, data + end) - data);
+        }
         bounds[i] = pos;
     }
 
@@ -640,6 +703,7 @@ public:
 
 private:
     static BiGraph parse_buffer_serial(const char* data, size_t size) {
+        gfa_detail::MappedScanWindow window(data, size, gfa_detail::active_mapped_scan != nullptr);
         gfa_detail::ParseState state;
         state.feed(data, size);
         return state.finish();
@@ -698,8 +762,11 @@ private:
         std::vector<std::vector<BiLink>> chunk_links(ranges.size());
         std::vector<std::thread> workers;
         workers.reserve(ranges.size());
+        const bool mapped_input = gfa_detail::active_mapped_scan != nullptr;
         for (size_t i = 0; i < ranges.size(); ++i) {
             workers.emplace_back([&, i]() {
+                gfa_detail::MappedScanWindow window(data + ranges[i].begin,
+                    ranges[i].end - ranges[i].begin, mapped_input);
                 gfa_detail::parse_links_to_vector(
                     data, ranges[i], names, chunk_links[i],
                     missing_name, saw_late_segment);
@@ -755,26 +822,34 @@ private:
         workers = std::min(workers, std::max<size_t>(1, links.size() / (1 << 20)));
 
         if (workers <= 1) {
+            gfa_detail::MappedScanWindow window(data, size, gfa_detail::active_mapped_scan != nullptr);
             for (size_t i = 0; i < scan.link_offsets.size(); ++i) {
                 if (!gfa_detail::parse_numeric_link_at(
                         data, end, scan.link_offsets[i], scan.id_map, links[i])) {
                     ok.store(false, std::memory_order_relaxed);
                     break;
                 }
+                if ((i & 16383u) == 0) window.advance(data + scan.link_offsets[i]);
             }
         } else {
             std::vector<std::thread> pool;
             pool.reserve(workers);
+            const bool mapped_input = gfa_detail::active_mapped_scan != nullptr;
             for (size_t w = 0; w < workers; ++w) {
                 size_t begin = (scan.link_offsets.size() * w) / workers;
                 size_t finish = (scan.link_offsets.size() * (w + 1)) / workers;
                 pool.emplace_back([&, begin, finish]() {
+                    const size_t first = scan.link_offsets[begin];
+                    const size_t last = finish < scan.link_offsets.size()
+                        ? scan.link_offsets[finish] : size;
+                    gfa_detail::MappedScanWindow window(data + first, last - first, mapped_input);
                     for (size_t i = begin; i < finish; ++i) {
                         if (!gfa_detail::parse_numeric_link_at(
                                 data, end, scan.link_offsets[i], scan.id_map, links[i])) {
                             ok.store(false, std::memory_order_relaxed);
                             break;
                         }
+                        if ((i & 16383u) == 0) window.advance(data + scan.link_offsets[i]);
                     }
                 });
             }
@@ -792,9 +867,13 @@ private:
         BiGraph bg;
         bg.n_nodes = scan.n_nodes;
         bg.node_names.resize(scan.n_nodes);
-        for (uint32_t i = 0; i < scan.n_nodes; ++i) {
-            const auto& ref = scan.name_refs[i];
-            bg.node_names[i] = std::string(ref.ptr, ref.len);
+        {
+            gfa_detail::MappedScanWindow window(data, size, gfa_detail::active_mapped_scan != nullptr);
+            for (uint32_t i = 0; i < scan.n_nodes; ++i) {
+                const auto& ref = scan.name_refs[i];
+                bg.node_names[i] = std::string(ref.ptr, ref.len);
+                if ((i & 16383u) == 0) window.advance(ref.ptr);
+            }
         }
         std::vector<uint32_t>().swap(scan.id_map);
         std::vector<gfa_detail::SegmentRef>().swap(scan.name_refs);
@@ -815,6 +894,7 @@ private:
 
         const char* data = (const char*)m;
         BiGraph bg;
+        gfa_detail::MappedScanWindow window(data, sz, true);
         const char* parallel_env = std::getenv("BF_GFA_PAR_PARSE");
         const char* numeric_env = std::getenv("BF_GFA_NUMERIC_PARSE");
         bool force_serial = parallel_env && std::string(parallel_env) == "0";

@@ -1,0 +1,73 @@
+S	c0a	A
+S	c0b	C
+S	c0c	G
+S	c0d	T
+L	c0a	+	c0b	+	0M
+L	c0a	+	c0c	+	0M
+L	c0b	+	c0d	+	0M
+L	c0c	+	c0d	+	0M
+S	c1a	A
+S	c1b	C
+S	c1c	G
+S	c1d	T
+L	c1a	+	c1b	+	0M
+L	c1a	+	c1c	+	0M
+L	c1b	+	c1d	+	0M
+L	c1c	+	c1d	+	0M
+L	c1b	+	c1b	+	0M
+S	c2a	A
+S	c2b	C
+S	c2c	G
+S	c2d	T
+L	c2a	+	c2b	+	0M
+L	c2a	+	c2c	+	0M
+L	c2b	+	c2d	+	0M
+L	c2c	+	c2d	+	0M
+S	c3a	A
+S	c3b	C
+S	c3c	G
+S	c3d	T
+L	c3a	+	c3b	+	0M
+L	c3a	+	c3c	+	0M
+L	c3b	+	c3d	+	0M
+L	c3c	+	c3d	+	0M
+S	c4a	A
+S	c4b	C
+S	c4c	G
+S	c4d	T
+L	c4a	+	c4b	+	0M
+L	c4a	+	c4c	+	0M
+L	c4b	+	c4d	+	0M
+L	c4c	+	c4d	+	0M
+S	c5a	A
+S	c5b	C
+S	c5c	G
+S	c5d	T
+L	c5a	+	c5b	+	0M
+L	c5a	+	c5c	+	0M
+L	c5b	+	c5d	+	0M
+L	c5c	+	c5d	+	0M
+S	c6a	A
+S	c6b	C
+S	c6c	G
+S	c6d	T
+L	c6a	+	c6b	+	0M
+L	c6a	+	c6c	+	0M
+L	c6b	+	c6d	+	0M
+L	c6c	+	c6d	+	0M
+S	c7a	A
+S	c7b	C
+S	c7c	G
+S	c7d	T
+L	c7a	+	c7b	+	0M
+L	c7a	+	c7c	+	0M
+L	c7b	+	c7d	+	0M
+L	c7c	+	c7d	+	0M
+S	c8a	A
+S	c8b	C
+S	c8c	G
+S	c8d	T
+L	c8a	+	c8b	+	0M
+L	c8a	+	c8c	+	0M
+L	c8b	+	c8d	+	0M
+L	c8c	+	c8d	+	0M
