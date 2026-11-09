@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(sbSPQRnew LANGUAGES CXX C VERSION 1.0.5)
+project(sbSPQRnew LANGUAGES CXX C VERSION 1.1.0)
 
 
 if(NOT CMAKE_BUILD_TYPE)
