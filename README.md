@@ -262,6 +262,29 @@ where `X` and `Y` are oriented incidences such as `a+` or `d-`.
 </details>
 
 <details>
+<summary><strong>D-bubbles</strong></summary>
+
+The first line gives the number of d-bubbles. Each following line contains one bubble as two signed node IDs, separated by a space:
+
+```text
+2
+a+ d-
+g- k+
+```
+
+The signs identify the sides of the endpoints used by the bubble. For `a+ d-`, a traversal leaves `a` through `+` and enters `d` through `-`. In the reverse direction, it leaves `d` through `-` and enters `a` through `+`.
+
+Each bubble is listed once, using the original node IDs. The rows contain only its two endpoints.
+
+By default, bubbles must contain at least one node besides their two endpoints. Use `-T` to also include bubbles with no internal node:
+
+```bash
+./BubbleFinder d-bubbles -g graph.gfa -o d-bubbles.txt -T
+```
+
+</details>
+
+<details>
 <summary><strong>SPQR-tree</strong></summary>
 
 The `spqr-tree` command writes a `.spqr` file according to the [SPQR tree file format](https://github.com/sebschmi/SPQR-tree-file-format) specification (version **v0.4**). BubbleFinder writes the header:
