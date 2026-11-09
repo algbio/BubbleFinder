@@ -24,6 +24,15 @@ struct UBEdge
     uint8_t type_neigh;
 };
 
+// Store the two signs of each link.
+struct DomLink
+{
+    uint32_t u;
+    uint32_t v;
+    uint8_t su;
+    uint8_t sv;
+};
+
 struct Context
 {
     enum LogLevel
@@ -39,7 +48,8 @@ struct Context
         SUPERBUBBLE,
         SNARL,
         ULTRABUBBLE,
-        SPQR_TREE_ONLY
+        SPQR_TREE_ONLY,
+        D_BUBBLES
     };
 
     enum class InputFormat
@@ -89,6 +99,7 @@ struct Context
     bool gfaInput = false; // legacy flag
     bool doubleGraph = false;
     bool doubledUltrabubbles = false;
+    bool dominatorUltrabubbles = false;
 
     LogLevel logLevel = LOG_INFO;
     bool timingEnabled = true;
@@ -176,6 +187,10 @@ struct Context
     std::vector<uint32_t> ubOffset;
     std::vector<UBEdge> ubEdges;
     std::vector<std::string> ubClsdText;
+
+    // Links used to find dominator bubbles.
+    std::vector<DomLink> domLinks;
+    bool domBubbles = false;
 
     inline const UBEdge* adjBegin(uint32_t v) const { return ubEdges.data() + ubOffset[v]; }
     inline const UBEdge* adjEnd(uint32_t v) const { return ubEdges.data() + ubOffset[v + 1]; }

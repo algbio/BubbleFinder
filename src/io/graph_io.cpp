@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -59,7 +60,7 @@ inline size_t checked_add_size(size_t lhs, size_t rhs, const char* what) {
     return lhs + rhs;
 }
 
-} // namespace
+}
 
 void readStandard()
 {
@@ -706,6 +707,47 @@ void buildSpqrGraph(BiGraph& bg) {
     for (auto& lk : bg.links) C.G.newEdge(id2node[lk.src], id2node[lk.dst]);
 }
 
+// Store each link once with its two signs.
+void buildDominatorGraph(BiGraph& bg) {
+    auto &C = ctx();
+    ensureStringNodeNames(bg);
+
+    const uint32_t N = bg.n_nodes;
+    C.ubNumNodes = N;
+    if (bg.node_names.size() == N) {
+        C.ubNodeNames = std::move(bg.node_names);
+    } else {
+        C.ubNodeNames.resize(N);
+        for (uint32_t i = 0; i < N; ++i) C.ubNodeNames[i] = biGraphNodeName(bg, i);
+    }
+
+    C.domLinks.clear();
+    C.domLinks.reserve(bg.links.size());
+    for (auto& lk : bg.links) {
+        DomLink e{lk.src, lk.dst,
+                  (uint8_t)charToType(lk.orient_src),
+                  (uint8_t)charToType(flipSign(lk.orient_dst))};
+        if (e.u > e.v || (e.u == e.v && e.su > e.sv)) {
+            std::swap(e.u, e.v);
+            std::swap(e.su, e.sv);
+        }
+        C.domLinks.push_back(e);
+    }
+
+    {
+        std::vector<BiLink>().swap(bg.links);
+    }
+
+    auto key = [](const DomLink& e) { return std::make_tuple(e.u, e.v, e.su, e.sv); };
+    std::sort(C.domLinks.begin(), C.domLinks.end(),
+              [&](const DomLink& a, const DomLink& b) { return key(a) < key(b); });
+    C.domLinks.erase(std::unique(C.domLinks.begin(), C.domLinks.end(),
+                                 [&](const DomLink& a, const DomLink& b) { return key(a) == key(b); }),
+                     C.domLinks.end());
+
+    logger::info("dominators graph built: {} segments, {} links", N, C.domLinks.size());
+}
+
 }
 
 
@@ -748,6 +790,10 @@ void readGFA()
     const auto buildStart = std::chrono::steady_clock::now();
     switch (C.bubbleType) {
         case Context::BubbleType::ULTRABUBBLE:
+            if (C.dominatorUltrabubbles) {
+                buildDominatorGraph(bg);
+                return;
+            }
             if (C.doubledUltrabubbles) {
                 buildSuperbubbleGraph(bg, false);
             } else {
@@ -773,6 +819,9 @@ void readGFA()
         case Context::BubbleType::SPQR_TREE_ONLY:
             buildSpqrGraph(bg);
             break;
+        case Context::BubbleType::D_BUBBLES:
+            buildDominatorGraph(bg);
+            return;
         default:
             break;
     }
@@ -1184,7 +1233,8 @@ void readGraph() {
     {
         readGFA();
 
-        if (C.bubbleType == Context::BubbleType::ULTRABUBBLE && !C.doubledUltrabubbles) {
+        if ((C.bubbleType == Context::BubbleType::ULTRABUBBLE && !C.doubledUltrabubbles) ||
+            C.bubbleType == Context::BubbleType::D_BUBBLES) {
             logger::info("Graph read");
             return;
         }
@@ -1229,6 +1279,9 @@ void readGraph() {
         }
         if (C.bubbleType == Context::BubbleType::SPQR_TREE_ONLY) {
             throw std::runtime_error("Standard .graph input is not supported for spqr-tree, use GFA");
+        }
+        if (C.bubbleType == Context::BubbleType::D_BUBBLES) {
+            throw std::runtime_error("d-bubbles cannot read .graph files. Use GFA or GBZ");
         }
         readStandard();
     } catch (...) {
