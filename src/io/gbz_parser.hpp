@@ -341,6 +341,7 @@ private:
         if (threads <= 1) {
             bg.links.reserve(graph.get_edge_count());
             gbwt::CachedGBWT cache = graph.get_single_cache();
+            constexpr uint32_t cache_chunk_segments = 65536;
 
             auto emit = [&](const handlegraph::handle_t& from,
                             const handlegraph::handle_t& to) {
@@ -357,6 +358,10 @@ private:
             };
 
             for (uint32_t sid = 0; sid < seg_total; ++sid) {
+                // Stop the cache from growing with the input.
+                if (sid != 0 && sid % cache_chunk_segments == 0) {
+                    cache.clearCache();
+                }
                 const auto nodes = seg_ranges[sid];
 
                 handlegraph::handle_t last = graph.get_handle(nodes.second - 1, false);

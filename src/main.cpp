@@ -38,6 +38,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <filesystem>
 
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -72,6 +73,8 @@
 #include "io/gfa_parser.hpp"
 
 #include "io/gbz_parser.hpp"
+
+#include "dominators/d_bubbles_cli.hpp"
 
 bool VERBOSE = false;
 #define VLOG     \
@@ -248,7 +251,9 @@ static void usage(const char *prog, int exitCode)
           "      Oriented mode (default): each CC must have at least one tip OR one cut vertex.\n"
           "      Doubled mode (--doubled): no such restriction, but uses more RAM due to graph doubling." },
         { "spqr-tree",
-          "Compute and output the SPQR tree of the input graph" }
+          "Compute and output the SPQR tree of the input graph" },
+        { "d-bubbles",
+          "Dominator bubbles in bidirected GFA / GBZ graphs; -T includes trivial bubbles." }
     };
 
     static const OptionHelp options[] = {
@@ -266,14 +271,18 @@ static void usage(const char *prog, int exitCode)
 
         { "--doubled", nullptr,
           "Use the doubled-graph algorithm for ultrabubbles (no tip/cut-vertex requirement per CC, higher RAM)" },
+        { "--d-bubbles", nullptr,
+          "Find ultrabubbles by filtering dominator bubbles" },
 
         { "--clsd-trees", "<file>",
           "Write CLSD superbubble trees (ultrabubble hierarchy) to <file> (ultrabubbles command only)" },
         { "--spqr-weak-superbubbles", nullptr,
           "Use the SPQR-tree weak superbubble backend for ultrabubbles" },
 
-        { "-T, --include-trivial", nullptr,
-          "Include trivial bubbles in output (default: excluded; ultrabubbles, superbubbles and snarls commands)" },
+        { "-T", nullptr,
+          "Include trivial bubbles" },
+        { "--include-trivial", nullptr,
+          "Include trivial bubbles" },
         { "--compact-output-chains", nullptr,
           "Compact consecutive output bubbles into maximal chains" },
 
@@ -457,6 +466,27 @@ static bool inputFileReadable(const std::string &path, std::string &errOut)
 
 static bool outputParentDirWritable(const std::string &path, std::string &errOut)
 {
+    // Writing to /dev/null does not create a file.
+    if (path == "/dev/null" && ctx().domBubbles)
+    {
+        struct stat st{};
+        if (stat(path.c_str(), &st) != 0)
+        {
+            errOut = std::string("cannot check the output device: ") + std::strerror(errno);
+            return false;
+        }
+        if (!S_ISCHR(st.st_mode))
+        {
+            errOut = "'/dev/null' is not a character device";
+            return false;
+        }
+        if (access(path.c_str(), W_OK) != 0)
+        {
+            errOut = std::string("no write permission on '/dev/null': ") + std::strerror(errno);
+            return false;
+        }
+        return true;
+    }
     std::string dir;
     auto pos = path.find_last_of("/\\");
     if (pos == std::string::npos)
@@ -546,10 +576,16 @@ void readArgs(int argc, char **argv)
         C.bubbleType = Context::BubbleType::SPQR_TREE_ONLY;
         C.directedSuperbubbles = false;
     }
+    else if (cmd == "d-bubbles")
+    {
+        C.bubbleType = Context::BubbleType::D_BUBBLES;
+        C.directedSuperbubbles = false;
+        C.domBubbles = true;
+    }
     else
     {
         std::cerr << "Error: unknown command '" << cmd
-                  << "'. Expected one of: superbubbles, snarls, ultrabubbles, spqr-tree.\n\n";
+                  << "'. Expected one of: superbubbles, snarls, ultrabubbles, spqr-tree, d-bubbles.\n\n";
         usage(args[0].c_str(), 1);
     }
 
@@ -620,6 +656,16 @@ void readArgs(int argc, char **argv)
             }
             C.doubledUltrabubbles = true;
         }
+        else if (s == "--d-bubbles")
+        {
+            if (C.bubbleType != Context::BubbleType::ULTRABUBBLE)
+            {
+                std::cerr << "Error: option '--d-bubbles' is only supported with the 'ultrabubbles' command.\n";
+                std::exit(1);
+            }
+            C.dominatorUltrabubbles = true;
+            C.domBubbles = true;
+        }
         else if (s == "--report-json")
         {
             g_report_json_path = nextArgOrDie(args, i, "--report-json");
@@ -654,10 +700,10 @@ void readArgs(int argc, char **argv)
         {
             if (C.bubbleType != Context::BubbleType::ULTRABUBBLE &&
                 C.bubbleType != Context::BubbleType::SUPERBUBBLE &&
-                C.bubbleType != Context::BubbleType::SNARL)
+                C.bubbleType != Context::BubbleType::SNARL && !C.domBubbles)
             {
-                std::cerr << "Error: option '-T' / '--include-trivial' is only supported with the "
-                             "'ultrabubbles', 'superbubbles' or 'snarls' command.\n";
+                std::cerr << "Error: trivial bubble options require the "
+                             "'ultrabubbles', 'superbubbles', 'snarls' or 'd-bubbles' command.\n";
                 std::exit(1);
             }
             C.includeTrivial = true;
@@ -795,6 +841,14 @@ void readArgs(int argc, char **argv)
         }
     }
 
+    if (C.dominatorUltrabubbles &&
+        (C.doubledUltrabubbles || C.spqrWeakUltrabubbles || C.clsdTrees || C.compactOutputChains))
+    {
+        std::cerr << "Error: '--d-bubbles' cannot be combined with '--doubled', "
+                     "'--spqr-weak-superbubbles', '--clsd-trees' or '--compact-output-chains'.\n";
+        std::exit(1);
+    }
+
     std::string coreExt;
     C.compression = detectCompressionAndCoreExt(C.graphPath, coreExt);
 
@@ -826,6 +880,24 @@ void readArgs(int argc, char **argv)
 
     C.gfaInput = (C.inputFormat == Context::InputFormat::Gfa ||
                   C.inputFormat == Context::InputFormat::GfaDirected);
+
+    if (C.domBubbles)
+    {
+        std::error_code ec;
+        const bool sameFile = std::filesystem::equivalent(C.graphPath, C.outputPath, ec) && !ec;
+        if (sameFile || std::filesystem::absolute(C.graphPath).lexically_normal() ==
+                            std::filesystem::absolute(C.outputPath).lexically_normal())
+        {
+            std::cerr << "Error: d-bubbles input and output must be distinct files.\n";
+            std::exit(1);
+        }
+    }
+    if (C.domBubbles && C.inputFormat != Context::InputFormat::Gfa)
+    {
+        std::cerr << "Error: d-bubbles need bidirected GFA or GBZ input "
+                     "(--gfa-directed and --graph are not supported).\n";
+        std::exit(1);
+    }
 
     if (C.bubbleType == Context::BubbleType::SNARL)
     {
@@ -20548,7 +20620,17 @@ int main(int argc, char **argv)
     }
 
     {
-        if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE)
+        if (ctx().domBubbles)
+        {
+            MARK_SCOPE_MEM("dominators/solve");
+            const int rc = dominators::runDBubbleCommand();
+            if (rc != 0)
+            {
+                logger::flush();
+                return rc;
+            }
+        }
+        else if (ctx().bubbleType == Context::BubbleType::SUPERBUBBLE)
         {
             solver::superbubble::solve();
             VLOG << "[main] Superbubble solve finished. Superbubbles: "
@@ -20587,7 +20669,7 @@ int main(int argc, char **argv)
         MARK_SCOPE_MEM("io/write_output");
         PROFILE_BLOCK("Writing output");
         TIME_BLOCK("Writing output");
-        if (ctx().bubbleType == Context::BubbleType::SPQR_TREE_ONLY)
+        if (ctx().bubbleType == Context::BubbleType::SPQR_TREE_ONLY || ctx().domBubbles)
         {
         }
         else

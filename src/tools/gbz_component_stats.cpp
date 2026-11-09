@@ -64,7 +64,7 @@ std::string segment_name(const gbwtgraph::GBWTGraph& graph, gbwt::size_type segm
     return std::string(view.data(), view.size());
 }
 
-} // namespace
+}
 
 int main(int argc, char** argv) {
     int threads = 1;

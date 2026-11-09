@@ -152,6 +152,7 @@ endif()
 
 
 find_package(OpenMP QUIET)
+find_package(Threads REQUIRED)
 
 
 add_library(sbutil OBJECT
@@ -258,6 +259,8 @@ include_directories(
 
 add_executable(BubbleFinder
     src/main.cpp
+    src/dominators/d_bubbles.cpp
+    src/dominators/d_bubbles_cli.cpp
     src/fas.cpp
     src/util/clsd_interface.cpp
     external/clsd/graph.cc
@@ -269,7 +272,7 @@ add_executable(BubbleFinder
 target_include_directories(BubbleFinder PRIVATE src)
 
 find_program(CARGO cargo REQUIRED)
-set(SPQR_RUST_DIR "${CMAKE_SOURCE_DIR}/external/spqr-rust")
+set(SPQR_RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/spqr-rust")
 set(SPQR_RUST_LIB "${SPQR_RUST_DIR}/target/release/libspqr_rust.a")
 
 add_custom_command(
@@ -334,6 +337,7 @@ endif()
 
 # Link against libdl (libspqr_rust.a indirectly calls dlsym).
 target_link_libraries(BubbleFinder PRIVATE ${CMAKE_DL_LIBS})
+target_link_libraries(BubbleFinder PRIVATE Threads::Threads)
 
 
 if(SB_ENABLE_SANITIZERS)
@@ -392,6 +396,33 @@ message(STATUS "Native optimizations (-march=native): ${SB_NATIVE_OPTIMIZATIONS}
 message(STATUS "BubbleFinder instrumentation: ${BUBBLEFINDER_INSTRUMENT}")
 
 
+# GFA reader regression checks, including records longer than a scan window.
+add_executable(gfa_parser_test src/io/gfa_parser_test.cpp)
+target_include_directories(gfa_parser_test PRIVATE src/io)
+target_link_libraries(gfa_parser_test PRIVATE Threads::Threads)
+
 add_executable(snarls_bf src/snarls_bruteforce.cpp)
+add_executable(bc_tree_test src/dominators/bc_tree_test.cpp)
+target_include_directories(bc_tree_test PRIVATE src)
+target_link_libraries(bc_tree_test PRIVATE Threads::Threads)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(bc_tree_test PRIVATE -Wall -Wextra -Wshadow -pedantic)
+endif()
 add_executable(superbubbles_bf src/superbubbles_bruteforce.cpp)
 add_executable(ultrabubbles_bf src/ultrabubbles_bruteforce.cpp)
+
+# Test the dominator bubbles.
+add_executable(d_bubbles_test src/dominators/d_bubbles.cpp src/dominators/d_bubbles_test.cpp)
+target_include_directories(d_bubbles_test PRIVATE src)
+target_link_libraries(d_bubbles_test PRIVATE Threads::Threads)
+add_executable(d_bubble_filter_test src/dominators/d_bubbles.cpp src/dominators/d_bubble_physical_filter_test.cpp)
+target_include_directories(d_bubble_filter_test PRIVATE src)
+target_link_libraries(d_bubble_filter_test PRIVATE Threads::Threads)
+add_executable(d_bubble_hierarchy_test src/dominators/d_bubbles.cpp src/dominators/d_bubble_hierarchy_test.cpp)
+target_include_directories(d_bubble_hierarchy_test PRIVATE src)
+target_link_libraries(d_bubble_hierarchy_test PRIVATE Threads::Threads)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(d_bubbles_test PRIVATE -Wall -Wextra -Wshadow -pedantic)
+    target_compile_options(d_bubble_filter_test PRIVATE -Wall -Wextra -Wshadow -pedantic)
+    target_compile_options(d_bubble_hierarchy_test PRIVATE -Wall -Wextra -Wshadow -pedantic)
+endif()
