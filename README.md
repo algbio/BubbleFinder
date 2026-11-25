@@ -6,15 +6,41 @@
 [![GPLv3 License](https://img.shields.io/badge/License-GPL%20v3-yellow.svg)](https://opensource.org/licenses/)
 [![Open Source](https://badges.frapsoft.com/os/v1/open-source.svg?v=103)](https://opensource.org/)
 
-`BubbleFinder` computes **all snarls**, **superbubbles**, **ultrabubbles**, and **dominator bubbles** in genomic and pangenomic **GFA** and **GBZ** graphs (i.e. bidirected graphs).
+**BubbleFinder** identifies potential sites of genetic variation in pangenome graphs. In these graphs, nodes represent DNA sequences and links connect them. For example, the paths in region (a) share the same flanking sequences, `u` and `v`, and differ only at one base: A or G.
 
-The snarl and superbubble algorithms, and the orientation-based ultrabubble algorithm, run in **linear time** in the size of the input graph (`O(|V|+|E|)`). The dominator-bubble implementation uses a Lengauer--Tarjan dominator algorithm with `O((|V|+|E|) log(|V|+|E|))` worst-case time. Ultrabubbles can be computed in **oriented mode** (default), which orients the bidirected graph and reduces to directed weak superbubbles, **doubled mode** (`--doubled`), which builds a doubled directed graph with no connected-component restriction but uses more RAM, or by filtering dominator bubbles (`--d-bubbles`).
+<p align="center">
+  <img src="docs/bubble-examples.svg" width="1000" alt="A single pangenome graph with an ultrabubble/snarl (a), a snarl containing a loop (b), and a d-bubble with an extra link (c).">
+</p>
+
+Arrow-shaped nodes show sequence orientation. A path can follow links in either direction, but must leave each node through the opposite end from which it entered.
+
+For genome and pangenome graphs in GFA or GBZ format, BubbleFinder can:
+
+- Find **superbubbles** ([Onodera et al., 2013](#ref-onodera2013)), **snarls** and **ultrabubbles** ([Paten et al., 2017](#ref-paten2017)) efficiently using algorithms we developed.
+- Find **d-bubbles**, a type of variation site we defined using dominator trees ([Sena et al., forthcoming](#ref-dominator-bubbles)).
+- Export ultrabubble nesting hierarchies and SPQR-tree decompositions.
+
+### Choosing a bubble type
+
+| Command | Regions to look for |
+|---|---|
+| `ultrabubbles` | Regions without loops or branches ending inside them (a). |
+| `snarls` | Regions that also allow loops or branches ending inside them (b). |
+| `d-bubbles` | Regions that allow links between internal nodes and nodes outside their boundaries (c). See [details](docs/d-bubbles.md). |
+| `superbubbles` | Regions with one entrance, one exit and no internal loops in a directed sequence graph. |
+
+See [Quickstart](#quickstart) for installation and an example.
+
+The commands `snarls`, `superbubbles` and `ultrabubbles --spqr-weak-superbubbles` use a unified SPQR-tree framework ([Sena et al., 2026](#ref-sena2026)) built with our [SPQR-Rust](https://github.com/algbio/spqr-rust) library. SPQR trees split the pangenome graph into smaller parts, making bubbles easier to find ([Di Battista and Tamassia, 1990](#ref-dibattista1990)).
+
+BubbleFinder has been tested on real and synthetic graphs (see [Validation](../../wiki/Validation), [Sena et al., 2026](#ref-sena2026) and [Harviainen et al., 2026](#ref-harviainen2026)). The papers also provide correctness proofs for the algorithms.
 
 ---
 
 ## Table of Contents
 
 - [Quickstart](#quickstart)
+- [Algorithms](#algorithms)
 - [Commands overview](#commands-overview)
 - [Running BubbleFinder](#running-bubblefinder)
   - [Input data](#input-data)
@@ -26,26 +52,6 @@ The snarl and superbubble algorithms, and the orientation-based ultrabubble algo
 - [Flowchart](../../wiki/Flowchart), which details execution paths for all commands
 - [Internals](../../wiki/Internals), covering graph representation, optimization notes, and theoretical background
 - [Validation](../../wiki/Validation), describing bruteforce testing and the random test harness
-
----
-
-### Snarls and superbubbles via SPQR trees
-
-BubbleFinder first builds the undirected version of the input bidirected graph, then uses the [SPQR trees](https://en.wikipedia.org/wiki/SPQR_tree) of its biconnected components to identify all snarls and superbubbles.
-
-> [!IMPORTANT]
-> `snarls` computes **all** snarls and aims to replicate the behavior of [`vg snarls -a -T`](https://github.com/vgteam/vg), **but** `vg` outputs only a pruned, linear-size *snarl decomposition*.  
-> Therefore, `BubbleFinder` may output **more** snarls than `vg snarls`.
-
-> [!NOTE]
-> Empirical performance (snarls & superbubbles). Benchmarks and theory are reported in [Sena, Politov et al., 2025](#ref-sena-politov2025).
-
-### Ultrabubbles via linear-time orientation + reduction to weak superbubbles
-
-Ultrabubbles use a different approach (not SPQR-based). BubbleFinder first orients the bidirected graph into a directed graph using a DFS-based procedure, then runs a linear-time directed weak superbubble algorithm on the result and maps the output back to ultrabubbles in the original bidirected graph.
-
-> [!NOTE]
-> The ultrabubble method, correctness proof, and benchmarks are described in [Harviainen et al., 2026](#ref-harviainen2026).
 
 ---
 
@@ -84,16 +90,78 @@ mv build/BubbleFinder .
 Replace `<NUM_THREADS>` with the number of parallel build jobs (e.g. `-j 8`). Omitting `-j` builds single-threaded.
 
 **Dependencies** are handled automatically by the build system:
-- A Rust toolchain with Cargo is required for `spqr-rust`.
-- [spqr-rust](https://github.com/algbio/spqr-rust) is the SPQR backend and is built with Cargo.
+- SPQR-Rust is built automatically with Cargo. A Rust toolchain must be installed.
 - [zstd](https://github.com/facebook/zstd) is detected on the system. If not found, it is fetched and built from source.
 - [OpenSSL](https://www.openssl.org/) (`libcrypto`) must be available on the system.
-- OpenMP is optional; when found, it enables intra-block parallelism.
+- OpenMP is optional. When found, it enables intra-block parallelism.
 - GBZ support pulls in four submodules, all under `external/gbz/` and built automatically:
   - [gbwtgraph](https://github.com/jltsiren/gbwtgraph) is the GBZ/GBWTGraph library
   - [gbwt](https://github.com/jltsiren/gbwt) is the GBWT index
   - [sdsl-lite](https://github.com/vgteam/sdsl-lite) provides low-level data structures
   - [libhandlegraph](https://github.com/vgteam/libhandlegraph) is the handle graph interface
+
+### First analysis
+
+```bash
+./BubbleFinder ultrabubbles -g graph.gfa -o ultrabubbles.txt
+```
+
+The result lists the boundary node IDs of each region. See [Output format](#output-format) for details.
+
+---
+
+## Algorithms
+
+### Unified SPQR-tree framework
+
+The theoretical linear-time bounds (`O(|V|+|E|)`) for this framework are described in [Sena et al., 2026](#ref-sena2026).
+
+> [!IMPORTANT]
+> `snarls` computes **all** snarls and aims to replicate the behavior of [`vg snarls -a -T`](https://github.com/vgteam/vg), **but** `vg` outputs only a pruned, linear-size *snarl decomposition*.\
+> Therefore, `BubbleFinder` may output **more** snarls than `vg snarls`.
+
+### Ultrabubble methods
+
+The default method worked on all pangenome graphs we tested. We did not observe any of the [special cases](#ultrabubble-special-cases) described below. The default method and `--d-bubbles` are generally the fastest options.
+
+| Option | Method |
+|---|---|
+| No method flag (default) | Uses graph orientation. |
+| `--doubled` | Uses a doubled graph and more RAM. |
+| `--spqr-weak-superbubbles` | Uses the [SPQR method](#unified-spqr-tree-framework). |
+| `--d-bubbles` | Finds ultrabubbles using dominator trees. See [which regions are searched](docs/d-bubbles.md). |
+
+The method flags cannot (of course) be combined.
+
+Output options:
+
+- `-T` / `--include-trivial`: include trivial ultrabubbles.
+- `--clsd-trees <file>`: export the nesting hierarchy, in default or `--doubled` mode only.
+- `--compact-output-chains`: compact compatible endpoint pairs into chains. See [Output format](#output-format).
+
+`--d-bubbles` cannot be combined with `--clsd-trees` or `--compact-output-chains`. See [Command-line options](#command-line-options) for shared flags such as `-g`, `-o` and `-j`.
+
+> [!NOTE]
+> The default orientation-based method runs in `O(|V|+|E|)` time. Its correctness proof and benchmarks are described in [Harviainen et al., 2026](#ref-harviainen2026).
+
+<a id="ultrabubble-special-cases"></a>
+<details>
+<summary>Special cases</summary>
+
+For GFA/GBZ files, the default method needs each connected part of the graph to have an end (a **tip**, often a chromosome end) or a point whose removal separates the graph into several parts (a **cut vertex**).
+
+For parts with neither, prefer the [SPQR method](#ref-sena2026). The current `--spqr-weak-superbubbles` option does not yet support this case.
+
+</details>
+
+### D-bubbles via dominator trees
+
+This method needs at least two ends (**tips**) of the graph.
+
+D-bubbles use reciprocal immediate dominators in the augmented doubled graph. The implementation uses the Lengauer--Tarjan algorithm with `O((|V|+|E|) log(|V|+|E|))` worst-case time. See [the definition and coverage](docs/d-bubbles.md).
+
+> [!NOTE]
+> The definition, proofs, and benchmarks are described in [Sena et al., preprint forthcoming](#ref-dominator-bubbles).
 
 ---
 
@@ -101,13 +169,13 @@ Replace `<NUM_THREADS>` with the number of parallel build jobs (e.g. `-j 8`). Om
 
 | Command | Typical input | Output endpoints | Notes |
 |---|---|---|---|
-| `snarls` | bidirected GFA / GBZ | oriented incidences (`a+`, `d-`) | uses compressed SPQR path; may output cliques |
-| `superbubbles` | bidirected GFA / GBZ (default) or directed (`--directed`) | segment IDs (`a`, `e`) in bidirected mode; oriented IDs (`a+`, `e-`) in directed mode | computed on doubled directed graph + orientation projection (bidirected) or directly (directed) |
-| `ultrabubbles` | bidirected GFA / GBZ | oriented incidences | oriented mode (default), doubled mode (`--doubled`), dominator mode (`--d-bubbles`), or SPQR weak-superbubble backend (`--spqr-weak-superbubbles`) |
+| `snarls` | bidirected GFA / GBZ | oriented incidences (`a+`, `d-`) | uses compressed SPQR path and may output cliques |
+| `superbubbles` | bidirected GFA / GBZ (default) or directed (`--directed`) | segment IDs (`a`, `e`) in bidirected mode, oriented IDs (`a+`, `e-`) in directed mode | see [superbubble input convention](#directed-mode-for-superbubbles) |
+| `ultrabubbles` | bidirected GFA / GBZ | oriented incidences | four methods. See [Ultrabubble methods](#ultrabubble-methods) |
 | `spqr-tree` | GFA / GBZ only | `.spqr` v0.4 | connected components + BC-tree + SPQR decomposition |
-| `d-bubbles` | bidirected GFA / GBZ | oriented incidences | dominator bubbles |
+| `d-bubbles` | bidirected GFA / GBZ | oriented incidences | d-bubbles |
 
-The bubble commands exclude trivial bubbles by default; use `-T` to include them. The existing snarl, superbubble, and ultrabubble implementations are validated on randomly generated graphs (see [Validation](../../wiki/Validation) on the Wiki).
+The bubble commands exclude trivial bubbles by default. Use `-T` to include them.
 
 For a detailed walkthrough of all execution paths, see the [Flowchart](../../wiki/Flowchart) on the Wiki.
 
@@ -121,20 +189,17 @@ For a detailed walkthrough of all execution paths, see the [Flowchart](../../wik
 
 Available commands:
 - `superbubbles` find superbubbles (bidirected by default, use `--directed` for directed mode)
-- `snarls` find snarls (bidirected GFA or GBZ; compressed SPQR path)
-- `ultrabubbles` find ultrabubbles (oriented mode by default, use `--doubled`, `--d-bubbles` or `--spqr-weak-superbubbles` for alternative backends)
+- `snarls` find snarls (bidirected GFA or GBZ, compressed SPQR path)
+- `ultrabubbles` find ultrabubbles (see [Ultrabubble methods](#ultrabubble-methods) for all methods and output options)
 - `spqr-tree` output the connected components, BC-tree and SPQR decomposition in `.spqr` v0.4 format
-- `d-bubbles` find dominator bubbles (see [docs/d-bubbles.md](docs/d-bubbles.md))
-
-> [!WARNING]
-> In oriented mode (default), `ultrabubbles` requires **at least one tip or one cut vertex per connected component** in the input graph (otherwise it will fail). Use `--doubled` if your graph has tipless and cut-vertex-free connected components.
+- `d-bubbles` find d-bubbles (see [docs/d-bubbles.md](docs/d-bubbles.md))
 
 ### Input data
 
 | Extension | Format | Description |
 |---|---|---|
 | `.gfa` / `.gfa1` | GFA1 | Graphical Fragment Assembly format |
-| `.gbz` | GBZ | vg/gbwtgraph binary format; topology-only loading is used by default |
+| `.gbz` | GBZ | vg/gbwtgraph binary format. Topology-only loading is used by default |
 | `.graph` | BubbleFinder text | Simple directed edge list (see below) |
 
 BubbleFinder `.graph` text format:
@@ -147,6 +212,12 @@ Force the input format with `--gfa`, `--gfa-directed`, or `--graph`. Input files
 > [!NOTE]
 > `spqr-tree` currently requires **GFA or GBZ input**.
 
+#### Directed mode for superbubbles
+
+Each segment has two states, `a+` and `a-`, representing its two sequence orientations. In bidirected mode, a GFA link `L a + b - 0M` gives `a+ → b-` and its reverse-complement arc `b+ → a-`.
+
+With automatic format detection, `superbubbles --directed` follows only the direction written in each GFA link record. To read the GFA as bidirected while reporting oriented endpoints, use `superbubbles --directed --gfa`.
+
 ### Command-line options
 
 | Option | Description |
@@ -157,13 +228,13 @@ Force the input format with `--gfa`, `--gfa-directed`, or `--graph`. Input files
 | `--gfa` | Force GFA input (bidirected) |
 | `--gfa-directed` | Force GFA input interpreted as directed graph |
 | `--graph` | Force `.graph` text format |
-| `--directed` | Interpret graph as directed (for `superbubbles`) |
-| `--doubled` | Use doubled-graph algorithm (for `ultrabubbles`) |
-| `--d-bubbles` | Find ultrabubbles by filtering dominator bubbles (for `ultrabubbles`) |
-| `--spqr-weak-superbubbles` | Use the SPQR weak-superbubble backend (for `ultrabubbles`) |
+| `--directed` | Use directed mode for `superbubbles`. See [input convention](#directed-mode-for-superbubbles) |
+| `--doubled` | Use doubled-graph algorithm for `ultrabubbles` (higher RAM use) |
+| `--d-bubbles` | Find ultrabubbles by filtering d-bubbles (for `ultrabubbles`) |
+| `--spqr-weak-superbubbles` | Use the SPQR method to find ultrabubbles |
 | `--sp-compress <mode>` | Snarls SPQR compression mode: `macro-direct` (default), `on`, `off`, or `instrument` |
 | `-T`, `--include-trivial` | Include trivial bubbles in output |
-| `--compact-output-chains` | Compact consecutive output bubbles into maximal chains |
+| `--compact-output-chains` | Compact compatible endpoint pairs into chains (see [Output format](#output-format)) |
 | `--clsd-trees <file>` | Write ultrabubble hierarchy to `<file>` (`ultrabubbles` only) |
 | `--report-json <file>` | Write JSON metrics report |
 | `-m <bytes>` | Stack size in bytes |
@@ -177,7 +248,9 @@ The bubble commands write plain text to the file given by `-o <outputFile>`. The
 
 Each result line encodes one or more **bubbles**, identified by their endpoints. What an "endpoint" looks like depends on the command: `snarls`, `ultrabubbles`, and `d-bubbles` use **oriented incidences** (e.g. `a+`, `d-`), `superbubbles` in bidirected mode uses **segment IDs without orientation** (e.g. `a`, `e`), and `superbubbles --directed` uses **oriented IDs** (e.g. `a+`, `e-`).
 
-For superbubbles, snarls, and ultrabubbles, `--compact-output-chains` merges consecutive output bubbles into maximal chains; each line contains the two external endpoints of one chain.
+For snarls and ultrabubbles, `--compact-output-chains` compacts compatible output pairs by joining opposite incidences of the same node: for example, `a+ b-` and `b+ c-` become `a+ c-`. Each resulting line contains only the chain's two outer endpoints. Snarl clique rows are not compacted. This option cannot be used with `ultrabubbles --d-bubbles`.
+
+For `superbubbles` in the default bidirected mode, output endpoints have no orientation signs, so `--compact-output-chains` currently leaves the output unchanged.
 
 <details>
 <summary><strong>Snarls</strong></summary>
@@ -250,9 +323,9 @@ To compute ultrabubbles by filtering d-bubbles:
 ./BubbleFinder ultrabubbles --d-bubbles -g graph.gfa -o ultrabubbles.txt -j 8
 ```
 
-Use `-T` to include trivial ultrabubbles. This mode considers regions on walks between graph tips and warns when coverage is partial.
+Use `-T` to include trivial ultrabubbles. This mode searches regions between ends of the graph and warns when some regions are not covered.
 
-With the CLSD backend, use `--clsd-trees <file>` to also output the **hierarchical nesting structure**. Each line in that file is a rooted tree in parenthesized form:
+With the default or `--doubled` method, use `--clsd-trees <file>` to also output the **hierarchical nesting structure**. Each line in that file is a rooted tree in parenthesized form:
 
 - leaf bubble: `<X,Y>`
 - internal bubble: `(child1,...,childk)<X,Y>`
@@ -299,24 +372,17 @@ For details on line types and semantics, refer to the specification repository.
 
 ---
 
-## Dominator bubbles
-
-```bash
-./BubbleFinder d-bubbles -g graph.gfa -o d-bubbles.txt
-./BubbleFinder d-bubbles -g graph.gfa -o all-d-bubbles.txt -T
-```
-
-Dominator bubbles use reciprocal immediate dominators in the augmented doubled graph. Like the other bubble commands, `d-bubbles` excludes trivial bubbles by default; `-T` includes them. See [the definition and coverage](docs/d-bubbles.md).
-
-The definition, proofs, and benchmarks are described in [Sena et al., preprint forthcoming](#ref-dominator-bubbles).
-
----
-
 ## References
 
-- <a id="ref-sena-politov2025"></a> Francisco Sena, Aleksandr Politov, Corentin Moumard, Manuel Cáceres, Sebastian Schmidt, Juha Harviainen, Alexandru I. Tomescu. *Identifying all snarls and superbubbles in linear-time, via a unified SPQR-tree framework*. arXiv:2511.21919 (2025). https://arxiv.org/abs/2511.21919
+- <a id="ref-dibattista1990"></a> Giuseppe Di Battista, Roberto Tamassia. *On-line graph algorithms with SPQR-trees*. ICALP 1990, LNCS 443:598–611. DOI: [10.1007/BFb0032061](https://doi.org/10.1007/BFb0032061).
 
-- <a id="ref-harviainen2026"></a> Juha Harviainen, Francisco Sena, Corentin Moumard, Aleksandr Politov, Sebastian Schmidt, Alexandru I. Tomescu. *Scalable Computation of Ultrabubbles in Pangenomes by Orienting Bidirected Graphs*. bioRxiv 2026.03.28.714704 (2026). DOI: https://doi.org/10.64898/2026.03.28.714704
+- <a id="ref-onodera2013"></a> Taku Onodera, Kunihiko Sadakane, Tetsuo Shibuya. *Detecting Superbubbles in Assembly Graphs*. WABI 2013, LNCS 8126:338–348. DOI: [10.1007/978-3-642-40453-5_26](https://doi.org/10.1007/978-3-642-40453-5_26).
+
+- <a id="ref-paten2017"></a> Benedict Paten, Adam M. Novak, Erik Garrison, Glenn Hickey. *Superbubbles, Ultrabubbles and Cacti*. RECOMB 2017, LNCS 10229:173–189. DOI: [10.1007/978-3-319-56970-3_11](https://doi.org/10.1007/978-3-319-56970-3_11).
+
+- <a id="ref-sena2026"></a> Francisco Sena, Aleksandr Politov, Corentin Moumard, Massimo Cairo, Romeo Rizzi, Manuel Cáceres, Sebastian Schmidt, Juha Harviainen, Alexandru I. Tomescu. *Identifying bubble-like subgraphs in linear-time via a unified SPQR-tree framework*. arXiv:2604.08071 (2026). https://arxiv.org/abs/2604.08071
+
+- <a id="ref-harviainen2026"></a> Juha Harviainen, Francisco Sena, Corentin Moumard, Aleksandr Politov, Sebastian Schmidt, Alexandru I. Tomescu. *Scalable Computation of Ultrabubbles in Pangenomes by Orienting Bidirected Graphs*. Bioinformatics 42(Supplement_1):btag235 (2026). DOI: https://doi.org/10.1093/bioinformatics/btag235
 
 - <a id="ref-dominator-bubbles"></a> Francisco Sena, Corentin Moumard, Juha Harviainen, Luís Russo, Alexandru I. Tomescu. *Dominator-bubbles: variation structures beyond separability in pangenome graphs*. Preprint forthcoming.
 
