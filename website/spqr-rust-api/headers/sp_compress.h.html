@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>sp_compress.h · SPQR-Rust header reference</title>
+<link rel="stylesheet" href="../../assets/styles.css?v=6"></head>
+<body><div class="site-wrap">
+<header class="site-header"><a class="brand" href="../../spqr-rust.html">SPQR-Rust</a></header>
+<nav class="main-nav" aria-label="Main navigation"><ul>
+<li><a href="../../spqr-rust-documentation.html">Documentation</a></li>
+<li><a href="../../spqr-rust-api.html">API reference</a></li></ul></nav>
+<main class="header-reference"><h1>sp_compress.h</h1>
+<p><a href="../../spqr-rust-api.html#headers">Header index</a> · <a href="sp_compress.h" download>Download header</a></p>
+<p class="small-note">SPQR-Rust 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a>. Complete header, including declarations, definitions and comments.</p>
+<details><summary>Jump to a declaration</summary><p><a href="#L203">sp_compress_ffi</a> · <a href="#L213">sp_compress_ffi64</a> · <a href="#L222">sp_compress_ffi_u64</a> · <a href="#L231">sp_compress_from_snapshot_ffi</a> · <a href="#L235">sp_compress_free</a> · <a href="#L237">sp_compress_success</a> · <a href="#L239">sp_compress_get_tree</a> · <a href="#L240">sp_compress_get_tree_u64</a> · <a href="#L242">sp_compress_get_core_spqr</a> · <a href="#L243">sp_compress_get_core_spqr_u64</a> · <a href="#L245">sp_compress_core_node_inv</a> · <a href="#L246">sp_compress_core_node_inv_u64</a> · <a href="#L248">sp_compress_reconstruct_ffi</a> · <a href="#L256">sp_compress_reconstruct_ffi64</a> · <a href="#L263">sp_compress_reconstruct_ffi_u64</a> · <a href="#L337">sp_compress_timed_ffi</a> · <a href="#L347">sp_compress_timed_ffi64</a> · <a href="#L356">sp_compress_timed_ffi_u64</a> · <a href="#L365">sp_compress_indexed_ffi</a> · <a href="#L374">sp_compress_indexed_ffi_u64</a> · <a href="#L384">sp_compress_reconstruct_with_timings_ffi</a> · <a href="#L394">sp_compress_reconstruct_with_timings_ffi64</a> · <a href="#L403">sp_compress_reconstruct_with_timings_ffi_u64</a></p></details>
+<pre class="header-source"><code><span id="L1"><a class="source-line" href="#L1">   1</a> #ifndef SP_COMPRESS_H</span>
+<span id="L2"><a class="source-line" href="#L2">   2</a> #define SP_COMPRESS_H</span>
+<span id="L3"><a class="source-line" href="#L3">   3</a> </span>
+<span id="L4"><a class="source-line" href="#L4">   4</a> #include &lt;stdbool.h&gt;</span>
+<span id="L5"><a class="source-line" href="#L5">   5</a> #include &lt;stddef.h&gt;</span>
+<span id="L6"><a class="source-line" href="#L6">   6</a> #include &lt;stdint.h&gt;</span>
+<span id="L7"><a class="source-line" href="#L7">   7</a> </span>
+<span id="L8"><a class="source-line" href="#L8">   8</a> #include &quot;spqr_tree.h&quot;</span>
+<span id="L9"><a class="source-line" href="#L9">   9</a> </span>
+<span id="L10"><a class="source-line" href="#L10">  10</a> #ifdef __cplusplus</span>
+<span id="L11"><a class="source-line" href="#L11">  11</a> extern &quot;C&quot; {</span>
+<span id="L12"><a class="source-line" href="#L12">  12</a> #endif</span>
+<span id="L13"><a class="source-line" href="#L13">  13</a> </span>
+<span id="L14"><a class="source-line" href="#L14">  14</a> typedef struct SpCompressHandle SpCompressHandle;</span>
+<span id="L15"><a class="source-line" href="#L15">  15</a> </span>
+<span id="L16"><a class="source-line" href="#L16">  16</a> typedef struct {</span>
+<span id="L17"><a class="source-line" href="#L17">  17</a>     uint32_t u;</span>
+<span id="L18"><a class="source-line" href="#L18">  18</a>     uint32_t v;</span>
+<span id="L19"><a class="source-line" href="#L19">  19</a>     uint32_t original_edge_id;</span>
+<span id="L20"><a class="source-line" href="#L20">  20</a> } SpCompressInputEdge;</span>
+<span id="L21"><a class="source-line" href="#L21">  21</a> </span>
+<span id="L22"><a class="source-line" href="#L22">  22</a> typedef struct {</span>
+<span id="L23"><a class="source-line" href="#L23">  23</a>     uint64_t u;</span>
+<span id="L24"><a class="source-line" href="#L24">  24</a>     uint64_t v;</span>
+<span id="L25"><a class="source-line" href="#L25">  25</a>     uint64_t original_edge_id;</span>
+<span id="L26"><a class="source-line" href="#L26">  26</a> } SpCompressInputEdge64;</span>
+<span id="L27"><a class="source-line" href="#L27">  27</a> </span>
+<span id="L28"><a class="source-line" href="#L28">  28</a> typedef uint64_t SpCompressChildRef;</span>
+<span id="L29"><a class="source-line" href="#L29">  29</a> typedef uint64_t SpCompressSize;</span>
+<span id="L30"><a class="source-line" href="#L30">  30</a> </span>
+<span id="L31"><a class="source-line" href="#L31">  31</a> #define SP_COMPRESS_KIND_SERIES   1</span>
+<span id="L32"><a class="source-line" href="#L32">  32</a> #define SP_COMPRESS_KIND_PARALLEL 2</span>
+<span id="L33"><a class="source-line" href="#L33">  33</a> </span>
+<span id="L34"><a class="source-line" href="#L34">  34</a> </span>
+<span id="L35"><a class="source-line" href="#L35">  35</a> typedef struct {</span>
+<span id="L36"><a class="source-line" href="#L36">  36</a>     uint8_t  kind;</span>
+<span id="L37"><a class="source-line" href="#L37">  37</a>     uint8_t  _pad[3];</span>
+<span id="L38"><a class="source-line" href="#L38">  38</a>     uint32_t left;</span>
+<span id="L39"><a class="source-line" href="#L39">  39</a>     uint32_t right;</span>
+<span id="L40"><a class="source-line" href="#L40">  40</a>     SpCompressSize children_offset;</span>
+<span id="L41"><a class="source-line" href="#L41">  41</a>     SpCompressSize children_count;</span>
+<span id="L42"><a class="source-line" href="#L42">  42</a> } SpCompressNode;</span>
+<span id="L43"><a class="source-line" href="#L43">  43</a> </span>
+<span id="L44"><a class="source-line" href="#L44">  44</a> typedef struct {</span>
+<span id="L45"><a class="source-line" href="#L45">  45</a>     uint32_t u;</span>
+<span id="L46"><a class="source-line" href="#L46">  46</a>     uint32_t v;</span>
+<span id="L47"><a class="source-line" href="#L47">  47</a>     SpCompressChildRef child;</span>
+<span id="L48"><a class="source-line" href="#L48">  48</a> } SpCompressCoreEdge;</span>
+<span id="L49"><a class="source-line" href="#L49">  49</a> </span>
+<span id="L50"><a class="source-line" href="#L50">  50</a> typedef struct {</span>
+<span id="L51"><a class="source-line" href="#L51">  51</a>     uint8_t  kind;</span>
+<span id="L52"><a class="source-line" href="#L52">  52</a>     uint8_t  _pad[3];</span>
+<span id="L53"><a class="source-line" href="#L53">  53</a>     uint64_t left;</span>
+<span id="L54"><a class="source-line" href="#L54">  54</a>     uint64_t right;</span>
+<span id="L55"><a class="source-line" href="#L55">  55</a>     uint64_t children_offset;</span>
+<span id="L56"><a class="source-line" href="#L56">  56</a>     uint64_t children_count;</span>
+<span id="L57"><a class="source-line" href="#L57">  57</a> } SpCompressNode64;</span>
+<span id="L58"><a class="source-line" href="#L58">  58</a> </span>
+<span id="L59"><a class="source-line" href="#L59">  59</a> typedef struct {</span>
+<span id="L60"><a class="source-line" href="#L60">  60</a>     uint64_t u;</span>
+<span id="L61"><a class="source-line" href="#L61">  61</a>     uint64_t v;</span>
+<span id="L62"><a class="source-line" href="#L62">  62</a>     uint64_t child;</span>
+<span id="L63"><a class="source-line" href="#L63">  63</a> } SpCompressCoreEdge64;</span>
+<span id="L64"><a class="source-line" href="#L64">  64</a> </span>
+<span id="L65"><a class="source-line" href="#L65">  65</a> </span>
+<span id="L66"><a class="source-line" href="#L66">  66</a> #define SP_COMPRESS_TAG_BIT      UINT64_C(0x8000000000000000)</span>
+<span id="L67"><a class="source-line" href="#L67">  67</a> #define SP_COMPRESS_PAYLOAD_MASK UINT64_C(0x7FFFFFFFFFFFFFFF)</span>
+<span id="L68"><a class="source-line" href="#L68">  68</a> </span>
+<span id="L69"><a class="source-line" href="#L69">  69</a> #define SP_COMPRESS_CHILD_IS_MACRO(c)  (((c) &amp; SP_COMPRESS_TAG_BIT) != 0)</span>
+<span id="L70"><a class="source-line" href="#L70">  70</a> #define SP_COMPRESS_CHILD_IS_EDGE(c)   (((c) &amp; SP_COMPRESS_TAG_BIT) == 0)</span>
+<span id="L71"><a class="source-line" href="#L71">  71</a> #define SP_COMPRESS_CHILD_AS_EDGE(c)   ((uint32_t)(c))</span>
+<span id="L72"><a class="source-line" href="#L72">  72</a> #define SP_COMPRESS_CHILD_AS_MACRO(c)  ((SpCompressSize)((c) &amp; SP_COMPRESS_PAYLOAD_MASK))</span>
+<span id="L73"><a class="source-line" href="#L73">  73</a> </span>
+<span id="L74"><a class="source-line" href="#L74">  74</a> #define SP_COMPRESS_TAG_BIT64      0x8000000000000000ull</span>
+<span id="L75"><a class="source-line" href="#L75">  75</a> #define SP_COMPRESS_PAYLOAD_MASK64 0x7FFFFFFFFFFFFFFFull</span>
+<span id="L76"><a class="source-line" href="#L76">  76</a> </span>
+<span id="L77"><a class="source-line" href="#L77">  77</a> #define SP_COMPRESS_CHILD_IS_MACRO64(c)  (((c) &amp; SP_COMPRESS_TAG_BIT64) != 0)</span>
+<span id="L78"><a class="source-line" href="#L78">  78</a> #define SP_COMPRESS_CHILD_IS_EDGE64(c)   (((c) &amp; SP_COMPRESS_TAG_BIT64) == 0)</span>
+<span id="L79"><a class="source-line" href="#L79">  79</a> #define SP_COMPRESS_CHILD_AS_EDGE64(c)   ((c))</span>
+<span id="L80"><a class="source-line" href="#L80">  80</a> #define SP_COMPRESS_CHILD_AS_MACRO64(c)  ((c) &amp; SP_COMPRESS_PAYLOAD_MASK64)</span>
+<span id="L81"><a class="source-line" href="#L81">  81</a> </span>
+<span id="L82"><a class="source-line" href="#L82">  82</a> typedef struct {</span>
+<span id="L83"><a class="source-line" href="#L83">  83</a>     uint32_t input_nodes;</span>
+<span id="L84"><a class="source-line" href="#L84">  84</a>     uint32_t input_edges;</span>
+<span id="L85"><a class="source-line" href="#L85">  85</a>     uint32_t core_nodes;</span>
+<span id="L86"><a class="source-line" href="#L86">  86</a>     uint32_t core_edges_count;</span>
+<span id="L87"><a class="source-line" href="#L87">  87</a>     uint32_t macro_count;</span>
+<span id="L88"><a class="source-line" href="#L88">  88</a>     uint32_t macro_series;</span>
+<span id="L89"><a class="source-line" href="#L89">  89</a>     uint32_t macro_parallel;</span>
+<span id="L90"><a class="source-line" href="#L90">  90</a>     uint32_t series_reductions;</span>
+<span id="L91"><a class="source-line" href="#L91">  91</a>     uint32_t parallel_reductions;</span>
+<span id="L92"><a class="source-line" href="#L92">  92</a>     uint32_t iterations;</span>
+<span id="L93"><a class="source-line" href="#L93">  93</a>     uint8_t  fully_sp_reducible;</span>
+<span id="L94"><a class="source-line" href="#L94">  94</a> } SpCompressStats;</span>
+<span id="L95"><a class="source-line" href="#L95">  95</a> </span>
+<span id="L96"><a class="source-line" href="#L96">  96</a> typedef struct {</span>
+<span id="L97"><a class="source-line" href="#L97">  97</a> </span>
+<span id="L98"><a class="source-line" href="#L98">  98</a>     const SpCompressNode* macros_ptr;</span>
+<span id="L99"><a class="source-line" href="#L99">  99</a>     SpCompressSize macros_len;</span>
+<span id="L100"><a class="source-line" href="#L100"> 100</a> </span>
+<span id="L101"><a class="source-line" href="#L101"> 101</a>     const SpCompressChildRef* children_ptr;</span>
+<span id="L102"><a class="source-line" href="#L102"> 102</a>     SpCompressSize children_len;</span>
+<span id="L103"><a class="source-line" href="#L103"> 103</a> </span>
+<span id="L104"><a class="source-line" href="#L104"> 104</a>     const SpCompressCoreEdge* core_edges_ptr;</span>
+<span id="L105"><a class="source-line" href="#L105"> 105</a>     SpCompressSize core_edges_len;</span>
+<span id="L106"><a class="source-line" href="#L106"> 106</a> </span>
+<span id="L107"><a class="source-line" href="#L107"> 107</a>     const uint32_t* core_nodes_ptr;</span>
+<span id="L108"><a class="source-line" href="#L108"> 108</a>     SpCompressSize core_nodes_len;</span>
+<span id="L109"><a class="source-line" href="#L109"> 109</a> </span>
+<span id="L110"><a class="source-line" href="#L110"> 110</a>     const uint32_t* input_endpoints_ptr;</span>
+<span id="L111"><a class="source-line" href="#L111"> 111</a>     SpCompressSize input_endpoints_len;</span>
+<span id="L112"><a class="source-line" href="#L112"> 112</a> </span>
+<span id="L113"><a class="source-line" href="#L113"> 113</a> </span>
+<span id="L114"><a class="source-line" href="#L114"> 114</a>     SpCompressStats stats;</span>
+<span id="L115"><a class="source-line" href="#L115"> 115</a> } SpCompressTreeView;</span>
+<span id="L116"><a class="source-line" href="#L116"> 116</a> </span>
+<span id="L117"><a class="source-line" href="#L117"> 117</a> </span>
+<span id="L118"><a class="source-line" href="#L118"> 118</a> typedef struct {</span>
+<span id="L119"><a class="source-line" href="#L119"> 119</a>     uint64_t input_nodes;</span>
+<span id="L120"><a class="source-line" href="#L120"> 120</a>     uint64_t input_edges;</span>
+<span id="L121"><a class="source-line" href="#L121"> 121</a>     uint64_t core_nodes;</span>
+<span id="L122"><a class="source-line" href="#L122"> 122</a>     uint64_t core_edges_count;</span>
+<span id="L123"><a class="source-line" href="#L123"> 123</a>     uint64_t macro_count;</span>
+<span id="L124"><a class="source-line" href="#L124"> 124</a>     uint64_t macro_series;</span>
+<span id="L125"><a class="source-line" href="#L125"> 125</a>     uint64_t macro_parallel;</span>
+<span id="L126"><a class="source-line" href="#L126"> 126</a>     uint64_t series_reductions;</span>
+<span id="L127"><a class="source-line" href="#L127"> 127</a>     uint64_t parallel_reductions;</span>
+<span id="L128"><a class="source-line" href="#L128"> 128</a>     uint64_t iterations;</span>
+<span id="L129"><a class="source-line" href="#L129"> 129</a>     uint8_t  fully_sp_reducible;</span>
+<span id="L130"><a class="source-line" href="#L130"> 130</a> } SpCompressStats64;</span>
+<span id="L131"><a class="source-line" href="#L131"> 131</a> </span>
+<span id="L132"><a class="source-line" href="#L132"> 132</a> typedef struct {</span>
+<span id="L133"><a class="source-line" href="#L133"> 133</a> </span>
+<span id="L134"><a class="source-line" href="#L134"> 134</a>     const SpCompressNode64* macros_ptr;</span>
+<span id="L135"><a class="source-line" href="#L135"> 135</a>     uint64_t macros_len;</span>
+<span id="L136"><a class="source-line" href="#L136"> 136</a> </span>
+<span id="L137"><a class="source-line" href="#L137"> 137</a>     const uint64_t* children_ptr;</span>
+<span id="L138"><a class="source-line" href="#L138"> 138</a>     uint64_t children_len;</span>
+<span id="L139"><a class="source-line" href="#L139"> 139</a> </span>
+<span id="L140"><a class="source-line" href="#L140"> 140</a>     const SpCompressCoreEdge64* core_edges_ptr;</span>
+<span id="L141"><a class="source-line" href="#L141"> 141</a>     uint64_t core_edges_len;</span>
+<span id="L142"><a class="source-line" href="#L142"> 142</a> </span>
+<span id="L143"><a class="source-line" href="#L143"> 143</a>     const uint64_t* core_nodes_ptr;</span>
+<span id="L144"><a class="source-line" href="#L144"> 144</a>     uint64_t core_nodes_len;</span>
+<span id="L145"><a class="source-line" href="#L145"> 145</a> </span>
+<span id="L146"><a class="source-line" href="#L146"> 146</a>     const uint64_t* input_endpoints_ptr;</span>
+<span id="L147"><a class="source-line" href="#L147"> 147</a>     uint64_t input_endpoints_len;</span>
+<span id="L148"><a class="source-line" href="#L148"> 148</a> </span>
+<span id="L149"><a class="source-line" href="#L149"> 149</a> </span>
+<span id="L150"><a class="source-line" href="#L150"> 150</a>     SpCompressStats64 stats;</span>
+<span id="L151"><a class="source-line" href="#L151"> 151</a> } SpCompressTreeView64;</span>
+<span id="L152"><a class="source-line" href="#L152"> 152</a> </span>
+<span id="L153"><a class="source-line" href="#L153"> 153</a> </span>
+<span id="L154"><a class="source-line" href="#L154"> 154</a> typedef struct {</span>
+<span id="L155"><a class="source-line" href="#L155"> 155</a>     uint32_t root;</span>
+<span id="L156"><a class="source-line" href="#L156"> 156</a>     uint32_t node_count;</span>
+<span id="L157"><a class="source-line" href="#L157"> 157</a> </span>
+<span id="L158"><a class="source-line" href="#L158"> 158</a>     const uint8_t* node_types_ptr;</span>
+<span id="L159"><a class="source-line" href="#L159"> 159</a>     const uint32_t* node_parents_ptr;</span>
+<span id="L160"><a class="source-line" href="#L160"> 160</a> </span>
+<span id="L161"><a class="source-line" href="#L161"> 161</a>     const uint32_t* children_offsets_ptr;</span>
+<span id="L162"><a class="source-line" href="#L162"> 162</a>     uint32_t children_offsets_len;</span>
+<span id="L163"><a class="source-line" href="#L163"> 163</a>     const uint32_t* children_ptr;</span>
+<span id="L164"><a class="source-line" href="#L164"> 164</a>     uint32_t children_len;</span>
+<span id="L165"><a class="source-line" href="#L165"> 165</a> </span>
+<span id="L166"><a class="source-line" href="#L166"> 166</a>     const uint32_t* skeleton_offsets_ptr;</span>
+<span id="L167"><a class="source-line" href="#L167"> 167</a>     uint32_t skeleton_offsets_len;</span>
+<span id="L168"><a class="source-line" href="#L168"> 168</a>     const SkeletonEdge* skeleton_edges_ptr;</span>
+<span id="L169"><a class="source-line" href="#L169"> 169</a>     uint32_t skeleton_edges_len;</span>
+<span id="L170"><a class="source-line" href="#L170"> 170</a> </span>
+<span id="L171"><a class="source-line" href="#L171"> 171</a>     const uint32_t* node_mapping_offsets_ptr;</span>
+<span id="L172"><a class="source-line" href="#L172"> 172</a>     uint32_t node_mapping_offsets_len;</span>
+<span id="L173"><a class="source-line" href="#L173"> 173</a>     const uint32_t* node_mapping_ptr;</span>
+<span id="L174"><a class="source-line" href="#L174"> 174</a>     uint32_t node_mapping_len;</span>
+<span id="L175"><a class="source-line" href="#L175"> 175</a> </span>
+<span id="L176"><a class="source-line" href="#L176"> 176</a>     const uint32_t* skeleton_num_nodes_ptr;</span>
+<span id="L177"><a class="source-line" href="#L177"> 177</a>     uint32_t skeleton_num_nodes_len;</span>
+<span id="L178"><a class="source-line" href="#L178"> 178</a> } SpCompressCoreSpqrSnapshot;</span>
+<span id="L179"><a class="source-line" href="#L179"> 179</a> </span>
+<span id="L180"><a class="source-line" href="#L180"> 180</a> typedef struct {</span>
+<span id="L181"><a class="source-line" href="#L181"> 181</a>     const SpCompressNode* macros_ptr;</span>
+<span id="L182"><a class="source-line" href="#L182"> 182</a>     SpCompressSize macros_len;</span>
+<span id="L183"><a class="source-line" href="#L183"> 183</a> </span>
+<span id="L184"><a class="source-line" href="#L184"> 184</a>     const SpCompressChildRef* children_ptr;</span>
+<span id="L185"><a class="source-line" href="#L185"> 185</a>     SpCompressSize children_len;</span>
+<span id="L186"><a class="source-line" href="#L186"> 186</a> </span>
+<span id="L187"><a class="source-line" href="#L187"> 187</a>     const SpCompressCoreEdge* core_edges_ptr;</span>
+<span id="L188"><a class="source-line" href="#L188"> 188</a>     SpCompressSize core_edges_len;</span>
+<span id="L189"><a class="source-line" href="#L189"> 189</a> </span>
+<span id="L190"><a class="source-line" href="#L190"> 190</a>     const uint32_t* core_nodes_ptr;</span>
+<span id="L191"><a class="source-line" href="#L191"> 191</a>     SpCompressSize core_nodes_len;</span>
+<span id="L192"><a class="source-line" href="#L192"> 192</a> </span>
+<span id="L193"><a class="source-line" href="#L193"> 193</a>     const uint32_t* input_endpoints_ptr;</span>
+<span id="L194"><a class="source-line" href="#L194"> 194</a>     SpCompressSize input_endpoints_len;</span>
+<span id="L195"><a class="source-line" href="#L195"> 195</a> </span>
+<span id="L196"><a class="source-line" href="#L196"> 196</a>     SpCompressStats stats;</span>
+<span id="L197"><a class="source-line" href="#L197"> 197</a> </span>
+<span id="L198"><a class="source-line" href="#L198"> 198</a>     const SpCompressCoreSpqrSnapshot* core_spqr;</span>
+<span id="L199"><a class="source-line" href="#L199"> 199</a>     const uint32_t* core_node_inv_ptr;</span>
+<span id="L200"><a class="source-line" href="#L200"> 200</a>     uint32_t core_node_inv_len;</span>
+<span id="L201"><a class="source-line" href="#L201"> 201</a> } SpCompressSnapshotView;</span>
+<span id="L202"><a class="source-line" href="#L202"> 202</a> </span>
+<span id="L203"><a class="source-line" href="#L203"> 203</a> SpCompressHandle* sp_compress_ffi(</span>
+<span id="L204"><a class="source-line" href="#L204"> 204</a>     uint32_t n_nodes,</span>
+<span id="L205"><a class="source-line" href="#L205"> 205</a>     const SpCompressInputEdge* edges_ptr,</span>
+<span id="L206"><a class="source-line" href="#L206"> 206</a>     uint32_t edges_len,</span>
+<span id="L207"><a class="source-line" href="#L207"> 207</a>     uint32_t max_original_edge_id,</span>
+<span id="L208"><a class="source-line" href="#L208"> 208</a>     const uint8_t* contractible_ptr,</span>
+<span id="L209"><a class="source-line" href="#L209"> 209</a>     uint32_t contractible_len,</span>
+<span id="L210"><a class="source-line" href="#L210"> 210</a>     uint8_t build_core_spqr</span>
+<span id="L211"><a class="source-line" href="#L211"> 211</a> );</span>
+<span id="L212"><a class="source-line" href="#L212"> 212</a> </span>
+<span id="L213"><a class="source-line" href="#L213"> 213</a> SpCompressHandle* sp_compress_ffi64(</span>
+<span id="L214"><a class="source-line" href="#L214"> 214</a>     uint64_t n_nodes,</span>
+<span id="L215"><a class="source-line" href="#L215"> 215</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L216"><a class="source-line" href="#L216"> 216</a>     uint64_t edges_len,</span>
+<span id="L217"><a class="source-line" href="#L217"> 217</a>     const uint8_t* contractible_ptr,</span>
+<span id="L218"><a class="source-line" href="#L218"> 218</a>     uint64_t contractible_len,</span>
+<span id="L219"><a class="source-line" href="#L219"> 219</a>     uint8_t build_core_spqr</span>
+<span id="L220"><a class="source-line" href="#L220"> 220</a> );</span>
+<span id="L221"><a class="source-line" href="#L221"> 221</a> </span>
+<span id="L222"><a class="source-line" href="#L222"> 222</a> SpCompressHandle* sp_compress_ffi_u64(</span>
+<span id="L223"><a class="source-line" href="#L223"> 223</a>     uint64_t n_nodes,</span>
+<span id="L224"><a class="source-line" href="#L224"> 224</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L225"><a class="source-line" href="#L225"> 225</a>     uint64_t edges_len,</span>
+<span id="L226"><a class="source-line" href="#L226"> 226</a>     const uint8_t* contractible_ptr,</span>
+<span id="L227"><a class="source-line" href="#L227"> 227</a>     uint64_t contractible_len,</span>
+<span id="L228"><a class="source-line" href="#L228"> 228</a>     uint8_t build_core_spqr</span>
+<span id="L229"><a class="source-line" href="#L229"> 229</a> );</span>
+<span id="L230"><a class="source-line" href="#L230"> 230</a> </span>
+<span id="L231"><a class="source-line" href="#L231"> 231</a> SpCompressHandle* sp_compress_from_snapshot_ffi(</span>
+<span id="L232"><a class="source-line" href="#L232"> 232</a>     const SpCompressSnapshotView* snapshot</span>
+<span id="L233"><a class="source-line" href="#L233"> 233</a> );</span>
+<span id="L234"><a class="source-line" href="#L234"> 234</a> </span>
+<span id="L235"><a class="source-line" href="#L235"> 235</a> void sp_compress_free(SpCompressHandle* handle);</span>
+<span id="L236"><a class="source-line" href="#L236"> 236</a> </span>
+<span id="L237"><a class="source-line" href="#L237"> 237</a> uint8_t sp_compress_success(const SpCompressHandle* handle);</span>
+<span id="L238"><a class="source-line" href="#L238"> 238</a> </span>
+<span id="L239"><a class="source-line" href="#L239"> 239</a> SpCompressTreeView sp_compress_get_tree(const SpCompressHandle* handle);</span>
+<span id="L240"><a class="source-line" href="#L240"> 240</a> SpCompressTreeView64 sp_compress_get_tree_u64(const SpCompressHandle* handle);</span>
+<span id="L241"><a class="source-line" href="#L241"> 241</a> </span>
+<span id="L242"><a class="source-line" href="#L242"> 242</a> const SpqrTree* sp_compress_get_core_spqr(const SpCompressHandle* handle);</span>
+<span id="L243"><a class="source-line" href="#L243"> 243</a> const SpqrTree64* sp_compress_get_core_spqr_u64(const SpCompressHandle* handle);</span>
+<span id="L244"><a class="source-line" href="#L244"> 244</a> </span>
+<span id="L245"><a class="source-line" href="#L245"> 245</a> const uint32_t* sp_compress_core_node_inv(const SpCompressHandle* handle, uint32_t* out_len);</span>
+<span id="L246"><a class="source-line" href="#L246"> 246</a> const uint64_t* sp_compress_core_node_inv_u64(const SpCompressHandle* handle, uint64_t* out_len);</span>
+<span id="L247"><a class="source-line" href="#L247"> 247</a> </span>
+<span id="L248"><a class="source-line" href="#L248"> 248</a> struct SpqrResult* sp_compress_reconstruct_ffi(</span>
+<span id="L249"><a class="source-line" href="#L249"> 249</a>     uint32_t n_nodes,</span>
+<span id="L250"><a class="source-line" href="#L250"> 250</a>     const SpCompressInputEdge* edges_ptr,</span>
+<span id="L251"><a class="source-line" href="#L251"> 251</a>     uint32_t edges_len,</span>
+<span id="L252"><a class="source-line" href="#L252"> 252</a>     uint32_t max_original_edge_id,</span>
+<span id="L253"><a class="source-line" href="#L253"> 253</a>     const uint8_t* contractible_ptr,</span>
+<span id="L254"><a class="source-line" href="#L254"> 254</a>     uint32_t contractible_len);</span>
+<span id="L255"><a class="source-line" href="#L255"> 255</a> </span>
+<span id="L256"><a class="source-line" href="#L256"> 256</a> struct SpqrResult64* sp_compress_reconstruct_ffi64(</span>
+<span id="L257"><a class="source-line" href="#L257"> 257</a>     uint64_t n_nodes,</span>
+<span id="L258"><a class="source-line" href="#L258"> 258</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L259"><a class="source-line" href="#L259"> 259</a>     uint64_t edges_len,</span>
+<span id="L260"><a class="source-line" href="#L260"> 260</a>     const uint8_t* contractible_ptr,</span>
+<span id="L261"><a class="source-line" href="#L261"> 261</a>     uint64_t contractible_len);</span>
+<span id="L262"><a class="source-line" href="#L262"> 262</a> </span>
+<span id="L263"><a class="source-line" href="#L263"> 263</a> struct SpqrResult64* sp_compress_reconstruct_ffi_u64(</span>
+<span id="L264"><a class="source-line" href="#L264"> 264</a>     uint64_t n_nodes,</span>
+<span id="L265"><a class="source-line" href="#L265"> 265</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L266"><a class="source-line" href="#L266"> 266</a>     uint64_t edges_len,</span>
+<span id="L267"><a class="source-line" href="#L267"> 267</a>     const uint8_t* contractible_ptr,</span>
+<span id="L268"><a class="source-line" href="#L268"> 268</a>     uint64_t contractible_len);</span>
+<span id="L269"><a class="source-line" href="#L269"> 269</a> </span>
+<span id="L270"><a class="source-line" href="#L270"> 270</a> typedef struct {</span>
+<span id="L271"><a class="source-line" href="#L271"> 271</a>     uint64_t t_compress_us;</span>
+<span id="L272"><a class="source-line" href="#L272"> 272</a> </span>
+<span id="L273"><a class="source-line" href="#L273"> 273</a>     uint64_t t_build_spqr_core_us;</span>
+<span id="L274"><a class="source-line" href="#L274"> 274</a>     uint64_t t_reconstruct_us;</span>
+<span id="L275"><a class="source-line" href="#L275"> 275</a>     uint64_t t_normalize_us;</span>
+<span id="L276"><a class="source-line" href="#L276"> 276</a> </span>
+<span id="L277"><a class="source-line" href="#L277"> 277</a>     uint64_t t_canonicalize_us;</span>
+<span id="L278"><a class="source-line" href="#L278"> 278</a>     uint64_t t_canon_root_us;</span>
+<span id="L279"><a class="source-line" href="#L279"> 279</a>     uint64_t t_canon_node_order_us;</span>
+<span id="L280"><a class="source-line" href="#L280"> 280</a>     uint64_t t_canon_edge_orient_us;</span>
+<span id="L281"><a class="source-line" href="#L281"> 281</a>     uint64_t t_canon_move_root_us;</span>
+<span id="L282"><a class="source-line" href="#L282"> 282</a> </span>
+<span id="L283"><a class="source-line" href="#L283"> 283</a>     uint64_t t_reconstruct_build_builder_us;</span>
+<span id="L284"><a class="source-line" href="#L284"> 284</a>     uint64_t t_reconstruct_normalize_in_place_us;</span>
+<span id="L285"><a class="source-line" href="#L285"> 285</a>     uint64_t t_reconstruct_finalize_us;</span>
+<span id="L286"><a class="source-line" href="#L286"> 286</a>     uint64_t t_reconstruct_defensive_normalize_us;</span>
+<span id="L287"><a class="source-line" href="#L287"> 287</a> </span>
+<span id="L288"><a class="source-line" href="#L288"> 288</a>     uint64_t t_core_remap_us;</span>
+<span id="L289"><a class="source-line" href="#L289"> 289</a>     uint64_t t_core_graph_build_us;</span>
+<span id="L290"><a class="source-line" href="#L290"> 290</a>     uint64_t t_core_spqr_raw_us;</span>
+<span id="L291"><a class="source-line" href="#L291"> 291</a>     uint64_t t_handle_wrap_us;</span>
+<span id="L292"><a class="source-line" href="#L292"> 292</a> </span>
+<span id="L293"><a class="source-line" href="#L293"> 293</a>     uint64_t t_total_us;</span>
+<span id="L294"><a class="source-line" href="#L294"> 294</a> </span>
+<span id="L295"><a class="source-line" href="#L295"> 295</a>     uint64_t t_compress_input_edges_us;</span>
+<span id="L296"><a class="source-line" href="#L296"> 296</a>     uint64_t t_compress_init_work_us;</span>
+<span id="L297"><a class="source-line" href="#L297"> 297</a>     uint64_t t_compress_init_dirty_us;</span>
+<span id="L298"><a class="source-line" href="#L298"> 298</a> </span>
+<span id="L299"><a class="source-line" href="#L299"> 299</a>     uint64_t t_compress_reduce_series_us;</span>
+<span id="L300"><a class="source-line" href="#L300"> 300</a>     uint64_t t_compress_reduce_parallel_us;</span>
+<span id="L301"><a class="source-line" href="#L301"> 301</a> </span>
+<span id="L302"><a class="source-line" href="#L302"> 302</a>     uint64_t t_compress_materialize_us;</span>
+<span id="L303"><a class="source-line" href="#L303"> 303</a>     uint64_t t_compress_cleanup_us;</span>
+<span id="L304"><a class="source-line" href="#L304"> 304</a>     uint64_t t_compress_canon_series_us;</span>
+<span id="L305"><a class="source-line" href="#L305"> 305</a>     uint64_t t_compress_sort_core_edges_us;</span>
+<span id="L306"><a class="source-line" href="#L306"> 306</a> </span>
+<span id="L307"><a class="source-line" href="#L307"> 307</a>     uint64_t t_compress_collect_core_nodes_us;</span>
+<span id="L308"><a class="source-line" href="#L308"> 308</a>     uint64_t t_compress_stats_shrink_us;</span>
+<span id="L309"><a class="source-line" href="#L309"> 309</a> </span>
+<span id="L310"><a class="source-line" href="#L310"> 310</a>     uint64_t t_spqr_self_loop_scan_us;</span>
+<span id="L311"><a class="source-line" href="#L311"> 311</a>     uint64_t t_spqr_precheck_us;</span>
+<span id="L312"><a class="source-line" href="#L312"> 312</a>     uint64_t t_spqr_split_multi_edges_us;</span>
+<span id="L313"><a class="source-line" href="#L313"> 313</a>     uint64_t t_spqr_work_graph_us;</span>
+<span id="L314"><a class="source-line" href="#L314"> 314</a> </span>
+<span id="L315"><a class="source-line" href="#L315"> 315</a>     uint64_t t_spqr_triconn_us;</span>
+<span id="L316"><a class="source-line" href="#L316"> 316</a>     uint64_t t_spqr_relabel_us;</span>
+<span id="L317"><a class="source-line" href="#L317"> 317</a>     uint64_t t_spqr_combine_us;</span>
+<span id="L318"><a class="source-line" href="#L318"> 318</a>     uint64_t t_spqr_merge_us;</span>
+<span id="L319"><a class="source-line" href="#L319"> 319</a> </span>
+<span id="L320"><a class="source-line" href="#L320"> 320</a>     uint64_t t_spqr_assemble_us;</span>
+<span id="L321"><a class="source-line" href="#L321"> 321</a>     uint64_t t_spqr_tree_total_us;</span>
+<span id="L322"><a class="source-line" href="#L322"> 322</a> </span>
+<span id="L323"><a class="source-line" href="#L323"> 323</a>     uint64_t c_spqr_multi_components;</span>
+<span id="L324"><a class="source-line" href="#L324"> 324</a>     uint64_t c_spqr_triconn_components;</span>
+<span id="L325"><a class="source-line" href="#L325"> 325</a>     uint64_t c_spqr_precombine_components;</span>
+<span id="L326"><a class="source-line" href="#L326"> 326</a>     uint64_t c_spqr_combined_components;</span>
+<span id="L327"><a class="source-line" href="#L327"> 327</a>     uint64_t c_spqr_merged_components;</span>
+<span id="L328"><a class="source-line" href="#L328"> 328</a>     uint64_t c_spqr_merged_real_edges;</span>
+<span id="L329"><a class="source-line" href="#L329"> 329</a>     uint64_t c_spqr_merged_virtual_incidences;</span>
+<span id="L330"><a class="source-line" href="#L330"> 330</a>     uint64_t c_spqr_virtual_id_span;</span>
+<span id="L331"><a class="source-line" href="#L331"> 331</a>     uint64_t c_spqr_tree_nodes;</span>
+<span id="L332"><a class="source-line" href="#L332"> 332</a>     uint64_t c_spqr_tree_edges;</span>
+<span id="L333"><a class="source-line" href="#L333"> 333</a>     uint64_t c_spqr_tree_skeleton_edges;</span>
+<span id="L334"><a class="source-line" href="#L334"> 334</a>     uint64_t c_spqr_tree_virtual_incidences;</span>
+<span id="L335"><a class="source-line" href="#L335"> 335</a> } SpCompressTimings;</span>
+<span id="L336"><a class="source-line" href="#L336"> 336</a> </span>
+<span id="L337"><a class="source-line" href="#L337"> 337</a> SpCompressHandle* sp_compress_timed_ffi(</span>
+<span id="L338"><a class="source-line" href="#L338"> 338</a>     uint32_t n_nodes,</span>
+<span id="L339"><a class="source-line" href="#L339"> 339</a>     const SpCompressInputEdge* edges_ptr,</span>
+<span id="L340"><a class="source-line" href="#L340"> 340</a>     uint32_t edges_len,</span>
+<span id="L341"><a class="source-line" href="#L341"> 341</a>     uint32_t max_original_edge_id,</span>
+<span id="L342"><a class="source-line" href="#L342"> 342</a>     const uint8_t* contractible_ptr,</span>
+<span id="L343"><a class="source-line" href="#L343"> 343</a>     uint32_t contractible_len,</span>
+<span id="L344"><a class="source-line" href="#L344"> 344</a>     uint8_t build_core_spqr,</span>
+<span id="L345"><a class="source-line" href="#L345"> 345</a>     SpCompressTimings* out_timings);</span>
+<span id="L346"><a class="source-line" href="#L346"> 346</a> </span>
+<span id="L347"><a class="source-line" href="#L347"> 347</a> SpCompressHandle* sp_compress_timed_ffi64(</span>
+<span id="L348"><a class="source-line" href="#L348"> 348</a>     uint64_t n_nodes,</span>
+<span id="L349"><a class="source-line" href="#L349"> 349</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L350"><a class="source-line" href="#L350"> 350</a>     uint64_t edges_len,</span>
+<span id="L351"><a class="source-line" href="#L351"> 351</a>     const uint8_t* contractible_ptr,</span>
+<span id="L352"><a class="source-line" href="#L352"> 352</a>     uint64_t contractible_len,</span>
+<span id="L353"><a class="source-line" href="#L353"> 353</a>     uint8_t build_core_spqr,</span>
+<span id="L354"><a class="source-line" href="#L354"> 354</a>     SpCompressTimings* out_timings);</span>
+<span id="L355"><a class="source-line" href="#L355"> 355</a> </span>
+<span id="L356"><a class="source-line" href="#L356"> 356</a> SpCompressHandle* sp_compress_timed_ffi_u64(</span>
+<span id="L357"><a class="source-line" href="#L357"> 357</a>     uint64_t n_nodes,</span>
+<span id="L358"><a class="source-line" href="#L358"> 358</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L359"><a class="source-line" href="#L359"> 359</a>     uint64_t edges_len,</span>
+<span id="L360"><a class="source-line" href="#L360"> 360</a>     const uint8_t* contractible_ptr,</span>
+<span id="L361"><a class="source-line" href="#L361"> 361</a>     uint64_t contractible_len,</span>
+<span id="L362"><a class="source-line" href="#L362"> 362</a>     uint8_t build_core_spqr,</span>
+<span id="L363"><a class="source-line" href="#L363"> 363</a>     SpCompressTimings* out_timings);</span>
+<span id="L364"><a class="source-line" href="#L364"> 364</a> </span>
+<span id="L365"><a class="source-line" href="#L365"> 365</a> SpCompressHandle* sp_compress_indexed_ffi(</span>
+<span id="L366"><a class="source-line" href="#L366"> 366</a>     uint32_t n_nodes,</span>
+<span id="L367"><a class="source-line" href="#L367"> 367</a>     const uint32_t* src_ptr,</span>
+<span id="L368"><a class="source-line" href="#L368"> 368</a>     const uint32_t* dst_ptr,</span>
+<span id="L369"><a class="source-line" href="#L369"> 369</a>     uint32_t edges_len,</span>
+<span id="L370"><a class="source-line" href="#L370"> 370</a>     const uint8_t* contractible_ptr,</span>
+<span id="L371"><a class="source-line" href="#L371"> 371</a>     uint32_t contractible_len,</span>
+<span id="L372"><a class="source-line" href="#L372"> 372</a>     uint8_t build_core_spqr);</span>
+<span id="L373"><a class="source-line" href="#L373"> 373</a> </span>
+<span id="L374"><a class="source-line" href="#L374"> 374</a> SpCompressHandle* sp_compress_indexed_ffi_u64(</span>
+<span id="L375"><a class="source-line" href="#L375"> 375</a>     uint64_t n_nodes,</span>
+<span id="L376"><a class="source-line" href="#L376"> 376</a>     const uint64_t* src_ptr,</span>
+<span id="L377"><a class="source-line" href="#L377"> 377</a>     const uint64_t* dst_ptr,</span>
+<span id="L378"><a class="source-line" href="#L378"> 378</a>     uint64_t edges_len,</span>
+<span id="L379"><a class="source-line" href="#L379"> 379</a>     const uint8_t* contractible_ptr,</span>
+<span id="L380"><a class="source-line" href="#L380"> 380</a>     uint64_t contractible_len,</span>
+<span id="L381"><a class="source-line" href="#L381"> 381</a>     uint8_t build_core_spqr);</span>
+<span id="L382"><a class="source-line" href="#L382"> 382</a> </span>
+<span id="L383"><a class="source-line" href="#L383"> 383</a> </span>
+<span id="L384"><a class="source-line" href="#L384"> 384</a> struct SpqrResult* sp_compress_reconstruct_with_timings_ffi(</span>
+<span id="L385"><a class="source-line" href="#L385"> 385</a>     uint32_t n_nodes,</span>
+<span id="L386"><a class="source-line" href="#L386"> 386</a>     const SpCompressInputEdge* edges_ptr,</span>
+<span id="L387"><a class="source-line" href="#L387"> 387</a>     uint32_t edges_len,</span>
+<span id="L388"><a class="source-line" href="#L388"> 388</a>     uint32_t max_original_edge_id,</span>
+<span id="L389"><a class="source-line" href="#L389"> 389</a>     const uint8_t* contractible_ptr,</span>
+<span id="L390"><a class="source-line" href="#L390"> 390</a>     uint32_t contractible_len,</span>
+<span id="L391"><a class="source-line" href="#L391"> 391</a>     SpCompressStats* out_stats,</span>
+<span id="L392"><a class="source-line" href="#L392"> 392</a>     SpCompressTimings* out_timings);</span>
+<span id="L393"><a class="source-line" href="#L393"> 393</a> </span>
+<span id="L394"><a class="source-line" href="#L394"> 394</a> struct SpqrResult64* sp_compress_reconstruct_with_timings_ffi64(</span>
+<span id="L395"><a class="source-line" href="#L395"> 395</a>     uint64_t n_nodes,</span>
+<span id="L396"><a class="source-line" href="#L396"> 396</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L397"><a class="source-line" href="#L397"> 397</a>     uint64_t edges_len,</span>
+<span id="L398"><a class="source-line" href="#L398"> 398</a>     const uint8_t* contractible_ptr,</span>
+<span id="L399"><a class="source-line" href="#L399"> 399</a>     uint64_t contractible_len,</span>
+<span id="L400"><a class="source-line" href="#L400"> 400</a>     SpCompressStats64* out_stats,</span>
+<span id="L401"><a class="source-line" href="#L401"> 401</a>     SpCompressTimings* out_timings);</span>
+<span id="L402"><a class="source-line" href="#L402"> 402</a> </span>
+<span id="L403"><a class="source-line" href="#L403"> 403</a> struct SpqrResult64* sp_compress_reconstruct_with_timings_ffi_u64(</span>
+<span id="L404"><a class="source-line" href="#L404"> 404</a>     uint64_t n_nodes,</span>
+<span id="L405"><a class="source-line" href="#L405"> 405</a>     const SpCompressInputEdge64* edges_ptr,</span>
+<span id="L406"><a class="source-line" href="#L406"> 406</a>     uint64_t edges_len,</span>
+<span id="L407"><a class="source-line" href="#L407"> 407</a>     const uint8_t* contractible_ptr,</span>
+<span id="L408"><a class="source-line" href="#L408"> 408</a>     uint64_t contractible_len,</span>
+<span id="L409"><a class="source-line" href="#L409"> 409</a>     SpCompressStats64* out_stats,</span>
+<span id="L410"><a class="source-line" href="#L410"> 410</a>     SpCompressTimings* out_timings);</span>
+<span id="L411"><a class="source-line" href="#L411"> 411</a> </span>
+<span id="L412"><a class="source-line" href="#L412"> 412</a> #ifdef __cplusplus</span>
+<span id="L413"><a class="source-line" href="#L413"> 413</a> }</span>
+<span id="L414"><a class="source-line" href="#L414"> 414</a> #endif</span>
+<span id="L415"><a class="source-line" href="#L415"> 415</a> </span>
+<span id="L416"><a class="source-line" href="#L416"> 416</a> #endif</span></code></pre></main>
+<footer class="site-footer">SPQR-Rust · MIT · Generated source reference</footer>
+</div></body></html>

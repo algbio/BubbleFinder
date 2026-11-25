@@ -1,0 +1,1357 @@
+{
+  "commit": "f715f217de367df04e8dd339b63a9bae653a7eba",
+  "version": "0.1.0",
+  "toolchain": "1.93.0",
+  "generated": "2026-11-19",
+  "headers": {
+    "ogdf_compat.hpp": {
+      "sha256": "6b6ef7ddee5164ae4b16d111e4daf0e1670bca3a4b75eedfbca54487b474b1c6",
+      "functions": [],
+      "types": [
+        {
+          "name": "node",
+          "line": 17
+        },
+        {
+          "name": "edge",
+          "line": 36
+        },
+        {
+          "name": "adjEntry",
+          "line": 59
+        },
+        {
+          "name": "NodeArray",
+          "line": 68
+        },
+        {
+          "name": "NodeArray",
+          "line": 104
+        },
+        {
+          "name": "Ref",
+          "line": 119
+        },
+        {
+          "name": "EdgeArray",
+          "line": 142
+        },
+        {
+          "name": "EdgeArray",
+          "line": 178
+        },
+        {
+          "name": "Ref",
+          "line": 192
+        },
+        {
+          "name": "Graph",
+          "line": 216
+        },
+        {
+          "name": "NodesRange",
+          "line": 226
+        },
+        {
+          "name": "It",
+          "line": 228
+        },
+        {
+          "name": "EdgesRange",
+          "line": 240
+        },
+        {
+          "name": "It",
+          "line": 242
+        },
+        {
+          "name": "BCTree",
+          "line": 337
+        },
+        {
+          "name": "BCTreeGraph",
+          "line": 368
+        },
+        {
+          "name": "NodesRange",
+          "line": 370
+        },
+        {
+          "name": "It",
+          "line": 372
+        },
+        {
+          "name": "TreeGraph",
+          "line": 395
+        },
+        {
+          "name": "NodesRange",
+          "line": 427
+        },
+        {
+          "name": "It",
+          "line": 429
+        },
+        {
+          "name": "EdgesRange",
+          "line": 441
+        },
+        {
+          "name": "It",
+          "line": 443
+        },
+        {
+          "name": "StaticSPQRTree",
+          "line": 463
+        },
+        {
+          "name": "FlatData",
+          "line": 465
+        },
+        {
+          "name": "SkeletonGraph",
+          "line": 615
+        },
+        {
+          "name": "NodesRange",
+          "line": 695
+        },
+        {
+          "name": "It",
+          "line": 697
+        },
+        {
+          "name": "EdgesRange",
+          "line": 710
+        },
+        {
+          "name": "It",
+          "line": 712
+        },
+        {
+          "name": "Skeleton",
+          "line": 726
+        },
+        {
+          "name": "edge",
+          "line": 791
+        },
+        {
+          "name": "adjEntry",
+          "line": 818
+        },
+        {
+          "name": "NodeArray",
+          "line": 826
+        },
+        {
+          "name": "NodeArray",
+          "line": 883
+        },
+        {
+          "name": "Ref",
+          "line": 913
+        },
+        {
+          "name": "EdgeArray",
+          "line": 941
+        },
+        {
+          "name": "EdgeArray",
+          "line": 1000
+        },
+        {
+          "name": "Ref",
+          "line": 1030
+        },
+        {
+          "name": "Graph",
+          "line": 1059
+        },
+        {
+          "name": "NodesRange",
+          "line": 1064
+        },
+        {
+          "name": "It",
+          "line": 1066
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1070
+        },
+        {
+          "name": "It",
+          "line": 1072
+        },
+        {
+          "name": "BCTree",
+          "line": 1118
+        },
+        {
+          "name": "BCTreeGraph",
+          "line": 1146
+        },
+        {
+          "name": "NodesRange",
+          "line": 1148
+        },
+        {
+          "name": "It",
+          "line": 1150
+        },
+        {
+          "name": "TreeGraph",
+          "line": 1171
+        },
+        {
+          "name": "NodesRange",
+          "line": 1201
+        },
+        {
+          "name": "It",
+          "line": 1203
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1215
+        },
+        {
+          "name": "It",
+          "line": 1217
+        },
+        {
+          "name": "StaticSPQRTree",
+          "line": 1235
+        },
+        {
+          "name": "SkeletonGraph",
+          "line": 1340
+        },
+        {
+          "name": "NodesRange",
+          "line": 1401
+        },
+        {
+          "name": "It",
+          "line": 1403
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1416
+        },
+        {
+          "name": "It",
+          "line": 1418
+        },
+        {
+          "name": "Skeleton",
+          "line": 1432
+        }
+      ]
+    },
+    "sp_compress.h": {
+      "sha256": "366de34bfc6f05e11df590c5d670463801901d74c7b98fdbf98d36d225ac7772",
+      "functions": [
+        {
+          "name": "sp_compress_ffi",
+          "line": 203,
+          "signature": "SpCompressHandle* sp_compress_ffi( uint32_t n_nodes, const SpCompressInputEdge* edges_ptr, uint32_t edges_len, uint32_t max_original_edge_id, const uint8_t* contractible_ptr, uint32_t contractible_len, uint8_t build_core_spqr );"
+        },
+        {
+          "name": "sp_compress_ffi64",
+          "line": 213,
+          "signature": "SpCompressHandle* sp_compress_ffi64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, uint8_t build_core_spqr );"
+        },
+        {
+          "name": "sp_compress_ffi_u64",
+          "line": 222,
+          "signature": "SpCompressHandle* sp_compress_ffi_u64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, uint8_t build_core_spqr );"
+        },
+        {
+          "name": "sp_compress_from_snapshot_ffi",
+          "line": 231,
+          "signature": "SpCompressHandle* sp_compress_from_snapshot_ffi( const SpCompressSnapshotView* snapshot );"
+        },
+        {
+          "name": "sp_compress_free",
+          "line": 235,
+          "signature": "void sp_compress_free(SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_success",
+          "line": 237,
+          "signature": "uint8_t sp_compress_success(const SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_get_tree",
+          "line": 239,
+          "signature": "SpCompressTreeView sp_compress_get_tree(const SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_get_tree_u64",
+          "line": 240,
+          "signature": "SpCompressTreeView64 sp_compress_get_tree_u64(const SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_get_core_spqr",
+          "line": 242,
+          "signature": "const SpqrTree* sp_compress_get_core_spqr(const SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_get_core_spqr_u64",
+          "line": 243,
+          "signature": "const SpqrTree64* sp_compress_get_core_spqr_u64(const SpCompressHandle* handle);"
+        },
+        {
+          "name": "sp_compress_core_node_inv",
+          "line": 245,
+          "signature": "const uint32_t* sp_compress_core_node_inv(const SpCompressHandle* handle, uint32_t* out_len);"
+        },
+        {
+          "name": "sp_compress_core_node_inv_u64",
+          "line": 246,
+          "signature": "const uint64_t* sp_compress_core_node_inv_u64(const SpCompressHandle* handle, uint64_t* out_len);"
+        },
+        {
+          "name": "sp_compress_reconstruct_ffi",
+          "line": 248,
+          "signature": "struct SpqrResult* sp_compress_reconstruct_ffi( uint32_t n_nodes, const SpCompressInputEdge* edges_ptr, uint32_t edges_len, uint32_t max_original_edge_id, const uint8_t* contractible_ptr, uint32_t contractible_len);"
+        },
+        {
+          "name": "sp_compress_reconstruct_ffi64",
+          "line": 256,
+          "signature": "struct SpqrResult64* sp_compress_reconstruct_ffi64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len);"
+        },
+        {
+          "name": "sp_compress_reconstruct_ffi_u64",
+          "line": 263,
+          "signature": "struct SpqrResult64* sp_compress_reconstruct_ffi_u64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len);"
+        },
+        {
+          "name": "sp_compress_timed_ffi",
+          "line": 337,
+          "signature": "SpCompressHandle* sp_compress_timed_ffi( uint32_t n_nodes, const SpCompressInputEdge* edges_ptr, uint32_t edges_len, uint32_t max_original_edge_id, const uint8_t* contractible_ptr, uint32_t contractible_len, uint8_t build_core_spqr, SpCompressTimings* out_timings);"
+        },
+        {
+          "name": "sp_compress_timed_ffi64",
+          "line": 347,
+          "signature": "SpCompressHandle* sp_compress_timed_ffi64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, uint8_t build_core_spqr, SpCompressTimings* out_timings);"
+        },
+        {
+          "name": "sp_compress_timed_ffi_u64",
+          "line": 356,
+          "signature": "SpCompressHandle* sp_compress_timed_ffi_u64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, uint8_t build_core_spqr, SpCompressTimings* out_timings);"
+        },
+        {
+          "name": "sp_compress_indexed_ffi",
+          "line": 365,
+          "signature": "SpCompressHandle* sp_compress_indexed_ffi( uint32_t n_nodes, const uint32_t* src_ptr, const uint32_t* dst_ptr, uint32_t edges_len, const uint8_t* contractible_ptr, uint32_t contractible_len, uint8_t build_core_spqr);"
+        },
+        {
+          "name": "sp_compress_indexed_ffi_u64",
+          "line": 374,
+          "signature": "SpCompressHandle* sp_compress_indexed_ffi_u64( uint64_t n_nodes, const uint64_t* src_ptr, const uint64_t* dst_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, uint8_t build_core_spqr);"
+        },
+        {
+          "name": "sp_compress_reconstruct_with_timings_ffi",
+          "line": 384,
+          "signature": "struct SpqrResult* sp_compress_reconstruct_with_timings_ffi( uint32_t n_nodes, const SpCompressInputEdge* edges_ptr, uint32_t edges_len, uint32_t max_original_edge_id, const uint8_t* contractible_ptr, uint32_t contractible_len, SpCompressStats* out_stats, SpCompressTimings* out_timings);"
+        },
+        {
+          "name": "sp_compress_reconstruct_with_timings_ffi64",
+          "line": 394,
+          "signature": "struct SpqrResult64* sp_compress_reconstruct_with_timings_ffi64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, SpCompressStats64* out_stats, SpCompressTimings* out_timings);"
+        },
+        {
+          "name": "sp_compress_reconstruct_with_timings_ffi_u64",
+          "line": 403,
+          "signature": "struct SpqrResult64* sp_compress_reconstruct_with_timings_ffi_u64( uint64_t n_nodes, const SpCompressInputEdge64* edges_ptr, uint64_t edges_len, const uint8_t* contractible_ptr, uint64_t contractible_len, SpCompressStats64* out_stats, SpCompressTimings* out_timings);"
+        }
+      ],
+      "types": []
+    },
+    "spqr_compat.hpp": {
+      "sha256": "6b6ef7ddee5164ae4b16d111e4daf0e1670bca3a4b75eedfbca54487b474b1c6",
+      "functions": [],
+      "types": [
+        {
+          "name": "node",
+          "line": 17
+        },
+        {
+          "name": "edge",
+          "line": 36
+        },
+        {
+          "name": "adjEntry",
+          "line": 59
+        },
+        {
+          "name": "NodeArray",
+          "line": 68
+        },
+        {
+          "name": "NodeArray",
+          "line": 104
+        },
+        {
+          "name": "Ref",
+          "line": 119
+        },
+        {
+          "name": "EdgeArray",
+          "line": 142
+        },
+        {
+          "name": "EdgeArray",
+          "line": 178
+        },
+        {
+          "name": "Ref",
+          "line": 192
+        },
+        {
+          "name": "Graph",
+          "line": 216
+        },
+        {
+          "name": "NodesRange",
+          "line": 226
+        },
+        {
+          "name": "It",
+          "line": 228
+        },
+        {
+          "name": "EdgesRange",
+          "line": 240
+        },
+        {
+          "name": "It",
+          "line": 242
+        },
+        {
+          "name": "BCTree",
+          "line": 337
+        },
+        {
+          "name": "BCTreeGraph",
+          "line": 368
+        },
+        {
+          "name": "NodesRange",
+          "line": 370
+        },
+        {
+          "name": "It",
+          "line": 372
+        },
+        {
+          "name": "TreeGraph",
+          "line": 395
+        },
+        {
+          "name": "NodesRange",
+          "line": 427
+        },
+        {
+          "name": "It",
+          "line": 429
+        },
+        {
+          "name": "EdgesRange",
+          "line": 441
+        },
+        {
+          "name": "It",
+          "line": 443
+        },
+        {
+          "name": "StaticSPQRTree",
+          "line": 463
+        },
+        {
+          "name": "FlatData",
+          "line": 465
+        },
+        {
+          "name": "SkeletonGraph",
+          "line": 615
+        },
+        {
+          "name": "NodesRange",
+          "line": 695
+        },
+        {
+          "name": "It",
+          "line": 697
+        },
+        {
+          "name": "EdgesRange",
+          "line": 710
+        },
+        {
+          "name": "It",
+          "line": 712
+        },
+        {
+          "name": "Skeleton",
+          "line": 726
+        },
+        {
+          "name": "edge",
+          "line": 791
+        },
+        {
+          "name": "adjEntry",
+          "line": 818
+        },
+        {
+          "name": "NodeArray",
+          "line": 826
+        },
+        {
+          "name": "NodeArray",
+          "line": 883
+        },
+        {
+          "name": "Ref",
+          "line": 913
+        },
+        {
+          "name": "EdgeArray",
+          "line": 941
+        },
+        {
+          "name": "EdgeArray",
+          "line": 1000
+        },
+        {
+          "name": "Ref",
+          "line": 1030
+        },
+        {
+          "name": "Graph",
+          "line": 1059
+        },
+        {
+          "name": "NodesRange",
+          "line": 1064
+        },
+        {
+          "name": "It",
+          "line": 1066
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1070
+        },
+        {
+          "name": "It",
+          "line": 1072
+        },
+        {
+          "name": "BCTree",
+          "line": 1118
+        },
+        {
+          "name": "BCTreeGraph",
+          "line": 1146
+        },
+        {
+          "name": "NodesRange",
+          "line": 1148
+        },
+        {
+          "name": "It",
+          "line": 1150
+        },
+        {
+          "name": "TreeGraph",
+          "line": 1171
+        },
+        {
+          "name": "NodesRange",
+          "line": 1201
+        },
+        {
+          "name": "It",
+          "line": 1203
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1215
+        },
+        {
+          "name": "It",
+          "line": 1217
+        },
+        {
+          "name": "StaticSPQRTree",
+          "line": 1235
+        },
+        {
+          "name": "SkeletonGraph",
+          "line": 1340
+        },
+        {
+          "name": "NodesRange",
+          "line": 1401
+        },
+        {
+          "name": "It",
+          "line": 1403
+        },
+        {
+          "name": "EdgesRange",
+          "line": 1416
+        },
+        {
+          "name": "It",
+          "line": 1418
+        },
+        {
+          "name": "Skeleton",
+          "line": 1432
+        }
+      ]
+    },
+    "spqr_rust_wrapper.hpp": {
+      "sha256": "f90488f6ec23fe6de86e565d3e56bd98ec42196ed232efbbb9d70624cf3f5790",
+      "functions": [
+        {
+          "name": "spqr_graph_add_nodes",
+          "line": 83,
+          "signature": "return spqr_graph_add_nodes(ptr_, count);"
+        },
+        {
+          "name": "spqr_graph_add_nodes",
+          "line": 87,
+          "signature": "return spqr_graph_add_nodes(ptr_, 1);"
+        },
+        {
+          "name": "spqr_graph_add_edge",
+          "line": 91,
+          "signature": "return spqr_graph_add_edge(ptr_, u, v);"
+        },
+        {
+          "name": "spqr_graph_adj_cursor",
+          "line": 146,
+          "signature": "return spqr_graph_adj_cursor(ptr_, v);"
+        },
+        {
+          "name": "spqr_graph_adj_next",
+          "line": 150,
+          "signature": "return spqr_graph_adj_next(ptr_, cursor, &neighbor, &e, &nextCursor);"
+        },
+        {
+          "name": "spqr_tree_node_parent",
+          "line": 227,
+          "signature": "return spqr_tree_node_parent(tree(), tn);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_edges",
+          "line": 237,
+          "signature": "return spqr_tree_skeleton_num_edges(tree(), tn);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_nodes",
+          "line": 241,
+          "signature": "return spqr_tree_skeleton_num_nodes(tree(), tn);"
+        },
+        {
+          "name": "spqr_tree_skeleton_original_node",
+          "line": 257,
+          "signature": "return spqr_tree_skeleton_original_node(tree(), tn, localNode);"
+        },
+        {
+          "name": "spqr_tree_node_of_edge",
+          "line": 261,
+          "signature": "return spqr_tree_node_of_edge(tree(), e);"
+        },
+        {
+          "name": "spqr_cc_component_of",
+          "line": 587,
+          "signature": "return spqr_cc_component_of(cc_, v);"
+        },
+        {
+          "name": "spqr_cc_count_in",
+          "line": 591,
+          "signature": "return spqr_cc_count_in(cc_, componentId);"
+        }
+      ],
+      "types": [
+        {
+          "name": "RustGraph",
+          "line": 32
+        },
+        {
+          "name": "RustSPQRResult",
+          "line": 182
+        },
+        {
+          "name": "SPQRTreeExport",
+          "line": 281
+        },
+        {
+          "name": "SpqrTreeFlatView",
+          "line": 356
+        },
+        {
+          "name": "RustBCTree",
+          "line": 464
+        },
+        {
+          "name": "BCTreeExport",
+          "line": 511
+        },
+        {
+          "name": "BCTreeZeroCopy",
+          "line": 551
+        },
+        {
+          "name": "RustConnectedComponents",
+          "line": 568
+        }
+      ]
+    },
+    "spqr_tree.h": {
+      "sha256": "8df59cf8d5a565a6d75bfb3a80654d2d8c618199a0815d8d3cc53cf3a5e9dc22",
+      "functions": [
+        {
+          "name": "spqr_graph_new_u64",
+          "line": 68,
+          "signature": "SpqrGraphFFI64* spqr_graph_new_u64(uint64_t node_capacity, uint64_t edge_capacity);"
+        },
+        {
+          "name": "spqr_graph_free_u64",
+          "line": 69,
+          "signature": "void spqr_graph_free_u64(SpqrGraphFFI64* graph);"
+        },
+        {
+          "name": "spqr_graph_add_nodes_u64",
+          "line": 70,
+          "signature": "uint64_t spqr_graph_add_nodes_u64(SpqrGraphFFI64* graph, uint64_t count);"
+        },
+        {
+          "name": "spqr_graph_add_edge_u64",
+          "line": 71,
+          "signature": "uint64_t spqr_graph_add_edge_u64(SpqrGraphFFI64* graph, uint64_t u, uint64_t v);"
+        },
+        {
+          "name": "spqr_graph_from_arrays_u64",
+          "line": 72,
+          "signature": "SpqrGraphFFI64* spqr_graph_from_arrays_u64(uint64_t num_nodes, const uint64_t* src, const uint64_t* dst, uint64_t num_edges);"
+        },
+        {
+          "name": "spqr_graph_num_nodes_u64",
+          "line": 76,
+          "signature": "uint64_t spqr_graph_num_nodes_u64(const SpqrGraphFFI64* graph);"
+        },
+        {
+          "name": "spqr_graph_num_edges_u64",
+          "line": 77,
+          "signature": "uint64_t spqr_graph_num_edges_u64(const SpqrGraphFFI64* graph);"
+        },
+        {
+          "name": "spqr_graph_edge_src_u64",
+          "line": 78,
+          "signature": "uint64_t spqr_graph_edge_src_u64(const SpqrGraphFFI64* graph, uint64_t edge_id);"
+        },
+        {
+          "name": "spqr_graph_edge_dst_u64",
+          "line": 79,
+          "signature": "uint64_t spqr_graph_edge_dst_u64(const SpqrGraphFFI64* graph, uint64_t edge_id);"
+        },
+        {
+          "name": "spqr_graph_degree_u64",
+          "line": 80,
+          "signature": "uint64_t spqr_graph_degree_u64(const SpqrGraphFFI64* graph, uint64_t node);"
+        },
+        {
+          "name": "spqr_graph_adj_cursor_u64",
+          "line": 81,
+          "signature": "uint64_t spqr_graph_adj_cursor_u64(const SpqrGraphFFI64* graph, uint64_t node);"
+        },
+        {
+          "name": "spqr_graph_adj_next_u64",
+          "line": 82,
+          "signature": "bool spqr_graph_adj_next_u64(const SpqrGraphFFI64* graph, uint64_t cursor, uint64_t* out_neighbor, uint64_t* out_edge, uint64_t* out_next_cursor);"
+        },
+        {
+          "name": "spqr_graph_for_each_neighbor_u64",
+          "line": 88,
+          "signature": "void spqr_graph_for_each_neighbor_u64(const SpqrGraphFFI64* graph, uint64_t node, NeighborCallback64 callback, void* user_data);"
+        },
+        {
+          "name": "spqr_graph_neighbors_to_buffer_u64",
+          "line": 92,
+          "signature": "uint64_t spqr_graph_neighbors_to_buffer_u64(const SpqrGraphFFI64* graph, uint64_t node, uint64_t* nodes_out, uint64_t* edges_out, uint64_t buffer_size);"
+        },
+        {
+          "name": "spqr_build_u64",
+          "line": 98,
+          "signature": "SpqrResult64* spqr_build_u64(const SpqrGraphFFI64* graph);"
+        },
+        {
+          "name": "spqr_result_free_u64",
+          "line": 99,
+          "signature": "void spqr_result_free_u64(SpqrResult64* result);"
+        },
+        {
+          "name": "spqr_result_tree_u64",
+          "line": 100,
+          "signature": "const SpqrTree64* spqr_result_tree_u64(const SpqrResult64* result);"
+        },
+        {
+          "name": "spqr_result_self_loops_u64",
+          "line": 101,
+          "signature": "const uint64_t* spqr_result_self_loops_u64(const SpqrResult64* result, uint64_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_len_u64",
+          "line": 103,
+          "signature": "uint64_t spqr_tree_len_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_root_u64",
+          "line": 104,
+          "signature": "uint64_t spqr_tree_root_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_node_type_u64",
+          "line": 105,
+          "signature": "uint8_t spqr_tree_node_type_u64(const SpqrTree64* tree, uint64_t node_id);"
+        },
+        {
+          "name": "spqr_tree_node_parent_u64",
+          "line": 106,
+          "signature": "uint64_t spqr_tree_node_parent_u64(const SpqrTree64* tree, uint64_t node_id);"
+        },
+        {
+          "name": "spqr_tree_node_children_copy_u64",
+          "line": 107,
+          "signature": "uint64_t spqr_tree_node_children_copy_u64(const SpqrTree64* tree, uint64_t node_id, uint64_t* out_children, uint64_t out_capacity);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_edges_u64",
+          "line": 111,
+          "signature": "uint64_t spqr_tree_skeleton_num_edges_u64(const SpqrTree64* tree, uint64_t node_id);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_nodes_u64",
+          "line": 112,
+          "signature": "uint64_t spqr_tree_skeleton_num_nodes_u64(const SpqrTree64* tree, uint64_t node_id);"
+        },
+        {
+          "name": "spqr_tree_skeleton_poles_u64",
+          "line": 113,
+          "signature": "void spqr_tree_skeleton_poles_u64(const SpqrTree64* tree, uint64_t node_id, uint64_t* pole1, uint64_t* pole2);"
+        },
+        {
+          "name": "spqr_tree_skeleton_edge_u64",
+          "line": 117,
+          "signature": "void spqr_tree_skeleton_edge_u64(const SpqrTree64* tree, uint64_t node_id, uint64_t edge_idx, SkeletonEdgeInfo64* out);"
+        },
+        {
+          "name": "spqr_tree_skeleton_original_node_u64",
+          "line": 121,
+          "signature": "uint64_t spqr_tree_skeleton_original_node_u64(const SpqrTree64* tree, uint64_t tree_node_id, uint64_t local_node);"
+        },
+        {
+          "name": "spqr_tree_node_of_edge_u64",
+          "line": 124,
+          "signature": "uint64_t spqr_tree_node_of_edge_u64(const SpqrTree64* tree, uint64_t edge_id);"
+        },
+        {
+          "name": "spqr_tree_edge_mapping_copy_u64",
+          "line": 125,
+          "signature": "uint64_t spqr_tree_edge_mapping_copy_u64(const SpqrTree64* tree, uint64_t* out_tree_nodes, uint64_t out_capacity);"
+        },
+        {
+          "name": "spqr_tree_edge_mapping_raw_u64",
+          "line": 128,
+          "signature": "const uint64_t* spqr_tree_edge_mapping_raw_u64(const SpqrTree64* tree, uint64_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_edge_mapping_bulk_u64",
+          "line": 129,
+          "signature": "void spqr_tree_edge_mapping_bulk_u64(const SpqrTree64* tree, uint64_t num_edges, uint64_t* out_tree_nodes);"
+        },
+        {
+          "name": "spqr_tree_normalize_u64",
+          "line": 132,
+          "signature": "void spqr_tree_normalize_u64(SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_compact_u64",
+          "line": 133,
+          "signature": "void spqr_tree_compact_u64(SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_count_by_type_u64",
+          "line": 134,
+          "signature": "void spqr_tree_count_by_type_u64(const SpqrTree64* tree, uint64_t* s_count, uint64_t* p_count, uint64_t* r_count);"
+        },
+        {
+          "name": "spqr_tree_get_sizes_u64",
+          "line": 138,
+          "signature": "void spqr_tree_get_sizes_u64(const SpqrTree64* tree, uint64_t* out_num_nodes, uint64_t* out_total_children, uint64_t* out_total_skeleton_edges);"
+        },
+        {
+          "name": "spqr_tree_bulk_export_u64",
+          "line": 142,
+          "signature": "void spqr_tree_bulk_export_u64(const SpqrTree64* tree, uint8_t* node_types, uint64_t* node_parents, uint64_t* children_offsets, uint64_t* children, uint64_t* skeleton_offsets, uint64_t* skeleton_src, uint64_t* skeleton_dst, uint64_t* skeleton_real_edge, uint8_t* skeleton_is_virtual);"
+        },
+        {
+          "name": "spqr_tree_bulk_export_node_mapping_u64",
+          "line": 152,
+          "signature": "void spqr_tree_bulk_export_node_mapping_u64(const SpqrTree64* tree, uint64_t* node_mapping_offsets, uint64_t* node_mapping);"
+        },
+        {
+          "name": "spqr_tree_info_u64",
+          "line": 155,
+          "signature": "void spqr_tree_info_u64(const SpqrTree64* tree, uint64_t* out_num_nodes, uint64_t* out_root);"
+        },
+        {
+          "name": "spqr_tree_node_types_raw_u64",
+          "line": 156,
+          "signature": "const uint8_t* spqr_tree_node_types_raw_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_node_parents_raw_u64",
+          "line": 157,
+          "signature": "const uint64_t* spqr_tree_node_parents_raw_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_children_offsets_raw_u64",
+          "line": 158,
+          "signature": "const uint64_t* spqr_tree_children_offsets_raw_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_children_raw_u64",
+          "line": 159,
+          "signature": "const uint64_t* spqr_tree_children_raw_u64(const SpqrTree64* tree, uint64_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_skeleton_offsets_raw_u64",
+          "line": 160,
+          "signature": "const uint64_t* spqr_tree_skeleton_offsets_raw_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_tree_skeleton_edges_raw_u64",
+          "line": 161,
+          "signature": "const SkeletonEdge64* spqr_tree_skeleton_edges_raw_u64(const SpqrTree64* tree, uint64_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_node_mapping_raw_u64",
+          "line": 162,
+          "signature": "void spqr_tree_node_mapping_raw_u64(const SpqrTree64* tree, const uint64_t** out_offsets, const uint64_t** out_mapping, uint64_t* out_mapping_len);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_nodes_raw_u64",
+          "line": 166,
+          "signature": "const uint64_t* spqr_tree_skeleton_num_nodes_raw_u64(const SpqrTree64* tree);"
+        },
+        {
+          "name": "spqr_graph_new",
+          "line": 168,
+          "signature": "SpqrGraphFFI* spqr_graph_new(uint32_t node_capacity, uint32_t edge_capacity);"
+        },
+        {
+          "name": "spqr_graph_free",
+          "line": 169,
+          "signature": "void spqr_graph_free(SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_get_fast_cycle_hits",
+          "line": 171,
+          "signature": "uint64_t spqr_get_fast_cycle_hits(void);"
+        },
+        {
+          "name": "spqr_get_fast_cycle_calls",
+          "line": 172,
+          "signature": "uint64_t spqr_get_fast_cycle_calls(void);"
+        },
+        {
+          "name": "spqr_set_canonicalize_root_enabled",
+          "line": 174,
+          "signature": "void spqr_set_canonicalize_root_enabled(uint8_t enabled);"
+        },
+        {
+          "name": "spqr_get_canonicalize_root_enabled",
+          "line": 175,
+          "signature": "uint8_t spqr_get_canonicalize_root_enabled(void);"
+        },
+        {
+          "name": "spqr_graph_add_nodes",
+          "line": 178,
+          "signature": "uint32_t spqr_graph_add_nodes(SpqrGraphFFI* graph, uint32_t count);"
+        },
+        {
+          "name": "spqr_graph_add_edge",
+          "line": 179,
+          "signature": "uint32_t spqr_graph_add_edge(SpqrGraphFFI* graph, uint32_t u, uint32_t v);"
+        },
+        {
+          "name": "spqr_graph_add_edges_batch",
+          "line": 182,
+          "signature": "void spqr_graph_add_edges_batch(SpqrGraphFFI* graph, const uint32_t* edges, uint32_t count);"
+        },
+        {
+          "name": "spqr_graph_from_edges",
+          "line": 183,
+          "signature": "SpqrGraphFFI* spqr_graph_from_edges(uint32_t num_nodes, const uint32_t* edges, uint32_t num_edges);"
+        },
+        {
+          "name": "spqr_graph_from_arrays",
+          "line": 185,
+          "signature": "SpqrGraphFFI* spqr_graph_from_arrays(uint32_t num_nodes, const uint32_t* src, const uint32_t* dst, uint32_t num_edges);"
+        },
+        {
+          "name": "spqr_graph_num_nodes",
+          "line": 190,
+          "signature": "uint32_t spqr_graph_num_nodes(const SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_graph_num_edges",
+          "line": 191,
+          "signature": "uint32_t spqr_graph_num_edges(const SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_graph_edge_src",
+          "line": 192,
+          "signature": "uint32_t spqr_graph_edge_src(const SpqrGraphFFI* graph, uint32_t edge_id);"
+        },
+        {
+          "name": "spqr_graph_edge_dst",
+          "line": 193,
+          "signature": "uint32_t spqr_graph_edge_dst(const SpqrGraphFFI* graph, uint32_t edge_id);"
+        },
+        {
+          "name": "spqr_graph_degree",
+          "line": 194,
+          "signature": "uint32_t spqr_graph_degree(const SpqrGraphFFI* graph, uint32_t node);"
+        },
+        {
+          "name": "spqr_graph_adj_cursor",
+          "line": 196,
+          "signature": "uint32_t spqr_graph_adj_cursor(const SpqrGraphFFI* graph, uint32_t node);"
+        },
+        {
+          "name": "spqr_graph_adj_next",
+          "line": 197,
+          "signature": "bool spqr_graph_adj_next(const SpqrGraphFFI* graph, uint32_t cursor, uint32_t* out_neighbor, uint32_t* out_edge, uint32_t* out_next_cursor);"
+        },
+        {
+          "name": "spqr_graph_for_each_neighbor",
+          "line": 205,
+          "signature": "void spqr_graph_for_each_neighbor(const SpqrGraphFFI* graph, uint32_t node, NeighborCallback callback, void* user_data);"
+        },
+        {
+          "name": "spqr_graph_neighbors_to_buffer",
+          "line": 210,
+          "signature": "uint32_t spqr_graph_neighbors_to_buffer(const SpqrGraphFFI* graph, uint32_t node, uint32_t* nodes_out, uint32_t* edges_out, uint32_t buffer_size);"
+        },
+        {
+          "name": "spqr_connected_components",
+          "line": 218,
+          "signature": "SpqrCCResult* spqr_connected_components(const SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_cc_free",
+          "line": 219,
+          "signature": "void spqr_cc_free(SpqrCCResult* cc);"
+        },
+        {
+          "name": "spqr_cc_count",
+          "line": 220,
+          "signature": "uint32_t spqr_cc_count(const SpqrCCResult* cc);"
+        },
+        {
+          "name": "spqr_cc_component_of",
+          "line": 221,
+          "signature": "uint32_t spqr_cc_component_of(const SpqrCCResult* cc, uint32_t node);"
+        },
+        {
+          "name": "spqr_cc_components_raw",
+          "line": 224,
+          "signature": "const uint32_t* spqr_cc_components_raw(const SpqrCCResult* cc, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_cc_count_in",
+          "line": 226,
+          "signature": "uint32_t spqr_cc_count_in(const SpqrCCResult* cc, uint32_t component_id);"
+        },
+        {
+          "name": "spqr_cc_for_each_in",
+          "line": 230,
+          "signature": "void spqr_cc_for_each_in(const SpqrCCResult* cc, uint32_t component_id, NodeCallback callback, void* user_data);"
+        },
+        {
+          "name": "spqr_bc_tree_build",
+          "line": 236,
+          "signature": "SpqrBCTreeFFI* spqr_bc_tree_build(const SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_bc_tree_free",
+          "line": 237,
+          "signature": "void spqr_bc_tree_free(SpqrBCTreeFFI* bc);"
+        },
+        {
+          "name": "spqr_bc_num_blocks",
+          "line": 239,
+          "signature": "uint32_t spqr_bc_num_blocks(const SpqrBCTreeFFI* bc);"
+        },
+        {
+          "name": "spqr_bc_num_cut_vertices",
+          "line": 240,
+          "signature": "uint32_t spqr_bc_num_cut_vertices(const SpqrBCTreeFFI* bc);"
+        },
+        {
+          "name": "spqr_bc_is_biconnected",
+          "line": 241,
+          "signature": "bool spqr_bc_is_biconnected(const SpqrBCTreeFFI* bc);"
+        },
+        {
+          "name": "spqr_bc_is_cut_vertex",
+          "line": 242,
+          "signature": "bool spqr_bc_is_cut_vertex(const SpqrBCTreeFFI* bc, uint32_t node);"
+        },
+        {
+          "name": "spqr_bc_block_nodes",
+          "line": 244,
+          "signature": "const uint32_t* spqr_bc_block_nodes(const SpqrBCTreeFFI* bc, uint32_t block_idx, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_bc_block_edges",
+          "line": 245,
+          "signature": "const uint32_t* spqr_bc_block_edges(const SpqrBCTreeFFI* bc, uint32_t block_idx, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_bc_cut_vertices",
+          "line": 246,
+          "signature": "const uint32_t* spqr_bc_cut_vertices(const SpqrBCTreeFFI* bc, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_bc_blocks_raw",
+          "line": 256,
+          "signature": "const BCBlock* spqr_bc_blocks_raw(const SpqrBCTreeFFI* bc, uint32_t* out_num_blocks);"
+        },
+        {
+          "name": "spqr_bc_nodes_flat_raw",
+          "line": 257,
+          "signature": "const uint32_t* spqr_bc_nodes_flat_raw(const SpqrBCTreeFFI* bc, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_bc_edges_flat_raw",
+          "line": 258,
+          "signature": "const uint32_t* spqr_bc_edges_flat_raw(const SpqrBCTreeFFI* bc, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_bc_get_sizes",
+          "line": 260,
+          "signature": "void spqr_bc_get_sizes(const SpqrBCTreeFFI* bc, uint32_t* out_num_blocks, uint32_t* out_total_nodes, uint32_t* out_total_edges);"
+        },
+        {
+          "name": "spqr_bc_bulk_export",
+          "line": 266,
+          "signature": "void spqr_bc_bulk_export(const SpqrBCTreeFFI* bc, uint32_t* block_node_offsets, uint32_t* block_nodes, uint32_t* block_edge_offsets, uint32_t* block_edges);"
+        },
+        {
+          "name": "spqr_build",
+          "line": 274,
+          "signature": "SpqrResult* spqr_build(const SpqrGraphFFI* graph);"
+        },
+        {
+          "name": "spqr_result_free",
+          "line": 275,
+          "signature": "void spqr_result_free(SpqrResult* result);"
+        },
+        {
+          "name": "spqr_result_tree",
+          "line": 277,
+          "signature": "const SpqrTree* spqr_result_tree(const SpqrResult* result);"
+        },
+        {
+          "name": "spqr_result_self_loops",
+          "line": 278,
+          "signature": "const uint32_t* spqr_result_self_loops(const SpqrResult* result, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_len",
+          "line": 280,
+          "signature": "uint32_t spqr_tree_len(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_root",
+          "line": 281,
+          "signature": "uint32_t spqr_tree_root(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_node_type",
+          "line": 284,
+          "signature": "uint8_t spqr_tree_node_type(const SpqrTree* tree, uint32_t node_id);"
+        },
+        {
+          "name": "spqr_tree_node_parent",
+          "line": 287,
+          "signature": "uint32_t spqr_tree_node_parent(const SpqrTree* tree, uint32_t node_id);"
+        },
+        {
+          "name": "spqr_tree_node_children",
+          "line": 289,
+          "signature": "const uint32_t* spqr_tree_node_children(const SpqrTree* tree, uint32_t node_id, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_edges",
+          "line": 293,
+          "signature": "uint32_t spqr_tree_skeleton_num_edges(const SpqrTree* tree, uint32_t node_id);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_nodes",
+          "line": 294,
+          "signature": "uint32_t spqr_tree_skeleton_num_nodes(const SpqrTree* tree, uint32_t node_id);"
+        },
+        {
+          "name": "spqr_tree_skeleton_poles",
+          "line": 297,
+          "signature": "void spqr_tree_skeleton_poles(const SpqrTree* tree, uint32_t node_id, uint32_t* pole1, uint32_t* pole2);"
+        },
+        {
+          "name": "spqr_tree_skeleton_edge",
+          "line": 302,
+          "signature": "void spqr_tree_skeleton_edge(const SpqrTree* tree, uint32_t node_id, uint32_t edge_idx, SkeletonEdgeInfo* out);"
+        },
+        {
+          "name": "spqr_tree_skeleton_original_node",
+          "line": 307,
+          "signature": "uint32_t spqr_tree_skeleton_original_node(const SpqrTree* tree, uint32_t tree_node_id, uint32_t local_node);"
+        },
+        {
+          "name": "spqr_tree_node_of_edge",
+          "line": 311,
+          "signature": "uint32_t spqr_tree_node_of_edge(const SpqrTree* tree, uint32_t edge_id);"
+        },
+        {
+          "name": "spqr_tree_edge_mapping_raw",
+          "line": 314,
+          "signature": "const uint32_t* spqr_tree_edge_mapping_raw(const SpqrTree* tree, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_edge_mapping_bulk",
+          "line": 316,
+          "signature": "void spqr_tree_edge_mapping_bulk(const SpqrTree* tree, uint32_t num_edges, uint32_t* out_tree_nodes);"
+        },
+        {
+          "name": "spqr_tree_normalize",
+          "line": 320,
+          "signature": "void spqr_tree_normalize(SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_compact",
+          "line": 321,
+          "signature": "void spqr_tree_compact(SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_count_by_type",
+          "line": 323,
+          "signature": "void spqr_tree_count_by_type(const SpqrTree* tree, uint32_t* s_count, uint32_t* p_count, uint32_t* r_count);"
+        },
+        {
+          "name": "spqr_tree_get_sizes",
+          "line": 330,
+          "signature": "void spqr_tree_get_sizes(const SpqrTree* tree, uint32_t* out_num_nodes, uint32_t* out_total_children, uint32_t* out_total_skeleton_edges);"
+        },
+        {
+          "name": "spqr_tree_bulk_export",
+          "line": 335,
+          "signature": "void spqr_tree_bulk_export(const SpqrTree* tree, uint8_t* node_types, uint32_t* node_parents, uint32_t* children_offsets, // CSR uint32_t* children, uint32_t* skeleton_offsets, // CSR uint32_t* skeleton_src, uint32_t* skeleton_dst, uint32_t* skeleton_real_edge, uint8_t* skeleton_is_virtual);"
+        },
+        {
+          "name": "spqr_tree_bulk_export_node_mapping",
+          "line": 346,
+          "signature": "void spqr_tree_bulk_export_node_mapping(const SpqrTree* tree, uint32_t* node_mapping_offsets, uint32_t* node_mapping);"
+        },
+        {
+          "name": "spqr_tree_info",
+          "line": 355,
+          "signature": "void spqr_tree_info(const SpqrTree* tree, uint32_t* out_num_nodes, uint32_t* out_root);"
+        },
+        {
+          "name": "spqr_tree_node_types_raw",
+          "line": 357,
+          "signature": "const uint8_t* spqr_tree_node_types_raw(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_node_parents_raw",
+          "line": 358,
+          "signature": "const uint32_t* spqr_tree_node_parents_raw(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_children_offsets_raw",
+          "line": 359,
+          "signature": "const uint32_t* spqr_tree_children_offsets_raw(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_children_raw",
+          "line": 360,
+          "signature": "const uint32_t* spqr_tree_children_raw(const SpqrTree* tree, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_skeleton_offsets_raw",
+          "line": 361,
+          "signature": "const uint32_t* spqr_tree_skeleton_offsets_raw(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_tree_skeleton_edges_raw",
+          "line": 362,
+          "signature": "const SkeletonEdge* spqr_tree_skeleton_edges_raw(const SpqrTree* tree, uint32_t* out_len);"
+        },
+        {
+          "name": "spqr_tree_node_mapping_raw",
+          "line": 364,
+          "signature": "void spqr_tree_node_mapping_raw(const SpqrTree* tree, const uint32_t** out_offsets, const uint32_t** out_mapping, uint32_t* out_mapping_len);"
+        },
+        {
+          "name": "spqr_tree_skeleton_num_nodes_raw",
+          "line": 369,
+          "signature": "const uint32_t* spqr_tree_skeleton_num_nodes_raw(const SpqrTree* tree);"
+        },
+        {
+          "name": "spqr_format_to_string",
+          "line": 371,
+          "signature": "char* spqr_format_to_string(const SpqrGraphFFI* graph, const SpqrResult* result);"
+        },
+        {
+          "name": "spqr_string_free",
+          "line": 372,
+          "signature": "void spqr_string_free(char* s);"
+        }
+      ],
+      "types": [
+        {
+          "name": "GraphDeleter",
+          "line": 382
+        },
+        {
+          "name": "CCResultDeleter",
+          "line": 383
+        },
+        {
+          "name": "BCTreeDeleter",
+          "line": 384
+        },
+        {
+          "name": "SpqrResultDeleter",
+          "line": 385
+        },
+        {
+          "name": "StringDeleter",
+          "line": 386
+        }
+      ]
+    }
+  }
+}

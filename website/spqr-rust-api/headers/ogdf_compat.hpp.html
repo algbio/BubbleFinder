@@ -1,0 +1,1619 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ogdf_compat.hpp · SPQR-Rust header reference</title>
+<link rel="stylesheet" href="../../assets/styles.css?v=6"></head>
+<body><div class="site-wrap">
+<header class="site-header"><a class="brand" href="../../spqr-rust.html">SPQR-Rust</a></header>
+<nav class="main-nav" aria-label="Main navigation"><ul>
+<li><a href="../../spqr-rust-documentation.html">Documentation</a></li>
+<li><a href="../../spqr-rust-api.html">API reference</a></li></ul></nav>
+<main class="header-reference"><h1>ogdf_compat.hpp</h1>
+<p><a href="../../spqr-rust-api.html#headers">Header index</a> · <a href="ogdf_compat.hpp" download>Download header</a></p>
+<p class="small-note">SPQR-Rust 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a>. Complete header, including declarations, definitions and comments.</p>
+<details><summary>Jump to a declaration</summary><p><a href="#L17">node</a> · <a href="#L36">edge</a> · <a href="#L59">adjEntry</a> · <a href="#L68">NodeArray</a> · <a href="#L104">NodeArray</a> · <a href="#L119">Ref</a> · <a href="#L142">EdgeArray</a> · <a href="#L178">EdgeArray</a> · <a href="#L192">Ref</a> · <a href="#L216">Graph</a> · <a href="#L226">NodesRange</a> · <a href="#L228">It</a> · <a href="#L240">EdgesRange</a> · <a href="#L242">It</a> · <a href="#L337">BCTree</a> · <a href="#L368">BCTreeGraph</a> · <a href="#L370">NodesRange</a> · <a href="#L372">It</a> · <a href="#L395">TreeGraph</a> · <a href="#L427">NodesRange</a> · <a href="#L429">It</a> · <a href="#L441">EdgesRange</a> · <a href="#L443">It</a> · <a href="#L463">StaticSPQRTree</a> · <a href="#L465">FlatData</a> · <a href="#L615">SkeletonGraph</a> · <a href="#L695">NodesRange</a> · <a href="#L697">It</a> · <a href="#L710">EdgesRange</a> · <a href="#L712">It</a> · <a href="#L726">Skeleton</a> · <a href="#L791">edge</a> · <a href="#L818">adjEntry</a> · <a href="#L826">NodeArray</a> · <a href="#L883">NodeArray</a> · <a href="#L913">Ref</a> · <a href="#L941">EdgeArray</a> · <a href="#L1000">EdgeArray</a> · <a href="#L1030">Ref</a> · <a href="#L1059">Graph</a> · <a href="#L1064">NodesRange</a> · <a href="#L1066">It</a> · <a href="#L1070">EdgesRange</a> · <a href="#L1072">It</a> · <a href="#L1118">BCTree</a> · <a href="#L1146">BCTreeGraph</a> · <a href="#L1148">NodesRange</a> · <a href="#L1150">It</a> · <a href="#L1171">TreeGraph</a> · <a href="#L1201">NodesRange</a> · <a href="#L1203">It</a> · <a href="#L1215">EdgesRange</a> · <a href="#L1217">It</a> · <a href="#L1235">StaticSPQRTree</a> · <a href="#L1340">SkeletonGraph</a> · <a href="#L1401">NodesRange</a> · <a href="#L1403">It</a> · <a href="#L1416">EdgesRange</a> · <a href="#L1418">It</a> · <a href="#L1432">Skeleton</a></p></details>
+<pre class="header-source"><code><span id="L1"><a class="source-line" href="#L1">   1</a> #pragma once</span>
+<span id="L2"><a class="source-line" href="#L2">   2</a> // spqr-rust C++ interface</span>
+<span id="L3"><a class="source-line" href="#L3">   3</a> //</span>
+<span id="L4"><a class="source-line" href="#L4">   4</a> // Two namespaces:</span>
+<span id="L5"><a class="source-line" href="#L5">   5</a> //   spqr             -&gt; with G.source(e) syntax</span>
+<span id="L6"><a class="source-line" href="#L6">   6</a> //   spqr::ogdf_compat -&gt; with e-&gt;source() syntax, like OGDF</span>
+<span id="L7"><a class="source-line" href="#L7">   7</a> // Pick spqr unless you&#x27;re porting OGDF code and don&#x27;t want to change every call site</span>
+<span id="L8"><a class="source-line" href="#L8">   8</a> </span>
+<span id="L9"><a class="source-line" href="#L9">   9</a> #include &quot;spqr_rust_wrapper.hpp&quot;</span>
+<span id="L10"><a class="source-line" href="#L10">  10</a> #include &lt;vector&gt;</span>
+<span id="L11"><a class="source-line" href="#L11">  11</a> #include &lt;memory&gt;</span>
+<span id="L12"><a class="source-line" href="#L12">  12</a> #include &lt;unordered_map&gt;</span>
+<span id="L13"><a class="source-line" href="#L13">  13</a> #include &lt;cstdint&gt;</span>
+<span id="L14"><a class="source-line" href="#L14">  14</a> </span>
+<span id="L15"><a class="source-line" href="#L15">  15</a> namespace spqr {</span>
+<span id="L16"><a class="source-line" href="#L16">  16</a> </span>
+<span id="L17"><a class="source-line" href="#L17">  17</a> struct node {</span>
+<span id="L18"><a class="source-line" href="#L18">  18</a>     uint32_t idx;</span>
+<span id="L19"><a class="source-line" href="#L19">  19</a>     </span>
+<span id="L20"><a class="source-line" href="#L20">  20</a>     constexpr node() : idx(UINT32_MAX) {}</span>
+<span id="L21"><a class="source-line" href="#L21">  21</a>     constexpr node(uint32_t i) : idx(i) {}</span>
+<span id="L22"><a class="source-line" href="#L22">  22</a>     constexpr node(std::nullptr_t) : idx(UINT32_MAX) {}  </span>
+<span id="L23"><a class="source-line" href="#L23">  23</a>     </span>
+<span id="L24"><a class="source-line" href="#L24">  24</a>     constexpr operator uint32_t() const { return idx; }</span>
+<span id="L25"><a class="source-line" href="#L25">  25</a>     constexpr uint32_t index() const { return idx; }</span>
+<span id="L26"><a class="source-line" href="#L26">  26</a>     </span>
+<span id="L27"><a class="source-line" href="#L27">  27</a>     constexpr bool operator!() const { return idx == UINT32_MAX; }</span>
+<span id="L28"><a class="source-line" href="#L28">  28</a>     constexpr explicit operator bool() const { return idx != UINT32_MAX; }</span>
+<span id="L29"><a class="source-line" href="#L29">  29</a>     constexpr bool operator==(std::nullptr_t) const { return idx == UINT32_MAX; }</span>
+<span id="L30"><a class="source-line" href="#L30">  30</a>     constexpr bool operator!=(std::nullptr_t) const { return idx != UINT32_MAX; }</span>
+<span id="L31"><a class="source-line" href="#L31">  31</a>     constexpr bool operator==(node o) const { return idx == o.idx; }</span>
+<span id="L32"><a class="source-line" href="#L32">  32</a>     constexpr bool operator!=(node o) const { return idx != o.idx; }</span>
+<span id="L33"><a class="source-line" href="#L33">  33</a>     constexpr bool operator&lt;(node o) const { return idx &lt; o.idx; }</span>
+<span id="L34"><a class="source-line" href="#L34">  34</a> };</span>
+<span id="L35"><a class="source-line" href="#L35">  35</a> </span>
+<span id="L36"><a class="source-line" href="#L36">  36</a> struct edge {</span>
+<span id="L37"><a class="source-line" href="#L37">  37</a>     uint32_t idx;</span>
+<span id="L38"><a class="source-line" href="#L38">  38</a>     </span>
+<span id="L39"><a class="source-line" href="#L39">  39</a>     constexpr edge() : idx(UINT32_MAX) {}</span>
+<span id="L40"><a class="source-line" href="#L40">  40</a>     constexpr edge(uint32_t i) : idx(i) {}</span>
+<span id="L41"><a class="source-line" href="#L41">  41</a>     constexpr edge(std::nullptr_t) : idx(UINT32_MAX) {}</span>
+<span id="L42"><a class="source-line" href="#L42">  42</a>     </span>
+<span id="L43"><a class="source-line" href="#L43">  43</a>     constexpr operator uint32_t() const { return idx; }</span>
+<span id="L44"><a class="source-line" href="#L44">  44</a>     constexpr uint32_t index() const { return idx; }</span>
+<span id="L45"><a class="source-line" href="#L45">  45</a>     </span>
+<span id="L46"><a class="source-line" href="#L46">  46</a>     constexpr bool operator!() const { return idx == UINT32_MAX; }</span>
+<span id="L47"><a class="source-line" href="#L47">  47</a>     constexpr explicit operator bool() const { return idx != UINT32_MAX; }</span>
+<span id="L48"><a class="source-line" href="#L48">  48</a>     constexpr bool operator==(std::nullptr_t) const { return idx == UINT32_MAX; }</span>
+<span id="L49"><a class="source-line" href="#L49">  49</a>     constexpr bool operator!=(std::nullptr_t) const { return idx != UINT32_MAX; }</span>
+<span id="L50"><a class="source-line" href="#L50">  50</a>     constexpr bool operator==(edge o) const { return idx == o.idx; }</span>
+<span id="L51"><a class="source-line" href="#L51">  51</a>     constexpr bool operator!=(edge o) const { return idx != o.idx; }</span>
+<span id="L52"><a class="source-line" href="#L52">  52</a>     constexpr bool operator&lt;(edge o) const { return idx &lt; o.idx; }</span>
+<span id="L53"><a class="source-line" href="#L53">  53</a> };</span>
+<span id="L54"><a class="source-line" href="#L54">  54</a> </span>
+<span id="L55"><a class="source-line" href="#L55">  55</a> constexpr node INVALID_NODE{UINT32_MAX};</span>
+<span id="L56"><a class="source-line" href="#L56">  56</a> constexpr edge INVALID_EDGE{UINT32_MAX};</span>
+<span id="L57"><a class="source-line" href="#L57">  57</a> </span>
+<span id="L58"><a class="source-line" href="#L58">  58</a> // adjEntry for OGDF compatibility</span>
+<span id="L59"><a class="source-line" href="#L59">  59</a> struct adjEntry {</span>
+<span id="L60"><a class="source-line" href="#L60">  60</a>     node neighbor;</span>
+<span id="L61"><a class="source-line" href="#L61">  61</a>     edge e;</span>
+<span id="L62"><a class="source-line" href="#L62">  62</a>     node twinNode() const { return neighbor; }</span>
+<span id="L63"><a class="source-line" href="#L63">  63</a>     edge theEdge() const { return e; }</span>
+<span id="L64"><a class="source-line" href="#L64">  64</a> };</span>
+<span id="L65"><a class="source-line" href="#L65">  65</a> </span>
+<span id="L66"><a class="source-line" href="#L66">  66</a> </span>
+<span id="L67"><a class="source-line" href="#L67">  67</a> template&lt;typename T&gt;</span>
+<span id="L68"><a class="source-line" href="#L68">  68</a> class NodeArray {</span>
+<span id="L69"><a class="source-line" href="#L69">  69</a>     std::vector&lt;T&gt; data_;</span>
+<span id="L70"><a class="source-line" href="#L70">  70</a>     T default_{};</span>
+<span id="L71"><a class="source-line" href="#L71">  71</a> public:</span>
+<span id="L72"><a class="source-line" href="#L72">  72</a>     NodeArray() = default;</span>
+<span id="L73"><a class="source-line" href="#L73">  73</a>     template&lt;typename G&gt; NodeArray(const G&amp; g, const T&amp; def = T())</span>
+<span id="L74"><a class="source-line" href="#L74">  74</a>         : data_(g.numberOfNodes(), def), default_(def) {}</span>
+<span id="L75"><a class="source-line" href="#L75">  75</a>     NodeArray(size_t n, const T&amp; def = T()) : data_(n, def), default_(def) {}</span>
+<span id="L76"><a class="source-line" href="#L76">  76</a> </span>
+<span id="L77"><a class="source-line" href="#L77">  77</a>     template&lt;typename G&gt; void init(const G&amp; g, const T&amp; def = T()) {</span>
+<span id="L78"><a class="source-line" href="#L78">  78</a>         data_.assign(g.numberOfNodes(), def);</span>
+<span id="L79"><a class="source-line" href="#L79">  79</a>         default_ = def;</span>
+<span id="L80"><a class="source-line" href="#L80">  80</a>     }</span>
+<span id="L81"><a class="source-line" href="#L81">  81</a> </span>
+<span id="L82"><a class="source-line" href="#L82">  82</a>     T&amp; operator[](size_t idx) {</span>
+<span id="L83"><a class="source-line" href="#L83">  83</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L84"><a class="source-line" href="#L84">  84</a>         return data_[idx];</span>
+<span id="L85"><a class="source-line" href="#L85">  85</a>     }</span>
+<span id="L86"><a class="source-line" href="#L86">  86</a>     const T&amp; operator[](size_t idx) const { return data_[idx]; }</span>
+<span id="L87"><a class="source-line" href="#L87">  87</a> </span>
+<span id="L88"><a class="source-line" href="#L88">  88</a>     T&amp; operator()(node v) { return (*this)[v.idx]; }</span>
+<span id="L89"><a class="source-line" href="#L89">  89</a>     const T&amp; operator()(node v) const { return data_[v.idx]; }</span>
+<span id="L90"><a class="source-line" href="#L90">  90</a> </span>
+<span id="L91"><a class="source-line" href="#L91">  91</a>     size_t size() const { return data_.size(); }</span>
+<span id="L92"><a class="source-line" href="#L92">  92</a>     void resize(size_t n, const T&amp; val = T()) { data_.resize(n, val); }</span>
+<span id="L93"><a class="source-line" href="#L93">  93</a>     void clear() { data_.clear(); }</span>
+<span id="L94"><a class="source-line" href="#L94">  94</a>     template&lt;typename Iter&gt; void assign(Iter first, Iter last) { data_.assign(first, last); }</span>
+<span id="L95"><a class="source-line" href="#L95">  95</a>     void assign(size_t n, const T&amp; val) { data_.assign(n, val); }</span>
+<span id="L96"><a class="source-line" href="#L96">  96</a>     auto begin() { return data_.begin(); }</span>
+<span id="L97"><a class="source-line" href="#L97">  97</a>     auto end() { return data_.end(); }</span>
+<span id="L98"><a class="source-line" href="#L98">  98</a>     auto begin() const { return data_.begin(); }</span>
+<span id="L99"><a class="source-line" href="#L99">  99</a>     auto end() const { return data_.end(); }</span>
+<span id="L100"><a class="source-line" href="#L100"> 100</a> };</span>
+<span id="L101"><a class="source-line" href="#L101"> 101</a> </span>
+<span id="L102"><a class="source-line" href="#L102"> 102</a> // Specialization for bool to avoid std::vector&lt;bool&gt; proxy issues</span>
+<span id="L103"><a class="source-line" href="#L103"> 103</a> template&lt;&gt;</span>
+<span id="L104"><a class="source-line" href="#L104"> 104</a> class NodeArray&lt;bool&gt; {</span>
+<span id="L105"><a class="source-line" href="#L105"> 105</a>     std::vector&lt;char&gt; data_;</span>
+<span id="L106"><a class="source-line" href="#L106"> 106</a>     char default_ = 0;</span>
+<span id="L107"><a class="source-line" href="#L107"> 107</a> public:</span>
+<span id="L108"><a class="source-line" href="#L108"> 108</a>     NodeArray() = default;</span>
+<span id="L109"><a class="source-line" href="#L109"> 109</a>     template&lt;typename G&gt; NodeArray(const G&amp; g, bool def = false)</span>
+<span id="L110"><a class="source-line" href="#L110"> 110</a>         : data_(g.numberOfNodes(), def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L111"><a class="source-line" href="#L111"> 111</a>     NodeArray(size_t n, bool def = false) : data_(n, def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L112"><a class="source-line" href="#L112"> 112</a> </span>
+<span id="L113"><a class="source-line" href="#L113"> 113</a>     template&lt;typename G&gt; void init(const G&amp; g, bool def = false) {</span>
+<span id="L114"><a class="source-line" href="#L114"> 114</a>         default_ = def ? 1 : 0;</span>
+<span id="L115"><a class="source-line" href="#L115"> 115</a>         data_.assign(g.numberOfNodes(), default_);</span>
+<span id="L116"><a class="source-line" href="#L116"> 116</a>     }</span>
+<span id="L117"><a class="source-line" href="#L117"> 117</a> </span>
+<span id="L118"><a class="source-line" href="#L118"> 118</a>     // Proxy class for bool access</span>
+<span id="L119"><a class="source-line" href="#L119"> 119</a>     class Ref {</span>
+<span id="L120"><a class="source-line" href="#L120"> 120</a>         char&amp; c_;</span>
+<span id="L121"><a class="source-line" href="#L121"> 121</a>     public:</span>
+<span id="L122"><a class="source-line" href="#L122"> 122</a>         Ref(char&amp; c) : c_(c) {}</span>
+<span id="L123"><a class="source-line" href="#L123"> 123</a>         operator bool() const { return c_ != 0; }</span>
+<span id="L124"><a class="source-line" href="#L124"> 124</a>         Ref&amp; operator=(bool b) { c_ = b ? 1 : 0; return *this; }</span>
+<span id="L125"><a class="source-line" href="#L125"> 125</a>     };</span>
+<span id="L126"><a class="source-line" href="#L126"> 126</a> </span>
+<span id="L127"><a class="source-line" href="#L127"> 127</a>     Ref operator[](size_t idx) {</span>
+<span id="L128"><a class="source-line" href="#L128"> 128</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L129"><a class="source-line" href="#L129"> 129</a>         return Ref(data_[idx]);</span>
+<span id="L130"><a class="source-line" href="#L130"> 130</a>     }</span>
+<span id="L131"><a class="source-line" href="#L131"> 131</a>     bool operator[](size_t idx) const { return data_[idx] != 0; }</span>
+<span id="L132"><a class="source-line" href="#L132"> 132</a> </span>
+<span id="L133"><a class="source-line" href="#L133"> 133</a>     Ref operator()(node v) { return (*this)[v.idx]; }</span>
+<span id="L134"><a class="source-line" href="#L134"> 134</a>     bool operator()(node v) const { return data_[v.idx] != 0; }</span>
+<span id="L135"><a class="source-line" href="#L135"> 135</a> </span>
+<span id="L136"><a class="source-line" href="#L136"> 136</a>     size_t size() const { return data_.size(); }</span>
+<span id="L137"><a class="source-line" href="#L137"> 137</a>     void resize(size_t n, bool val = false) { data_.resize(n, val ? 1 : 0); }</span>
+<span id="L138"><a class="source-line" href="#L138"> 138</a>     void clear() { data_.clear(); }</span>
+<span id="L139"><a class="source-line" href="#L139"> 139</a> };</span>
+<span id="L140"><a class="source-line" href="#L140"> 140</a> </span>
+<span id="L141"><a class="source-line" href="#L141"> 141</a> template&lt;typename T&gt;</span>
+<span id="L142"><a class="source-line" href="#L142"> 142</a> class EdgeArray {</span>
+<span id="L143"><a class="source-line" href="#L143"> 143</a>     std::vector&lt;T&gt; data_;</span>
+<span id="L144"><a class="source-line" href="#L144"> 144</a>     T default_{};</span>
+<span id="L145"><a class="source-line" href="#L145"> 145</a> public:</span>
+<span id="L146"><a class="source-line" href="#L146"> 146</a>     EdgeArray() = default;</span>
+<span id="L147"><a class="source-line" href="#L147"> 147</a>     template&lt;typename G&gt; EdgeArray(const G&amp; g, const T&amp; def = T())</span>
+<span id="L148"><a class="source-line" href="#L148"> 148</a>         : data_(g.numberOfEdges(), def), default_(def) {}</span>
+<span id="L149"><a class="source-line" href="#L149"> 149</a>     EdgeArray(size_t n, const T&amp; def = T()) : data_(n, def), default_(def) {}</span>
+<span id="L150"><a class="source-line" href="#L150"> 150</a> </span>
+<span id="L151"><a class="source-line" href="#L151"> 151</a>     template&lt;typename G&gt; void init(const G&amp; g, const T&amp; def = T()) {</span>
+<span id="L152"><a class="source-line" href="#L152"> 152</a>         data_.assign(g.numberOfEdges(), def);</span>
+<span id="L153"><a class="source-line" href="#L153"> 153</a>         default_ = def;</span>
+<span id="L154"><a class="source-line" href="#L154"> 154</a>     }</span>
+<span id="L155"><a class="source-line" href="#L155"> 155</a> </span>
+<span id="L156"><a class="source-line" href="#L156"> 156</a>     T&amp; operator[](size_t idx) {</span>
+<span id="L157"><a class="source-line" href="#L157"> 157</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L158"><a class="source-line" href="#L158"> 158</a>         return data_[idx];</span>
+<span id="L159"><a class="source-line" href="#L159"> 159</a>     }</span>
+<span id="L160"><a class="source-line" href="#L160"> 160</a>     const T&amp; operator[](size_t idx) const { return data_[idx]; }</span>
+<span id="L161"><a class="source-line" href="#L161"> 161</a> </span>
+<span id="L162"><a class="source-line" href="#L162"> 162</a>     T&amp; operator()(edge e) { return (*this)[e.idx]; }</span>
+<span id="L163"><a class="source-line" href="#L163"> 163</a>     const T&amp; operator()(edge e) const { return data_[e.idx]; }</span>
+<span id="L164"><a class="source-line" href="#L164"> 164</a> </span>
+<span id="L165"><a class="source-line" href="#L165"> 165</a>     size_t size() const { return data_.size(); }</span>
+<span id="L166"><a class="source-line" href="#L166"> 166</a>     void resize(size_t n, const T&amp; val = T()) { data_.resize(n, val); }</span>
+<span id="L167"><a class="source-line" href="#L167"> 167</a>     void clear() { data_.clear(); }</span>
+<span id="L168"><a class="source-line" href="#L168"> 168</a>     template&lt;typename Iter&gt; void assign(Iter first, Iter last) { data_.assign(first, last); }</span>
+<span id="L169"><a class="source-line" href="#L169"> 169</a>     void assign(size_t n, const T&amp; val) { data_.assign(n, val); }</span>
+<span id="L170"><a class="source-line" href="#L170"> 170</a>     auto begin() { return data_.begin(); }</span>
+<span id="L171"><a class="source-line" href="#L171"> 171</a>     auto end() { return data_.end(); }</span>
+<span id="L172"><a class="source-line" href="#L172"> 172</a>     auto begin() const { return data_.begin(); }</span>
+<span id="L173"><a class="source-line" href="#L173"> 173</a>     auto end() const { return data_.end(); }</span>
+<span id="L174"><a class="source-line" href="#L174"> 174</a> };</span>
+<span id="L175"><a class="source-line" href="#L175"> 175</a> </span>
+<span id="L176"><a class="source-line" href="#L176"> 176</a> // Specialization for bool to avoid std::vector&lt;bool&gt; proxy issues</span>
+<span id="L177"><a class="source-line" href="#L177"> 177</a> template&lt;&gt;</span>
+<span id="L178"><a class="source-line" href="#L178"> 178</a> class EdgeArray&lt;bool&gt; {</span>
+<span id="L179"><a class="source-line" href="#L179"> 179</a>     std::vector&lt;char&gt; data_;</span>
+<span id="L180"><a class="source-line" href="#L180"> 180</a>     char default_ = 0;</span>
+<span id="L181"><a class="source-line" href="#L181"> 181</a> public:</span>
+<span id="L182"><a class="source-line" href="#L182"> 182</a>     EdgeArray() = default;</span>
+<span id="L183"><a class="source-line" href="#L183"> 183</a>     template&lt;typename G&gt; EdgeArray(const G&amp; g, bool def = false)</span>
+<span id="L184"><a class="source-line" href="#L184"> 184</a>         : data_(g.numberOfEdges(), def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L185"><a class="source-line" href="#L185"> 185</a>     EdgeArray(size_t n, bool def = false) : data_(n, def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L186"><a class="source-line" href="#L186"> 186</a> </span>
+<span id="L187"><a class="source-line" href="#L187"> 187</a>     template&lt;typename G&gt; void init(const G&amp; g, bool def = false) {</span>
+<span id="L188"><a class="source-line" href="#L188"> 188</a>         default_ = def ? 1 : 0;</span>
+<span id="L189"><a class="source-line" href="#L189"> 189</a>         data_.assign(g.numberOfEdges(), default_);</span>
+<span id="L190"><a class="source-line" href="#L190"> 190</a>     }</span>
+<span id="L191"><a class="source-line" href="#L191"> 191</a> </span>
+<span id="L192"><a class="source-line" href="#L192"> 192</a>     class Ref {</span>
+<span id="L193"><a class="source-line" href="#L193"> 193</a>         char&amp; c_;</span>
+<span id="L194"><a class="source-line" href="#L194"> 194</a>     public:</span>
+<span id="L195"><a class="source-line" href="#L195"> 195</a>         Ref(char&amp; c) : c_(c) {}</span>
+<span id="L196"><a class="source-line" href="#L196"> 196</a>         operator bool() const { return c_ != 0; }</span>
+<span id="L197"><a class="source-line" href="#L197"> 197</a>         Ref&amp; operator=(bool b) { c_ = b ? 1 : 0; return *this; }</span>
+<span id="L198"><a class="source-line" href="#L198"> 198</a>     };</span>
+<span id="L199"><a class="source-line" href="#L199"> 199</a> </span>
+<span id="L200"><a class="source-line" href="#L200"> 200</a>     Ref operator[](size_t idx) {</span>
+<span id="L201"><a class="source-line" href="#L201"> 201</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L202"><a class="source-line" href="#L202"> 202</a>         return Ref(data_[idx]);</span>
+<span id="L203"><a class="source-line" href="#L203"> 203</a>     }</span>
+<span id="L204"><a class="source-line" href="#L204"> 204</a>     bool operator[](size_t idx) const { return data_[idx] != 0; }</span>
+<span id="L205"><a class="source-line" href="#L205"> 205</a> </span>
+<span id="L206"><a class="source-line" href="#L206"> 206</a>     Ref operator()(edge e) { return (*this)[e.idx]; }</span>
+<span id="L207"><a class="source-line" href="#L207"> 207</a>     bool operator()(edge e) const { return data_[e.idx] != 0; }</span>
+<span id="L208"><a class="source-line" href="#L208"> 208</a> </span>
+<span id="L209"><a class="source-line" href="#L209"> 209</a>     size_t size() const { return data_.size(); }</span>
+<span id="L210"><a class="source-line" href="#L210"> 210</a>     void resize(size_t n, bool val = false) { data_.resize(n, val ? 1 : 0); }</span>
+<span id="L211"><a class="source-line" href="#L211"> 211</a>     void clear() { data_.clear(); }</span>
+<span id="L212"><a class="source-line" href="#L212"> 212</a> };</span>
+<span id="L213"><a class="source-line" href="#L213"> 213</a> </span>
+<span id="L214"><a class="source-line" href="#L214"> 214</a> // Graph</span>
+<span id="L215"><a class="source-line" href="#L215"> 215</a> </span>
+<span id="L216"><a class="source-line" href="#L216"> 216</a> class Graph {</span>
+<span id="L217"><a class="source-line" href="#L217"> 217</a>     std::unique_ptr&lt;spqr_rust::RustGraph&gt; g_;</span>
+<span id="L218"><a class="source-line" href="#L218"> 218</a>     std::vector&lt;char&gt; deletedEdge_;</span>
+<span id="L219"><a class="source-line" href="#L219"> 219</a>     uint32_t deletedCount_ = 0;</span>
+<span id="L220"><a class="source-line" href="#L220"> 220</a> </span>
+<span id="L221"><a class="source-line" href="#L221"> 221</a>     bool isDeleted_(uint32_t eidx) const {</span>
+<span id="L222"><a class="source-line" href="#L222"> 222</a>         return !deletedEdge_.empty() &amp;&amp; eidx &lt; deletedEdge_.size() &amp;&amp; deletedEdge_[eidx];</span>
+<span id="L223"><a class="source-line" href="#L223"> 223</a>     }</span>
+<span id="L224"><a class="source-line" href="#L224"> 224</a> </span>
+<span id="L225"><a class="source-line" href="#L225"> 225</a> public:</span>
+<span id="L226"><a class="source-line" href="#L226"> 226</a>     struct NodesRange {</span>
+<span id="L227"><a class="source-line" href="#L227"> 227</a>         const Graph* g;</span>
+<span id="L228"><a class="source-line" href="#L228"> 228</a>         struct It { </span>
+<span id="L229"><a class="source-line" href="#L229"> 229</a>             uint32_t i; </span>
+<span id="L230"><a class="source-line" href="#L230"> 230</a>             constexpr node operator*() const { return node{i}; } </span>
+<span id="L231"><a class="source-line" href="#L231"> 231</a>             constexpr It&amp; operator++() { ++i; return *this; } </span>
+<span id="L232"><a class="source-line" href="#L232"> 232</a>             constexpr It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L233"><a class="source-line" href="#L233"> 233</a>             constexpr bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L234"><a class="source-line" href="#L234"> 234</a>             constexpr bool operator==(It o) const { return i == o.i; }</span>
+<span id="L235"><a class="source-line" href="#L235"> 235</a>         };</span>
+<span id="L236"><a class="source-line" href="#L236"> 236</a>         It begin() const { return {0}; }</span>
+<span id="L237"><a class="source-line" href="#L237"> 237</a>         It end() const { return {g-&gt;numberOfNodes()}; }</span>
+<span id="L238"><a class="source-line" href="#L238"> 238</a>         uint32_t size() const { return g-&gt;numberOfNodes(); }</span>
+<span id="L239"><a class="source-line" href="#L239"> 239</a>     };</span>
+<span id="L240"><a class="source-line" href="#L240"> 240</a>     struct EdgesRange {</span>
+<span id="L241"><a class="source-line" href="#L241"> 241</a>         const Graph* g;</span>
+<span id="L242"><a class="source-line" href="#L242"> 242</a>         struct It {</span>
+<span id="L243"><a class="source-line" href="#L243"> 243</a>             const Graph* g;</span>
+<span id="L244"><a class="source-line" href="#L244"> 244</a>             uint32_t i;</span>
+<span id="L245"><a class="source-line" href="#L245"> 245</a>             uint32_t endi;</span>
+<span id="L246"><a class="source-line" href="#L246"> 246</a>             void advance_to_live() { while (i &lt; endi &amp;&amp; g-&gt;isDeleted_(i)) ++i; }</span>
+<span id="L247"><a class="source-line" href="#L247"> 247</a>             edge operator*() const { return edge{i}; }</span>
+<span id="L248"><a class="source-line" href="#L248"> 248</a>             It&amp; operator++() { ++i; advance_to_live(); return *this; }</span>
+<span id="L249"><a class="source-line" href="#L249"> 249</a>             It operator++(int) { It tmp = *this; ++(*this); return tmp; }</span>
+<span id="L250"><a class="source-line" href="#L250"> 250</a>             bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L251"><a class="source-line" href="#L251"> 251</a>             bool operator==(It o) const { return i == o.i; }</span>
+<span id="L252"><a class="source-line" href="#L252"> 252</a>         };</span>
+<span id="L253"><a class="source-line" href="#L253"> 253</a>         It begin() const {</span>
+<span id="L254"><a class="source-line" href="#L254"> 254</a>             It it{g, 0, g-&gt;g_-&gt;numEdges()};</span>
+<span id="L255"><a class="source-line" href="#L255"> 255</a>             it.advance_to_live();</span>
+<span id="L256"><a class="source-line" href="#L256"> 256</a>             return it;</span>
+<span id="L257"><a class="source-line" href="#L257"> 257</a>         }</span>
+<span id="L258"><a class="source-line" href="#L258"> 258</a>         It end() const {</span>
+<span id="L259"><a class="source-line" href="#L259"> 259</a>             uint32_t raw = g-&gt;g_-&gt;numEdges();</span>
+<span id="L260"><a class="source-line" href="#L260"> 260</a>             return {g, raw, raw};</span>
+<span id="L261"><a class="source-line" href="#L261"> 261</a>         }</span>
+<span id="L262"><a class="source-line" href="#L262"> 262</a>         uint32_t size() const { return g-&gt;numberOfEdges(); }</span>
+<span id="L263"><a class="source-line" href="#L263"> 263</a>     };</span>
+<span id="L264"><a class="source-line" href="#L264"> 264</a> </span>
+<span id="L265"><a class="source-line" href="#L265"> 265</a>     Graph() : g_(std::make_unique&lt;spqr_rust::RustGraph&gt;()), nodes{this}, edges{this} {}</span>
+<span id="L266"><a class="source-line" href="#L266"> 266</a>     </span>
+<span id="L267"><a class="source-line" href="#L267"> 267</a>     node newNode() { return node{g_-&gt;addNode()}; }</span>
+<span id="L268"><a class="source-line" href="#L268"> 268</a>     node newNodes(uint32_t count) { return node{g_-&gt;addNodes(count)}; }</span>
+<span id="L269"><a class="source-line" href="#L269"> 269</a>     edge newEdge(node u, node v) { return edge{g_-&gt;addEdge(u.idx, v.idx)}; }</span>
+<span id="L270"><a class="source-line" href="#L270"> 270</a>     edge newEdgesBatchFlat(const uint32_t* endpoints, uint32_t count) {</span>
+<span id="L271"><a class="source-line" href="#L271"> 271</a>         uint32_t first = g_-&gt;numEdges();</span>
+<span id="L272"><a class="source-line" href="#L272"> 272</a>         g_-&gt;addEdgesBatchFlat(endpoints, count);</span>
+<span id="L273"><a class="source-line" href="#L273"> 273</a>         return edge{first};</span>
+<span id="L274"><a class="source-line" href="#L274"> 274</a>     }</span>
+<span id="L275"><a class="source-line" href="#L275"> 275</a> </span>
+<span id="L276"><a class="source-line" href="#L276"> 276</a>     void delEdge(edge e) {</span>
+<span id="L277"><a class="source-line" href="#L277"> 277</a>         const uint32_t rawN = g_-&gt;numEdges();</span>
+<span id="L278"><a class="source-line" href="#L278"> 278</a>         if (e.idx &gt;= rawN) return;</span>
+<span id="L279"><a class="source-line" href="#L279"> 279</a>         if (deletedEdge_.size() &lt; rawN) deletedEdge_.resize(rawN, 0);</span>
+<span id="L280"><a class="source-line" href="#L280"> 280</a>         if (!deletedEdge_[e.idx]) {</span>
+<span id="L281"><a class="source-line" href="#L281"> 281</a>             deletedEdge_[e.idx] = 1;</span>
+<span id="L282"><a class="source-line" href="#L282"> 282</a>             ++deletedCount_;</span>
+<span id="L283"><a class="source-line" href="#L283"> 283</a>         }</span>
+<span id="L284"><a class="source-line" href="#L284"> 284</a>     }</span>
+<span id="L285"><a class="source-line" href="#L285"> 285</a>     </span>
+<span id="L286"><a class="source-line" href="#L286"> 286</a>     uint32_t numberOfNodes() const { return g_-&gt;numNodes(); }</span>
+<span id="L287"><a class="source-line" href="#L287"> 287</a>     uint32_t numberOfEdges() const { return g_-&gt;numEdges() - deletedCount_; }</span>
+<span id="L288"><a class="source-line" href="#L288"> 288</a>     </span>
+<span id="L289"><a class="source-line" href="#L289"> 289</a>     node firstNode() const { return numberOfNodes() &gt; 0 ? node{0u} : INVALID_NODE; }</span>
+<span id="L290"><a class="source-line" href="#L290"> 290</a>     </span>
+<span id="L291"><a class="source-line" href="#L291"> 291</a>     node source(edge e) const { return node{g_-&gt;edgeSrc(e.idx)}; }</span>
+<span id="L292"><a class="source-line" href="#L292"> 292</a>     node target(edge e) const { return node{g_-&gt;edgeDst(e.idx)}; }</span>
+<span id="L293"><a class="source-line" href="#L293"> 293</a>     </span>
+<span id="L294"><a class="source-line" href="#L294"> 294</a>     NodesRange nodes;</span>
+<span id="L295"><a class="source-line" href="#L295"> 295</a>     EdgesRange edges;</span>
+<span id="L296"><a class="source-line" href="#L296"> 296</a>     </span>
+<span id="L297"><a class="source-line" href="#L297"> 297</a>     template&lt;typename F&gt;</span>
+<span id="L298"><a class="source-line" href="#L298"> 298</a>     void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L299"><a class="source-line" href="#L299"> 299</a>         if (deletedCount_ == 0) {</span>
+<span id="L300"><a class="source-line" href="#L300"> 300</a>             g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t n, uint32_t e) { f(node{n}, edge{e}); });</span>
+<span id="L301"><a class="source-line" href="#L301"> 301</a>         } else {</span>
+<span id="L302"><a class="source-line" href="#L302"> 302</a>             g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t n, uint32_t e) {</span>
+<span id="L303"><a class="source-line" href="#L303"> 303</a>                 if (!isDeleted_(e)) f(node{n}, edge{e});</span>
+<span id="L304"><a class="source-line" href="#L304"> 304</a>             });</span>
+<span id="L305"><a class="source-line" href="#L305"> 305</a>         }</span>
+<span id="L306"><a class="source-line" href="#L306"> 306</a>     }</span>
+<span id="L307"><a class="source-line" href="#L307"> 307</a>     </span>
+<span id="L308"><a class="source-line" href="#L308"> 308</a>     uint32_t degree(node v) const {</span>
+<span id="L309"><a class="source-line" href="#L309"> 309</a>         if (deletedCount_ == 0) return g_-&gt;degree(v.idx);</span>
+<span id="L310"><a class="source-line" href="#L310"> 310</a>         uint32_t c = 0;</span>
+<span id="L311"><a class="source-line" href="#L311"> 311</a>         g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t, uint32_t e) { if (!isDeleted_(e)) ++c; });</span>
+<span id="L312"><a class="source-line" href="#L312"> 312</a>         return c;</span>
+<span id="L313"><a class="source-line" href="#L313"> 313</a>     }</span>
+<span id="L314"><a class="source-line" href="#L314"> 314</a>     uint32_t outdeg(node v) const {</span>
+<span id="L315"><a class="source-line" href="#L315"> 315</a>         if (deletedCount_ == 0) return g_-&gt;outdeg(v.idx);</span>
+<span id="L316"><a class="source-line" href="#L316"> 316</a>         uint32_t c = 0;</span>
+<span id="L317"><a class="source-line" href="#L317"> 317</a>         g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t, uint32_t e) {</span>
+<span id="L318"><a class="source-line" href="#L318"> 318</a>             if (!isDeleted_(e) &amp;&amp; g_-&gt;edgeSrc(e) == v.idx) ++c;</span>
+<span id="L319"><a class="source-line" href="#L319"> 319</a>         });</span>
+<span id="L320"><a class="source-line" href="#L320"> 320</a>         return c;</span>
+<span id="L321"><a class="source-line" href="#L321"> 321</a>     }</span>
+<span id="L322"><a class="source-line" href="#L322"> 322</a>     uint32_t indeg(node v) const {</span>
+<span id="L323"><a class="source-line" href="#L323"> 323</a>         if (deletedCount_ == 0) return g_-&gt;indeg(v.idx);</span>
+<span id="L324"><a class="source-line" href="#L324"> 324</a>         uint32_t c = 0;</span>
+<span id="L325"><a class="source-line" href="#L325"> 325</a>         g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t, uint32_t e) {</span>
+<span id="L326"><a class="source-line" href="#L326"> 326</a>             if (!isDeleted_(e) &amp;&amp; g_-&gt;edgeDst(e) == v.idx) ++c;</span>
+<span id="L327"><a class="source-line" href="#L327"> 327</a>         });</span>
+<span id="L328"><a class="source-line" href="#L328"> 328</a>         return c;</span>
+<span id="L329"><a class="source-line" href="#L329"> 329</a>     }</span>
+<span id="L330"><a class="source-line" href="#L330"> 330</a>     </span>
+<span id="L331"><a class="source-line" href="#L331"> 331</a>     spqr_rust::RustGraph&amp; raw() { return *g_; }</span>
+<span id="L332"><a class="source-line" href="#L332"> 332</a>     const spqr_rust::RustGraph&amp; raw() const { return *g_; }</span>
+<span id="L333"><a class="source-line" href="#L333"> 333</a> };</span>
+<span id="L334"><a class="source-line" href="#L334"> 334</a> </span>
+<span id="L335"><a class="source-line" href="#L335"> 335</a> // BCTree</span>
+<span id="L336"><a class="source-line" href="#L336"> 336</a> </span>
+<span id="L337"><a class="source-line" href="#L337"> 337</a> class BCTree {</span>
+<span id="L338"><a class="source-line" href="#L338"> 338</a>     std::unique_ptr&lt;spqr_rust::RustBCTree&gt; bc_;</span>
+<span id="L339"><a class="source-line" href="#L339"> 339</a>     std::vector&lt;bool&gt; isCut_;</span>
+<span id="L340"><a class="source-line" href="#L340"> 340</a> </span>
+<span id="L341"><a class="source-line" href="#L341"> 341</a> public:</span>
+<span id="L342"><a class="source-line" href="#L342"> 342</a>     enum class BNodeType { BComp, CComp };</span>
+<span id="L343"><a class="source-line" href="#L343"> 343</a>     enum class GNodeType { Normal, CutVertex };</span>
+<span id="L344"><a class="source-line" href="#L344"> 344</a>     </span>
+<span id="L345"><a class="source-line" href="#L345"> 345</a>     explicit BCTree(const Graph&amp; g) : bc_(std::make_unique&lt;spqr_rust::RustBCTree&gt;(g.raw())) {</span>
+<span id="L346"><a class="source-line" href="#L346"> 346</a>         isCut_.assign(g.numberOfNodes(), false);</span>
+<span id="L347"><a class="source-line" href="#L347"> 347</a>         for (uint32_t v : bc_-&gt;cutVertices()) isCut_[v] = true;</span>
+<span id="L348"><a class="source-line" href="#L348"> 348</a>     }</span>
+<span id="L349"><a class="source-line" href="#L349"> 349</a>     </span>
+<span id="L350"><a class="source-line" href="#L350"> 350</a>     uint32_t numberOfBComps() const { return bc_-&gt;numBlocks(); }</span>
+<span id="L351"><a class="source-line" href="#L351"> 351</a>     uint32_t numberOfCComps() const { return bc_-&gt;numCutVertices(); }</span>
+<span id="L352"><a class="source-line" href="#L352"> 352</a>     </span>
+<span id="L353"><a class="source-line" href="#L353"> 353</a>     GNodeType typeOfGNode(node v) const { return isCut_[v.idx] ? GNodeType::CutVertex : GNodeType::Normal; }</span>
+<span id="L354"><a class="source-line" href="#L354"> 354</a>     BNodeType typeOfBNode(node v) const { return v.idx &lt; bc_-&gt;numBlocks() ? BNodeType::BComp : BNodeType::CComp; }</span>
+<span id="L355"><a class="source-line" href="#L355"> 355</a>     </span>
+<span id="L356"><a class="source-line" href="#L356"> 356</a>     std::vector&lt;edge&gt; hEdges(node bNode) const {</span>
+<span id="L357"><a class="source-line" href="#L357"> 357</a>         if (bNode.idx &gt;= bc_-&gt;numBlocks()) return {};</span>
+<span id="L358"><a class="source-line" href="#L358"> 358</a>         auto raw = bc_-&gt;blockEdges(bNode.idx);</span>
+<span id="L359"><a class="source-line" href="#L359"> 359</a>         std::vector&lt;edge&gt; r; r.reserve(raw.size());</span>
+<span id="L360"><a class="source-line" href="#L360"> 360</a>         for (auto e : raw) r.push_back(edge{e});</span>
+<span id="L361"><a class="source-line" href="#L361"> 361</a>         return r;</span>
+<span id="L362"><a class="source-line" href="#L362"> 362</a>     }</span>
+<span id="L363"><a class="source-line" href="#L363"> 363</a>     </span>
+<span id="L364"><a class="source-line" href="#L364"> 364</a>     edge original(edge e) const { return e; }</span>
+<span id="L365"><a class="source-line" href="#L365"> 365</a>     node repVertex(node v, node) const { return v; }</span>
+<span id="L366"><a class="source-line" href="#L366"> 366</a>     node bcproper(node v) const { return v; }</span>
+<span id="L367"><a class="source-line" href="#L367"> 367</a>     </span>
+<span id="L368"><a class="source-line" href="#L368"> 368</a>     struct BCTreeGraph {</span>
+<span id="L369"><a class="source-line" href="#L369"> 369</a>         uint32_t n_;</span>
+<span id="L370"><a class="source-line" href="#L370"> 370</a>         struct NodesRange { </span>
+<span id="L371"><a class="source-line" href="#L371"> 371</a>             uint32_t n; </span>
+<span id="L372"><a class="source-line" href="#L372"> 372</a>             struct It { </span>
+<span id="L373"><a class="source-line" href="#L373"> 373</a>                 uint32_t i; </span>
+<span id="L374"><a class="source-line" href="#L374"> 374</a>                 node operator*() const { return node{i}; } </span>
+<span id="L375"><a class="source-line" href="#L375"> 375</a>                 It&amp; operator++() { ++i; return *this; }</span>
+<span id="L376"><a class="source-line" href="#L376"> 376</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L377"><a class="source-line" href="#L377"> 377</a>                 bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L378"><a class="source-line" href="#L378"> 378</a>                 bool operator==(It o) const { return i == o.i; }</span>
+<span id="L379"><a class="source-line" href="#L379"> 379</a>             }; </span>
+<span id="L380"><a class="source-line" href="#L380"> 380</a>             It begin() const { return {0}; } </span>
+<span id="L381"><a class="source-line" href="#L381"> 381</a>             It end() const { return {n}; }</span>
+<span id="L382"><a class="source-line" href="#L382"> 382</a>             uint32_t size() const { return n; }</span>
+<span id="L383"><a class="source-line" href="#L383"> 383</a>         };</span>
+<span id="L384"><a class="source-line" href="#L384"> 384</a>         NodesRange nodes{0};</span>
+<span id="L385"><a class="source-line" href="#L385"> 385</a>         BCTreeGraph(uint32_t n) : n_(n), nodes{n} {}</span>
+<span id="L386"><a class="source-line" href="#L386"> 386</a>         uint32_t numberOfNodes() const { return n_; }</span>
+<span id="L387"><a class="source-line" href="#L387"> 387</a>     };</span>
+<span id="L388"><a class="source-line" href="#L388"> 388</a>     BCTreeGraph bcTree() const { return BCTreeGraph{bc_-&gt;numBlocks() + bc_-&gt;numCutVertices()}; }</span>
+<span id="L389"><a class="source-line" href="#L389"> 389</a> };</span>
+<span id="L390"><a class="source-line" href="#L390"> 390</a> </span>
+<span id="L391"><a class="source-line" href="#L391"> 391</a> // StaticSPQRTree</span>
+<span id="L392"><a class="source-line" href="#L392"> 392</a> </span>
+<span id="L393"><a class="source-line" href="#L393"> 393</a> using tree_node = node;</span>
+<span id="L394"><a class="source-line" href="#L394"> 394</a> </span>
+<span id="L395"><a class="source-line" href="#L395"> 395</a> class TreeGraph {</span>
+<span id="L396"><a class="source-line" href="#L396"> 396</a>     uint32_t n_ = 0;</span>
+<span id="L397"><a class="source-line" href="#L397"> 397</a>     std::vector&lt;uint32_t&gt; parents_, src_, tgt_;</span>
+<span id="L398"><a class="source-line" href="#L398"> 398</a>     std::vector&lt;std::vector&lt;std::pair&lt;uint32_t, uint32_t&gt;&gt;&gt; adj_;  // adj_[v] = [(neighbor, edge_idx), ...]</span>
+<span id="L399"><a class="source-line" href="#L399"> 399</a> public:</span>
+<span id="L400"><a class="source-line" href="#L400"> 400</a>     void build(uint32_t n, const std::vector&lt;uint32_t&gt;&amp; parents) {</span>
+<span id="L401"><a class="source-line" href="#L401"> 401</a>         n_ = n; parents_ = parents;</span>
+<span id="L402"><a class="source-line" href="#L402"> 402</a>         src_.clear(); tgt_.clear();</span>
+<span id="L403"><a class="source-line" href="#L403"> 403</a>         adj_.assign(n, {});</span>
+<span id="L404"><a class="source-line" href="#L404"> 404</a>         for (uint32_t i = 0; i &lt; n; ++i) {</span>
+<span id="L405"><a class="source-line" href="#L405"> 405</a>             if (parents[i] != UINT32_MAX &amp;&amp; parents[i] != i) {</span>
+<span id="L406"><a class="source-line" href="#L406"> 406</a>                 uint32_t eIdx = src_.size();</span>
+<span id="L407"><a class="source-line" href="#L407"> 407</a>                 src_.push_back(parents[i]);</span>
+<span id="L408"><a class="source-line" href="#L408"> 408</a>                 tgt_.push_back(i);</span>
+<span id="L409"><a class="source-line" href="#L409"> 409</a>                 adj_[parents[i]].push_back({i, eIdx});</span>
+<span id="L410"><a class="source-line" href="#L410"> 410</a>                 adj_[i].push_back({parents[i], eIdx});</span>
+<span id="L411"><a class="source-line" href="#L411"> 411</a>             }</span>
+<span id="L412"><a class="source-line" href="#L412"> 412</a>         }</span>
+<span id="L413"><a class="source-line" href="#L413"> 413</a>     }</span>
+<span id="L414"><a class="source-line" href="#L414"> 414</a>     uint32_t numberOfNodes() const { return n_; }</span>
+<span id="L415"><a class="source-line" href="#L415"> 415</a>     uint32_t numberOfEdges() const { return src_.size(); }</span>
+<span id="L416"><a class="source-line" href="#L416"> 416</a>     node source(edge e) const { return node{src_[e.idx]}; }</span>
+<span id="L417"><a class="source-line" href="#L417"> 417</a>     node target(edge e) const { return node{tgt_[e.idx]}; }</span>
+<span id="L418"><a class="source-line" href="#L418"> 418</a>     </span>
+<span id="L419"><a class="source-line" href="#L419"> 419</a>     template&lt;typename F&gt;</span>
+<span id="L420"><a class="source-line" href="#L420"> 420</a>     void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L421"><a class="source-line" href="#L421"> 421</a>         for (auto&amp; [neighbor, eIdx] : adj_[v.idx]) {</span>
+<span id="L422"><a class="source-line" href="#L422"> 422</a>             f(node{neighbor}, edge{eIdx});</span>
+<span id="L423"><a class="source-line" href="#L423"> 423</a>         }</span>
+<span id="L424"><a class="source-line" href="#L424"> 424</a>     }</span>
+<span id="L425"><a class="source-line" href="#L425"> 425</a>     </span>
+<span id="L426"><a class="source-line" href="#L426"> 426</a>     // Zero-overhead ranges - size computed on access</span>
+<span id="L427"><a class="source-line" href="#L427"> 427</a>     struct NodesRange {</span>
+<span id="L428"><a class="source-line" href="#L428"> 428</a>         const TreeGraph* g;</span>
+<span id="L429"><a class="source-line" href="#L429"> 429</a>         struct It { </span>
+<span id="L430"><a class="source-line" href="#L430"> 430</a>             uint32_t i; </span>
+<span id="L431"><a class="source-line" href="#L431"> 431</a>             node operator*() const { return node{i}; } </span>
+<span id="L432"><a class="source-line" href="#L432"> 432</a>             It&amp; operator++() { ++i; return *this; } </span>
+<span id="L433"><a class="source-line" href="#L433"> 433</a>             It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L434"><a class="source-line" href="#L434"> 434</a>             bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L435"><a class="source-line" href="#L435"> 435</a>             bool operator==(It o) const { return i == o.i; }</span>
+<span id="L436"><a class="source-line" href="#L436"> 436</a>         };</span>
+<span id="L437"><a class="source-line" href="#L437"> 437</a>         It begin() const { return {0}; }</span>
+<span id="L438"><a class="source-line" href="#L438"> 438</a>         It end() const { return {g-&gt;n_}; }</span>
+<span id="L439"><a class="source-line" href="#L439"> 439</a>         uint32_t size() const { return g-&gt;n_; }</span>
+<span id="L440"><a class="source-line" href="#L440"> 440</a>     };</span>
+<span id="L441"><a class="source-line" href="#L441"> 441</a>     struct EdgesRange {</span>
+<span id="L442"><a class="source-line" href="#L442"> 442</a>         const TreeGraph* g;</span>
+<span id="L443"><a class="source-line" href="#L443"> 443</a>         struct It { </span>
+<span id="L444"><a class="source-line" href="#L444"> 444</a>             uint32_t i; </span>
+<span id="L445"><a class="source-line" href="#L445"> 445</a>             edge operator*() const { return edge{i}; } </span>
+<span id="L446"><a class="source-line" href="#L446"> 446</a>             It&amp; operator++() { ++i; return *this; }</span>
+<span id="L447"><a class="source-line" href="#L447"> 447</a>             It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L448"><a class="source-line" href="#L448"> 448</a>             bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L449"><a class="source-line" href="#L449"> 449</a>             bool operator==(It o) const { return i == o.i; }</span>
+<span id="L450"><a class="source-line" href="#L450"> 450</a>         };</span>
+<span id="L451"><a class="source-line" href="#L451"> 451</a>         It begin() const { return {0}; }</span>
+<span id="L452"><a class="source-line" href="#L452"> 452</a>         It end() const { return {uint32_t(g-&gt;src_.size())}; }</span>
+<span id="L453"><a class="source-line" href="#L453"> 453</a>         uint32_t size() const { return g-&gt;src_.size(); }</span>
+<span id="L454"><a class="source-line" href="#L454"> 454</a>     };</span>
+<span id="L455"><a class="source-line" href="#L455"> 455</a>     </span>
+<span id="L456"><a class="source-line" href="#L456"> 456</a>     // OGDF-style member access (lazy evaluation - zero sync overhead)</span>
+<span id="L457"><a class="source-line" href="#L457"> 457</a>     NodesRange nodes{this};</span>
+<span id="L458"><a class="source-line" href="#L458"> 458</a>     EdgesRange edges{this};</span>
+<span id="L459"><a class="source-line" href="#L459"> 459</a> </span>
+<span id="L460"><a class="source-line" href="#L460"> 460</a>     node firstNode() const { return n_ &gt; 0 ? node{0u} : node{}; }</span>
+<span id="L461"><a class="source-line" href="#L461"> 461</a> };</span>
+<span id="L462"><a class="source-line" href="#L462"> 462</a> </span>
+<span id="L463"><a class="source-line" href="#L463"> 463</a> class StaticSPQRTree {</span>
+<span id="L464"><a class="source-line" href="#L464"> 464</a> public:</span>
+<span id="L465"><a class="source-line" href="#L465"> 465</a>     struct FlatData {</span>
+<span id="L466"><a class="source-line" href="#L466"> 466</a>         uint32_t numNodes = 0;</span>
+<span id="L467"><a class="source-line" href="#L467"> 467</a>         uint32_t root = UINT32_MAX;</span>
+<span id="L468"><a class="source-line" href="#L468"> 468</a>         std::vector&lt;uint8_t&gt; nodeTypes;</span>
+<span id="L469"><a class="source-line" href="#L469"> 469</a>         std::vector&lt;uint32_t&gt; nodeParents;</span>
+<span id="L470"><a class="source-line" href="#L470"> 470</a>         std::vector&lt;uint32_t&gt; childrenOffsets;</span>
+<span id="L471"><a class="source-line" href="#L471"> 471</a>         std::vector&lt;uint32_t&gt; children;</span>
+<span id="L472"><a class="source-line" href="#L472"> 472</a>         std::vector&lt;uint32_t&gt; skeletonOffsets;</span>
+<span id="L473"><a class="source-line" href="#L473"> 473</a>         std::vector&lt;SkeletonEdge&gt; skeletonEdges;</span>
+<span id="L474"><a class="source-line" href="#L474"> 474</a>         std::vector&lt;uint32_t&gt; skeletonNumNodes;</span>
+<span id="L475"><a class="source-line" href="#L475"> 475</a>         std::vector&lt;uint32_t&gt; nodeMappingOffsets;</span>
+<span id="L476"><a class="source-line" href="#L476"> 476</a>         std::vector&lt;uint32_t&gt; nodeMapping;</span>
+<span id="L477"><a class="source-line" href="#L477"> 477</a>         std::vector&lt;uint32_t&gt; edgeToTreeNode;</span>
+<span id="L478"><a class="source-line" href="#L478"> 478</a> </span>
+<span id="L479"><a class="source-line" href="#L479"> 479</a>         spqr_rust::SpqrTreeFlatView view() const {</span>
+<span id="L480"><a class="source-line" href="#L480"> 480</a>             return spqr_rust::SpqrTreeFlatView(</span>
+<span id="L481"><a class="source-line" href="#L481"> 481</a>                 numNodes,</span>
+<span id="L482"><a class="source-line" href="#L482"> 482</a>                 root,</span>
+<span id="L483"><a class="source-line" href="#L483"> 483</a>                 nodeTypes.empty() ? nullptr : nodeTypes.data(),</span>
+<span id="L484"><a class="source-line" href="#L484"> 484</a>                 nodeParents.empty() ? nullptr : nodeParents.data(),</span>
+<span id="L485"><a class="source-line" href="#L485"> 485</a>                 childrenOffsets.empty() ? nullptr : childrenOffsets.data(),</span>
+<span id="L486"><a class="source-line" href="#L486"> 486</a>                 children.empty() ? nullptr : children.data(),</span>
+<span id="L487"><a class="source-line" href="#L487"> 487</a>                 static_cast&lt;uint32_t&gt;(children.size()),</span>
+<span id="L488"><a class="source-line" href="#L488"> 488</a>                 skeletonOffsets.empty() ? nullptr : skeletonOffsets.data(),</span>
+<span id="L489"><a class="source-line" href="#L489"> 489</a>                 skeletonEdges.empty() ? nullptr : skeletonEdges.data(),</span>
+<span id="L490"><a class="source-line" href="#L490"> 490</a>                 static_cast&lt;uint32_t&gt;(skeletonEdges.size()),</span>
+<span id="L491"><a class="source-line" href="#L491"> 491</a>                 skeletonNumNodes.empty() ? nullptr : skeletonNumNodes.data(),</span>
+<span id="L492"><a class="source-line" href="#L492"> 492</a>                 nodeMappingOffsets.empty() ? nullptr : nodeMappingOffsets.data(),</span>
+<span id="L493"><a class="source-line" href="#L493"> 493</a>                 nodeMapping.empty() ? nullptr : nodeMapping.data(),</span>
+<span id="L494"><a class="source-line" href="#L494"> 494</a>                 static_cast&lt;uint32_t&gt;(nodeMapping.size()),</span>
+<span id="L495"><a class="source-line" href="#L495"> 495</a>                 edgeToTreeNode.empty() ? nullptr : edgeToTreeNode.data(),</span>
+<span id="L496"><a class="source-line" href="#L496"> 496</a>                 static_cast&lt;uint32_t&gt;(edgeToTreeNode.size()));</span>
+<span id="L497"><a class="source-line" href="#L497"> 497</a>         }</span>
+<span id="L498"><a class="source-line" href="#L498"> 498</a>     };</span>
+<span id="L499"><a class="source-line" href="#L499"> 499</a> </span>
+<span id="L500"><a class="source-line" href="#L500"> 500</a> private:</span>
+<span id="L501"><a class="source-line" href="#L501"> 501</a>     std::unique_ptr&lt;spqr_rust::RustSPQRResult&gt; result_;</span>
+<span id="L502"><a class="source-line" href="#L502"> 502</a>     std::unique_ptr&lt;FlatData&gt; ownedFlat_;</span>
+<span id="L503"><a class="source-line" href="#L503"> 503</a>     spqr_rust::SpqrTreeFlatView view_;</span>
+<span id="L504"><a class="source-line" href="#L504"> 504</a>     std::vector&lt;uint32_t&gt; parents_;</span>
+<span id="L505"><a class="source-line" href="#L505"> 505</a>     TreeGraph tree_;</span>
+<span id="L506"><a class="source-line" href="#L506"> 506</a>     const Graph* gccGraph_ = nullptr;</span>
+<span id="L507"><a class="source-line" href="#L507"> 507</a> </span>
+<span id="L508"><a class="source-line" href="#L508"> 508</a>     mutable std::unordered_map&lt;uint64_t, uint32_t&gt; virtualIndex_;</span>
+<span id="L509"><a class="source-line" href="#L509"> 509</a>     mutable bool virtualIndexBuilt_ = false;</span>
+<span id="L510"><a class="source-line" href="#L510"> 510</a> </span>
+<span id="L511"><a class="source-line" href="#L511"> 511</a>     static uint64_t packTreePair_(uint32_t from, uint32_t to) {</span>
+<span id="L512"><a class="source-line" href="#L512"> 512</a>         return (static_cast&lt;uint64_t&gt;(from) &lt;&lt; 32) | static_cast&lt;uint64_t&gt;(to);</span>
+<span id="L513"><a class="source-line" href="#L513"> 513</a>     }</span>
+<span id="L514"><a class="source-line" href="#L514"> 514</a> </span>
+<span id="L515"><a class="source-line" href="#L515"> 515</a>     void buildVirtualIndex_() const {</span>
+<span id="L516"><a class="source-line" href="#L516"> 516</a>         if (virtualIndexBuilt_) return;</span>
+<span id="L517"><a class="source-line" href="#L517"> 517</a>         // Walk all tree nodes, scan their skeleton edges once, index virtual ones.</span>
+<span id="L518"><a class="source-line" href="#L518"> 518</a>         virtualIndex_.reserve(view_.numNodes * 2);</span>
+<span id="L519"><a class="source-line" href="#L519"> 519</a>         for (uint32_t tn = 0; tn &lt; view_.numNodes; ++tn) {</span>
+<span id="L520"><a class="source-line" href="#L520"> 520</a>             uint32_t s = view_.skeletonOffsets[tn];</span>
+<span id="L521"><a class="source-line" href="#L521"> 521</a>             uint32_t e = view_.skeletonOffsets[tn + 1];</span>
+<span id="L522"><a class="source-line" href="#L522"> 522</a>             for (uint32_t i = s; i &lt; e; ++i) {</span>
+<span id="L523"><a class="source-line" href="#L523"> 523</a>                 const auto&amp; se = view_.skeletonEdges[i];</span>
+<span id="L524"><a class="source-line" href="#L524"> 524</a>                 if (se.real_edge == UINT32_MAX) {</span>
+<span id="L525"><a class="source-line" href="#L525"> 525</a>                     // Virtual edge: connects tn to se.twin_tree_node</span>
+<span id="L526"><a class="source-line" href="#L526"> 526</a>                     virtualIndex_.emplace(packTreePair_(tn, se.twin_tree_node), i);</span>
+<span id="L527"><a class="source-line" href="#L527"> 527</a>                 }</span>
+<span id="L528"><a class="source-line" href="#L528"> 528</a>             }</span>
+<span id="L529"><a class="source-line" href="#L529"> 529</a>         }</span>
+<span id="L530"><a class="source-line" href="#L530"> 530</a>         virtualIndexBuilt_ = true;</span>
+<span id="L531"><a class="source-line" href="#L531"> 531</a>     }</span>
+<span id="L532"><a class="source-line" href="#L532"> 532</a> </span>
+<span id="L533"><a class="source-line" href="#L533"> 533</a>     void buildTree() {</span>
+<span id="L534"><a class="source-line" href="#L534"> 534</a>         parents_.resize(view_.numNodes);</span>
+<span id="L535"><a class="source-line" href="#L535"> 535</a>         for (uint32_t i = 0; i &lt; view_.numNodes; ++i) parents_[i] = view_.nodeParents[i];</span>
+<span id="L536"><a class="source-line" href="#L536"> 536</a>         tree_.build(view_.numNodes, parents_);</span>
+<span id="L537"><a class="source-line" href="#L537"> 537</a>     }</span>
+<span id="L538"><a class="source-line" href="#L538"> 538</a>     edge findVirtual(tree_node from, tree_node to) const {</span>
+<span id="L539"><a class="source-line" href="#L539"> 539</a>         buildVirtualIndex_();</span>
+<span id="L540"><a class="source-line" href="#L540"> 540</a>         auto it = virtualIndex_.find(packTreePair_(from.idx, to.idx));</span>
+<span id="L541"><a class="source-line" href="#L541"> 541</a>         if (it == virtualIndex_.end()) return INVALID_EDGE;</span>
+<span id="L542"><a class="source-line" href="#L542"> 542</a>         // Return LOCAL index within the from-skeleton</span>
+<span id="L543"><a class="source-line" href="#L543"> 543</a>         return edge{it-&gt;second - view_.skeletonOffsets[from.idx]};</span>
+<span id="L544"><a class="source-line" href="#L544"> 544</a>     }</span>
+<span id="L545"><a class="source-line" href="#L545"> 545</a>     // Return GLOBAL edge index (unique across all skeletons) for use as map key</span>
+<span id="L546"><a class="source-line" href="#L546"> 546</a>     edge findVirtualGlobal(tree_node from, tree_node to) const {</span>
+<span id="L547"><a class="source-line" href="#L547"> 547</a>         buildVirtualIndex_();</span>
+<span id="L548"><a class="source-line" href="#L548"> 548</a>         auto it = virtualIndex_.find(packTreePair_(from.idx, to.idx));</span>
+<span id="L549"><a class="source-line" href="#L549"> 549</a>         if (it == virtualIndex_.end()) return INVALID_EDGE;</span>
+<span id="L550"><a class="source-line" href="#L550"> 550</a>         return edge{it-&gt;second};</span>
+<span id="L551"><a class="source-line" href="#L551"> 551</a>     }</span>
+<span id="L552"><a class="source-line" href="#L552"> 552</a> </span>
+<span id="L553"><a class="source-line" href="#L553"> 553</a> public:</span>
+<span id="L554"><a class="source-line" href="#L554"> 554</a>     enum class NodeType { SNode, PNode, RNode };</span>
+<span id="L555"><a class="source-line" href="#L555"> 555</a>     using SkeletonEdge = ::SkeletonEdge;</span>
+<span id="L556"><a class="source-line" href="#L556"> 556</a>     </span>
+<span id="L557"><a class="source-line" href="#L557"> 557</a>     explicit StaticSPQRTree(const Graph&amp; g)</span>
+<span id="L558"><a class="source-line" href="#L558"> 558</a>         : result_(std::make_unique&lt;spqr_rust::RustSPQRResult&gt;(g.raw())),</span>
+<span id="L559"><a class="source-line" href="#L559"> 559</a>           view_(*result_),</span>
+<span id="L560"><a class="source-line" href="#L560"> 560</a>           gccGraph_(&amp;g) { buildTree(); }</span>
+<span id="L561"><a class="source-line" href="#L561"> 561</a> </span>
+<span id="L562"><a class="source-line" href="#L562"> 562</a>     /**</span>
+<span id="L563"><a class="source-line" href="#L563"> 563</a>      * Build via SP-Compress + Reconstruct</span>
+<span id="L564"><a class="source-line" href="#L564"> 564</a>      *</span>
+<span id="L565"><a class="source-line" href="#L565"> 565</a>      * contractible[v] != 0 iff vertex v is eligible for Series compression</span>
+<span id="L566"><a class="source-line" href="#L566"> 566</a>      * (for example any non-pole interior vertex of the biconnected block)</span>
+<span id="L567"><a class="source-line" href="#L567"> 567</a>      */</span>
+<span id="L568"><a class="source-line" href="#L568"> 568</a>     StaticSPQRTree(const Graph&amp; g, const uint8_t* contractible, uint32_t contractible_len)</span>
+<span id="L569"><a class="source-line" href="#L569"> 569</a>         : result_(buildViaSpCompress_(g, contractible, contractible_len)),</span>
+<span id="L570"><a class="source-line" href="#L570"> 570</a>           view_(*result_),</span>
+<span id="L571"><a class="source-line" href="#L571"> 571</a>           gccGraph_(&amp;g) {</span>
+<span id="L572"><a class="source-line" href="#L572"> 572</a>         buildTree();</span>
+<span id="L573"><a class="source-line" href="#L573"> 573</a>     }</span>
+<span id="L574"><a class="source-line" href="#L574"> 574</a> </span>
+<span id="L575"><a class="source-line" href="#L575"> 575</a>     StaticSPQRTree(FlatData data, const Graph* gccGraph)</span>
+<span id="L576"><a class="source-line" href="#L576"> 576</a>         : ownedFlat_(std::make_unique&lt;FlatData&gt;(std::move(data))),</span>
+<span id="L577"><a class="source-line" href="#L577"> 577</a>           view_(ownedFlat_-&gt;view()),</span>
+<span id="L578"><a class="source-line" href="#L578"> 578</a>           gccGraph_(gccGraph) {</span>
+<span id="L579"><a class="source-line" href="#L579"> 579</a>         buildTree();</span>
+<span id="L580"><a class="source-line" href="#L580"> 580</a>     }</span>
+<span id="L581"><a class="source-line" href="#L581"> 581</a> </span>
+<span id="L582"><a class="source-line" href="#L582"> 582</a> private:</span>
+<span id="L583"><a class="source-line" href="#L583"> 583</a>     static std::unique_ptr&lt;spqr_rust::RustSPQRResult&gt; buildViaSpCompress_(</span>
+<span id="L584"><a class="source-line" href="#L584"> 584</a>         const Graph&amp; g, const uint8_t* contractible, uint32_t contractible_len)</span>
+<span id="L585"><a class="source-line" href="#L585"> 585</a>     {</span>
+<span id="L586"><a class="source-line" href="#L586"> 586</a>         const uint32_t n_nodes = static_cast&lt;uint32_t&gt;(g.numberOfNodes());</span>
+<span id="L587"><a class="source-line" href="#L587"> 587</a>         const uint32_t n_edges = static_cast&lt;uint32_t&gt;(g.numberOfEdges());</span>
+<span id="L588"><a class="source-line" href="#L588"> 588</a>         std::vector&lt;SpCompressInputEdge&gt; in_edges;</span>
+<span id="L589"><a class="source-line" href="#L589"> 589</a>         in_edges.reserve(n_edges);</span>
+<span id="L590"><a class="source-line" href="#L590"> 590</a>         for (uint32_t i = 0; i &lt; n_edges; ++i) {</span>
+<span id="L591"><a class="source-line" href="#L591"> 591</a>             uint32_t u = spqr_graph_edge_src(g.raw().raw(), i);</span>
+<span id="L592"><a class="source-line" href="#L592"> 592</a>             uint32_t v = spqr_graph_edge_dst(g.raw().raw(), i);</span>
+<span id="L593"><a class="source-line" href="#L593"> 593</a>             in_edges.push_back(SpCompressInputEdge{ u, v, i });</span>
+<span id="L594"><a class="source-line" href="#L594"> 594</a>         }</span>
+<span id="L595"><a class="source-line" href="#L595"> 595</a>         return std::make_unique&lt;spqr_rust::RustSPQRResult&gt;(</span>
+<span id="L596"><a class="source-line" href="#L596"> 596</a>             n_nodes,</span>
+<span id="L597"><a class="source-line" href="#L597"> 597</a>             in_edges.empty() ? nullptr : in_edges.data(),</span>
+<span id="L598"><a class="source-line" href="#L598"> 598</a>             n_edges,</span>
+<span id="L599"><a class="source-line" href="#L599"> 599</a>             n_edges == 0 ? 0u : n_edges - 1u,</span>
+<span id="L600"><a class="source-line" href="#L600"> 600</a>             contractible,</span>
+<span id="L601"><a class="source-line" href="#L601"> 601</a>             contractible_len);</span>
+<span id="L602"><a class="source-line" href="#L602"> 602</a>     }</span>
+<span id="L603"><a class="source-line" href="#L603"> 603</a> </span>
+<span id="L604"><a class="source-line" href="#L604"> 604</a> public:</span>
+<span id="L605"><a class="source-line" href="#L605"> 605</a>     tree_node rootNode() const { return node{view_.root}; }</span>
+<span id="L606"><a class="source-line" href="#L606"> 606</a>     uint32_t numberOfNodes() const { return view_.numNodes; }</span>
+<span id="L607"><a class="source-line" href="#L607"> 607</a>     NodeType typeOf(tree_node tn) const { return view_.nodeTypes[tn.idx] == 0 ? NodeType::SNode : view_.nodeTypes[tn.idx] == 1 ? NodeType::PNode : NodeType::RNode; }</span>
+<span id="L608"><a class="source-line" href="#L608"> 608</a>     const TreeGraph&amp; tree() const { return tree_; }</span>
+<span id="L609"><a class="source-line" href="#L609"> 609</a>     tree_node parent(tree_node tn) const { return node{parents_[tn.idx]}; }</span>
+<span id="L610"><a class="source-line" href="#L610"> 610</a> </span>
+<span id="L611"><a class="source-line" href="#L611"> 611</a> </span>
+<span id="L612"><a class="source-line" href="#L612"> 612</a>     const spqr_rust::SpqrTreeFlatView&amp; flatView() const { return view_; }</span>
+<span id="L613"><a class="source-line" href="#L613"> 613</a>     const Graph* gccGraph() const { return gccGraph_; }</span>
+<span id="L614"><a class="source-line" href="#L614"> 614</a> </span>
+<span id="L615"><a class="source-line" href="#L615"> 615</a>     class SkeletonGraph {</span>
+<span id="L616"><a class="source-line" href="#L616"> 616</a>         const spqr_rust::SpqrTreeFlatView&amp; view_;</span>
+<span id="L617"><a class="source-line" href="#L617"> 617</a>         const Graph* gccGraph_;</span>
+<span id="L618"><a class="source-line" href="#L618"> 618</a>         tree_node tn_;</span>
+<span id="L619"><a class="source-line" href="#L619"> 619</a>         uint32_t nNodes_, edgeOff_, edgeEnd_;</span>
+<span id="L620"><a class="source-line" href="#L620"> 620</a>         uint32_t mapOff_;</span>
+<span id="L621"><a class="source-line" href="#L621"> 621</a> </span>
+<span id="L622"><a class="source-line" href="#L622"> 622</a>         mutable std::vector&lt;uint32_t&gt; adjStart_;</span>
+<span id="L623"><a class="source-line" href="#L623"> 623</a>         mutable std::vector&lt;uint32_t&gt; adjEdges_;</span>
+<span id="L624"><a class="source-line" href="#L624"> 624</a>         mutable std::vector&lt;uint32_t&gt; adjNeighbors_;</span>
+<span id="L625"><a class="source-line" href="#L625"> 625</a>         mutable bool adjBuilt_ = false;</span>
+<span id="L626"><a class="source-line" href="#L626"> 626</a> </span>
+<span id="L627"><a class="source-line" href="#L627"> 627</a>         std::pair&lt;uint32_t, uint32_t&gt; orientedEndpoints_(uint32_t skelIdx) const {</span>
+<span id="L628"><a class="source-line" href="#L628"> 628</a>             const auto&amp; se = view_.skeletonEdges[skelIdx];</span>
+<span id="L629"><a class="source-line" href="#L629"> 629</a>             if (se.real_edge == UINT32_MAX || gccGraph_ == nullptr)</span>
+<span id="L630"><a class="source-line" href="#L630"> 630</a>                 return {se.src, se.dst};</span>
+<span id="L631"><a class="source-line" href="#L631"> 631</a>             auto gSrc = gccGraph_-&gt;source(::spqr::edge{se.real_edge});</span>
+<span id="L632"><a class="source-line" href="#L632"> 632</a>             if (view_.nodeMapping[mapOff_ + se.src] == gSrc.idx)</span>
+<span id="L633"><a class="source-line" href="#L633"> 633</a>                 return {se.src, se.dst};</span>
+<span id="L634"><a class="source-line" href="#L634"> 634</a>             return {se.dst, se.src};</span>
+<span id="L635"><a class="source-line" href="#L635"> 635</a>         }</span>
+<span id="L636"><a class="source-line" href="#L636"> 636</a> </span>
+<span id="L637"><a class="source-line" href="#L637"> 637</a>         void buildAdj_() const {</span>
+<span id="L638"><a class="source-line" href="#L638"> 638</a>             if (adjBuilt_) return;</span>
+<span id="L639"><a class="source-line" href="#L639"> 639</a>             const uint32_t n = nNodes_;</span>
+<span id="L640"><a class="source-line" href="#L640"> 640</a>             // 1) degree count</span>
+<span id="L641"><a class="source-line" href="#L641"> 641</a>             adjStart_.assign(n + 1, 0);</span>
+<span id="L642"><a class="source-line" href="#L642"> 642</a>             for (uint32_t i = edgeOff_; i &lt; edgeEnd_; ++i) {</span>
+<span id="L643"><a class="source-line" href="#L643"> 643</a>                 auto [s, d] = orientedEndpoints_(i);</span>
+<span id="L644"><a class="source-line" href="#L644"> 644</a>                 ++adjStart_[s + 1];</span>
+<span id="L645"><a class="source-line" href="#L645"> 645</a>                 if (d != s) ++adjStart_[d + 1];</span>
+<span id="L646"><a class="source-line" href="#L646"> 646</a>             }</span>
+<span id="L647"><a class="source-line" href="#L647"> 647</a>             // 2) prefix sum offsets</span>
+<span id="L648"><a class="source-line" href="#L648"> 648</a>             for (uint32_t v = 0; v &lt; n; ++v)</span>
+<span id="L649"><a class="source-line" href="#L649"> 649</a>                 adjStart_[v + 1] += adjStart_[v];</span>
+<span id="L650"><a class="source-line" href="#L650"> 650</a>             // 3) bucket fill</span>
+<span id="L651"><a class="source-line" href="#L651"> 651</a>             const uint32_t total = adjStart_[n];</span>
+<span id="L652"><a class="source-line" href="#L652"> 652</a>             adjEdges_.assign(total, 0);</span>
+<span id="L653"><a class="source-line" href="#L653"> 653</a>             adjNeighbors_.assign(total, 0);</span>
+<span id="L654"><a class="source-line" href="#L654"> 654</a>             std::vector&lt;uint32_t&gt; cursor(adjStart_.begin(), adjStart_.begin() + n);</span>
+<span id="L655"><a class="source-line" href="#L655"> 655</a>             for (uint32_t i = edgeOff_; i &lt; edgeEnd_; ++i) {</span>
+<span id="L656"><a class="source-line" href="#L656"> 656</a>                 auto [s, d] = orientedEndpoints_(i);</span>
+<span id="L657"><a class="source-line" href="#L657"> 657</a>                 uint32_t ps = cursor[s]++;</span>
+<span id="L658"><a class="source-line" href="#L658"> 658</a>                 adjEdges_[ps] = i;</span>
+<span id="L659"><a class="source-line" href="#L659"> 659</a>                 adjNeighbors_[ps] = d;</span>
+<span id="L660"><a class="source-line" href="#L660"> 660</a>                 if (d != s) {</span>
+<span id="L661"><a class="source-line" href="#L661"> 661</a>                     uint32_t pd = cursor[d]++;</span>
+<span id="L662"><a class="source-line" href="#L662"> 662</a>                     adjEdges_[pd] = i;</span>
+<span id="L663"><a class="source-line" href="#L663"> 663</a>                     adjNeighbors_[pd] = s;</span>
+<span id="L664"><a class="source-line" href="#L664"> 664</a>                 }</span>
+<span id="L665"><a class="source-line" href="#L665"> 665</a>             }</span>
+<span id="L666"><a class="source-line" href="#L666"> 666</a>             adjBuilt_ = true;</span>
+<span id="L667"><a class="source-line" href="#L667"> 667</a>         }</span>
+<span id="L668"><a class="source-line" href="#L668"> 668</a> </span>
+<span id="L669"><a class="source-line" href="#L669"> 669</a>     public:</span>
+<span id="L670"><a class="source-line" href="#L670"> 670</a>         SkeletonGraph(const spqr_rust::SpqrTreeFlatView&amp; view, tree_node tn, const Graph* gccGraph)</span>
+<span id="L671"><a class="source-line" href="#L671"> 671</a>             : view_(view), gccGraph_(gccGraph), tn_(tn),</span>
+<span id="L672"><a class="source-line" href="#L672"> 672</a>               nNodes_(view.skeletonNumNodes[tn.idx]),</span>
+<span id="L673"><a class="source-line" href="#L673"> 673</a>               edgeOff_(view.skeletonOffsets[tn.idx]),</span>
+<span id="L674"><a class="source-line" href="#L674"> 674</a>               edgeEnd_(view.skeletonOffsets[tn.idx + 1]),</span>
+<span id="L675"><a class="source-line" href="#L675"> 675</a>               mapOff_(view.nodeMappingOffsets[tn.idx]) {}</span>
+<span id="L676"><a class="source-line" href="#L676"> 676</a> </span>
+<span id="L677"><a class="source-line" href="#L677"> 677</a>         uint32_t numberOfNodes() const { return nNodes_; }</span>
+<span id="L678"><a class="source-line" href="#L678"> 678</a>         uint32_t numberOfEdges() const { return edgeEnd_ - edgeOff_; }</span>
+<span id="L679"><a class="source-line" href="#L679"> 679</a> </span>
+<span id="L680"><a class="source-line" href="#L680"> 680</a>         // source/target accept GLOBAL edge indices</span>
+<span id="L681"><a class="source-line" href="#L681"> 681</a>         node source(edge e) const { return node{orientedEndpoints_(e.idx).first}; }</span>
+<span id="L682"><a class="source-line" href="#L682"> 682</a>         node target(edge e) const { return node{orientedEndpoints_(e.idx).second}; }</span>
+<span id="L683"><a class="source-line" href="#L683"> 683</a> </span>
+<span id="L684"><a class="source-line" href="#L684"> 684</a>         node firstNode() const { return nNodes_ &gt; 0 ? node{0u} : node{}; }</span>
+<span id="L685"><a class="source-line" href="#L685"> 685</a> </span>
+<span id="L686"><a class="source-line" href="#L686"> 686</a>         template&lt;typename F&gt;</span>
+<span id="L687"><a class="source-line" href="#L687"> 687</a>         void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L688"><a class="source-line" href="#L688"> 688</a>             buildAdj_();</span>
+<span id="L689"><a class="source-line" href="#L689"> 689</a>             const uint32_t begin = adjStart_[v.idx];</span>
+<span id="L690"><a class="source-line" href="#L690"> 690</a>             const uint32_t end   = adjStart_[v.idx + 1];</span>
+<span id="L691"><a class="source-line" href="#L691"> 691</a>             for (uint32_t k = begin; k &lt; end; ++k)</span>
+<span id="L692"><a class="source-line" href="#L692"> 692</a>                 f(node{adjNeighbors_[k]}, edge{adjEdges_[k]});</span>
+<span id="L693"><a class="source-line" href="#L693"> 693</a>         }</span>
+<span id="L694"><a class="source-line" href="#L694"> 694</a>         </span>
+<span id="L695"><a class="source-line" href="#L695"> 695</a>         struct NodesRange {</span>
+<span id="L696"><a class="source-line" href="#L696"> 696</a>             uint32_t n;</span>
+<span id="L697"><a class="source-line" href="#L697"> 697</a>             struct It { </span>
+<span id="L698"><a class="source-line" href="#L698"> 698</a>                 uint32_t i; </span>
+<span id="L699"><a class="source-line" href="#L699"> 699</a>                 node operator*() const { return node{i}; } </span>
+<span id="L700"><a class="source-line" href="#L700"> 700</a>                 It&amp; operator++() { ++i; return *this; } </span>
+<span id="L701"><a class="source-line" href="#L701"> 701</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L702"><a class="source-line" href="#L702"> 702</a>                 bool operator!=(It o) const { return i != o.i; } </span>
+<span id="L703"><a class="source-line" href="#L703"> 703</a>             };</span>
+<span id="L704"><a class="source-line" href="#L704"> 704</a>             It begin() const { return {0}; }</span>
+<span id="L705"><a class="source-line" href="#L705"> 705</a>             It end() const { return {n}; }</span>
+<span id="L706"><a class="source-line" href="#L706"> 706</a>             uint32_t size() const { return n; }</span>
+<span id="L707"><a class="source-line" href="#L707"> 707</a>         };</span>
+<span id="L708"><a class="source-line" href="#L708"> 708</a>         NodesRange nodes{nNodes_};</span>
+<span id="L709"><a class="source-line" href="#L709"> 709</a>         </span>
+<span id="L710"><a class="source-line" href="#L710"> 710</a>         struct EdgesRange {</span>
+<span id="L711"><a class="source-line" href="#L711"> 711</a>             uint32_t off, end_;</span>
+<span id="L712"><a class="source-line" href="#L712"> 712</a>             struct It { </span>
+<span id="L713"><a class="source-line" href="#L713"> 713</a>                 uint32_t i; </span>
+<span id="L714"><a class="source-line" href="#L714"> 714</a>                 edge operator*() const { return edge{i}; } </span>
+<span id="L715"><a class="source-line" href="#L715"> 715</a>                 It&amp; operator++() { ++i; return *this; } </span>
+<span id="L716"><a class="source-line" href="#L716"> 716</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L717"><a class="source-line" href="#L717"> 717</a>                 bool operator!=(It o) const { return i != o.i; } </span>
+<span id="L718"><a class="source-line" href="#L718"> 718</a>             };</span>
+<span id="L719"><a class="source-line" href="#L719"> 719</a>             It begin() const { return {off}; }</span>
+<span id="L720"><a class="source-line" href="#L720"> 720</a>             It end() const { return {end_}; }</span>
+<span id="L721"><a class="source-line" href="#L721"> 721</a>             uint32_t size() const { return end_ - off; }</span>
+<span id="L722"><a class="source-line" href="#L722"> 722</a>         };</span>
+<span id="L723"><a class="source-line" href="#L723"> 723</a>         EdgesRange edges{edgeOff_, edgeEnd_};</span>
+<span id="L724"><a class="source-line" href="#L724"> 724</a>     };</span>
+<span id="L725"><a class="source-line" href="#L725"> 725</a> </span>
+<span id="L726"><a class="source-line" href="#L726"> 726</a>     class Skeleton {</span>
+<span id="L727"><a class="source-line" href="#L727"> 727</a>         const StaticSPQRTree&amp; t_; tree_node tn_; mutable std::unique_ptr&lt;SkeletonGraph&gt; g_;</span>
+<span id="L728"><a class="source-line" href="#L728"> 728</a> </span>
+<span id="L729"><a class="source-line" href="#L729"> 729</a>         const SkeletonEdge* edgeAt(edge e) const { return &amp;t_.view_.skeletonEdges[e.idx]; }</span>
+<span id="L730"><a class="source-line" href="#L730"> 730</a>     public:</span>
+<span id="L731"><a class="source-line" href="#L731"> 731</a>         Skeleton(const StaticSPQRTree&amp; t, tree_node tn) : t_(t), tn_(tn) {}</span>
+<span id="L732"><a class="source-line" href="#L732"> 732</a>         const SkeletonGraph&amp; getGraph() const { if (!g_) g_ = std::make_unique&lt;SkeletonGraph&gt;(t_.view_, tn_, t_.gccGraph_); return *g_; }</span>
+<span id="L733"><a class="source-line" href="#L733"> 733</a>         node original(node local) const { return node{t_.view_.nodeMapping[t_.view_.nodeMappingOffsets[tn_.idx] + local.idx]}; }</span>
+<span id="L734"><a class="source-line" href="#L734"> 734</a>         // All edge methods accept GLOBAL edge indices</span>
+<span id="L735"><a class="source-line" href="#L735"> 735</a>         bool isVirtual(edge e) const { return edgeAt(e)-&gt;real_edge == UINT32_MAX; }</span>
+<span id="L736"><a class="source-line" href="#L736"> 736</a>         tree_node twinTreeNode(edge e) const { auto* se = edgeAt(e); return se-&gt;real_edge == UINT32_MAX ? node{se-&gt;twin_tree_node} : INVALID_NODE; }</span>
+<span id="L737"><a class="source-line" href="#L737"> 737</a>         edge realEdge(edge e) const { auto* se = edgeAt(e); return se-&gt;real_edge != UINT32_MAX ? edge{se-&gt;real_edge} : INVALID_EDGE; }</span>
+<span id="L738"><a class="source-line" href="#L738"> 738</a> </span>
+<span id="L739"><a class="source-line" href="#L739"> 739</a>         uint32_t numberOfNodes() const {</span>
+<span id="L740"><a class="source-line" href="#L740"> 740</a>             return t_.view_.skeletonNumNodes[tn_.idx];</span>
+<span id="L741"><a class="source-line" href="#L741"> 741</a>         }</span>
+<span id="L742"><a class="source-line" href="#L742"> 742</a>         uint32_t numberOfEdges() const {</span>
+<span id="L743"><a class="source-line" href="#L743"> 743</a>             return t_.view_.skeletonOffsets[tn_.idx + 1] - t_.view_.skeletonOffsets[tn_.idx];</span>
+<span id="L744"><a class="source-line" href="#L744"> 744</a>         }</span>
+<span id="L745"><a class="source-line" href="#L745"> 745</a> </span>
+<span id="L746"><a class="source-line" href="#L746"> 746</a>         template&lt;typename F&gt;</span>
+<span id="L747"><a class="source-line" href="#L747"> 747</a>         void forEachEdge(F&amp;&amp; f) const {</span>
+<span id="L748"><a class="source-line" href="#L748"> 748</a>             const auto&amp; view = t_.view_;</span>
+<span id="L749"><a class="source-line" href="#L749"> 749</a>             const uint32_t off = view.skeletonOffsets[tn_.idx];</span>
+<span id="L750"><a class="source-line" href="#L750"> 750</a>             const uint32_t end = view.skeletonOffsets[tn_.idx + 1];</span>
+<span id="L751"><a class="source-line" href="#L751"> 751</a>             const uint32_t mapOff = view.nodeMappingOffsets[tn_.idx];</span>
+<span id="L752"><a class="source-line" href="#L752"> 752</a>             const Graph* gccGraph = t_.gccGraph_;</span>
+<span id="L753"><a class="source-line" href="#L753"> 753</a>             for (uint32_t i = off; i &lt; end; ++i) {</span>
+<span id="L754"><a class="source-line" href="#L754"> 754</a>                 const auto&amp; se = view.skeletonEdges[i];</span>
+<span id="L755"><a class="source-line" href="#L755"> 755</a>                 uint32_t s = se.src, d = se.dst;</span>
+<span id="L756"><a class="source-line" href="#L756"> 756</a>                 if (se.real_edge != UINT32_MAX &amp;&amp; gccGraph != nullptr) {</span>
+<span id="L757"><a class="source-line" href="#L757"> 757</a>                     auto gSrc = gccGraph-&gt;source(edge{se.real_edge});</span>
+<span id="L758"><a class="source-line" href="#L758"> 758</a>                     if (view.nodeMapping[mapOff + s] != gSrc.idx) {</span>
+<span id="L759"><a class="source-line" href="#L759"> 759</a>                         uint32_t tmp = s; s = d; d = tmp;</span>
+<span id="L760"><a class="source-line" href="#L760"> 760</a>                     }</span>
+<span id="L761"><a class="source-line" href="#L761"> 761</a>                 }</span>
+<span id="L762"><a class="source-line" href="#L762"> 762</a>                 f(edge{i}, node{s}, node{d});</span>
+<span id="L763"><a class="source-line" href="#L763"> 763</a>             }</span>
+<span id="L764"><a class="source-line" href="#L764"> 764</a>         }</span>
+<span id="L765"><a class="source-line" href="#L765"> 765</a>     };</span>
+<span id="L766"><a class="source-line" href="#L766"> 766</a>     </span>
+<span id="L767"><a class="source-line" href="#L767"> 767</a>     Skeleton skeleton(tree_node tn) const { return Skeleton(*this, tn); }</span>
+<span id="L768"><a class="source-line" href="#L768"> 768</a>     edge skeletonEdgeSrc(edge te) const { return findVirtualGlobal(tree_.source(te), tree_.target(te)); }</span>
+<span id="L769"><a class="source-line" href="#L769"> 769</a>     edge skeletonEdgeTgt(edge te) const { return findVirtualGlobal(tree_.target(te), tree_.source(te)); }</span>
+<span id="L770"><a class="source-line" href="#L770"> 770</a> };</span>
+<span id="L771"><a class="source-line" href="#L771"> 771</a> </span>
+<span id="L772"><a class="source-line" href="#L772"> 772</a> using SPQRTree = StaticSPQRTree;</span>
+<span id="L773"><a class="source-line" href="#L773"> 773</a> using Skeleton = StaticSPQRTree::Skeleton;</span>
+<span id="L774"><a class="source-line" href="#L774"> 774</a> </span>
+<span id="L775"><a class="source-line" href="#L775"> 775</a> template&lt;typename NA&gt;</span>
+<span id="L776"><a class="source-line" href="#L776"> 776</a> inline uint32_t connectedComponents(const Graph&amp; g, NA&amp; comp) {</span>
+<span id="L777"><a class="source-line" href="#L777"> 777</a>     spqr_rust::RustConnectedComponents cc(g.raw());</span>
+<span id="L778"><a class="source-line" href="#L778"> 778</a>     auto [data, len] = cc.componentsRaw();</span>
+<span id="L779"><a class="source-line" href="#L779"> 779</a>     comp.assign(data, data + len);</span>
+<span id="L780"><a class="source-line" href="#L780"> 780</a>     return cc.count();</span>
+<span id="L781"><a class="source-line" href="#L781"> 781</a> }</span>
+<span id="L782"><a class="source-line" href="#L782"> 782</a> </span>
+<span id="L783"><a class="source-line" href="#L783"> 783</a> </span>
+<span id="L784"><a class="source-line" href="#L784"> 784</a> namespace ogdf_compat {</span>
+<span id="L785"><a class="source-line" href="#L785"> 785</a> </span>
+<span id="L786"><a class="source-line" href="#L786"> 786</a> using node = spqr::node;</span>
+<span id="L787"><a class="source-line" href="#L787"> 787</a> constexpr node INVALID_NODE = spqr::INVALID_NODE;</span>
+<span id="L788"><a class="source-line" href="#L788"> 788</a> </span>
+<span id="L789"><a class="source-line" href="#L789"> 789</a> class Graph;</span>
+<span id="L790"><a class="source-line" href="#L790"> 790</a> </span>
+<span id="L791"><a class="source-line" href="#L791"> 791</a> struct edge {</span>
+<span id="L792"><a class="source-line" href="#L792"> 792</a>     uint32_t idx;</span>
+<span id="L793"><a class="source-line" href="#L793"> 793</a>     const Graph* g;  </span>
+<span id="L794"><a class="source-line" href="#L794"> 794</a>     </span>
+<span id="L795"><a class="source-line" href="#L795"> 795</a>     constexpr edge() : idx(UINT32_MAX), g(nullptr) {}</span>
+<span id="L796"><a class="source-line" href="#L796"> 796</a>     constexpr edge(uint32_t i) : idx(i), g(nullptr) {}</span>
+<span id="L797"><a class="source-line" href="#L797"> 797</a>     constexpr edge(uint32_t i, const Graph* gr) : idx(i), g(gr) {}</span>
+<span id="L798"><a class="source-line" href="#L798"> 798</a>     constexpr edge(std::nullptr_t) : idx(UINT32_MAX), g(nullptr) {}</span>
+<span id="L799"><a class="source-line" href="#L799"> 799</a>     </span>
+<span id="L800"><a class="source-line" href="#L800"> 800</a>     constexpr uint32_t index() const { return idx; }</span>
+<span id="L801"><a class="source-line" href="#L801"> 801</a>     </span>
+<span id="L802"><a class="source-line" href="#L802"> 802</a>     constexpr bool operator!() const { return idx == UINT32_MAX; }</span>
+<span id="L803"><a class="source-line" href="#L803"> 803</a>     constexpr explicit operator bool() const { return idx != UINT32_MAX; }</span>
+<span id="L804"><a class="source-line" href="#L804"> 804</a>     constexpr bool operator==(std::nullptr_t) const { return idx == UINT32_MAX; }</span>
+<span id="L805"><a class="source-line" href="#L805"> 805</a>     constexpr bool operator!=(std::nullptr_t) const { return idx != UINT32_MAX; }</span>
+<span id="L806"><a class="source-line" href="#L806"> 806</a>     constexpr bool operator==(edge o) const { return idx == o.idx; }</span>
+<span id="L807"><a class="source-line" href="#L807"> 807</a>     constexpr bool operator!=(edge o) const { return idx != o.idx; }</span>
+<span id="L808"><a class="source-line" href="#L808"> 808</a>     constexpr bool operator&lt;(edge o) const { return idx &lt; o.idx; }</span>
+<span id="L809"><a class="source-line" href="#L809"> 809</a>     </span>
+<span id="L810"><a class="source-line" href="#L810"> 810</a>     inline node source() const;</span>
+<span id="L811"><a class="source-line" href="#L811"> 811</a>     inline node target() const;</span>
+<span id="L812"><a class="source-line" href="#L812"> 812</a>     </span>
+<span id="L813"><a class="source-line" href="#L813"> 813</a>     const edge* operator-&gt;() const { return this; }</span>
+<span id="L814"><a class="source-line" href="#L814"> 814</a> };</span>
+<span id="L815"><a class="source-line" href="#L815"> 815</a> </span>
+<span id="L816"><a class="source-line" href="#L816"> 816</a> const edge INVALID_EDGE{UINT32_MAX, nullptr};</span>
+<span id="L817"><a class="source-line" href="#L817"> 817</a> </span>
+<span id="L818"><a class="source-line" href="#L818"> 818</a> struct adjEntry {</span>
+<span id="L819"><a class="source-line" href="#L819"> 819</a>     node neighbor;</span>
+<span id="L820"><a class="source-line" href="#L820"> 820</a>     edge e;</span>
+<span id="L821"><a class="source-line" href="#L821"> 821</a>     node twinNode() const { return neighbor; }</span>
+<span id="L822"><a class="source-line" href="#L822"> 822</a>     edge theEdge() const { return e; }</span>
+<span id="L823"><a class="source-line" href="#L823"> 823</a> };</span>
+<span id="L824"><a class="source-line" href="#L824"> 824</a> </span>
+<span id="L825"><a class="source-line" href="#L825"> 825</a> template&lt;typename T&gt;</span>
+<span id="L826"><a class="source-line" href="#L826"> 826</a> class NodeArray {</span>
+<span id="L827"><a class="source-line" href="#L827"> 827</a>     mutable std::vector&lt;T&gt; data_;</span>
+<span id="L828"><a class="source-line" href="#L828"> 828</a>     T default_{};</span>
+<span id="L829"><a class="source-line" href="#L829"> 829</a>     const void* graph_ = nullptr;</span>
+<span id="L830"><a class="source-line" href="#L830"> 830</a>     uint32_t (*size_fn_)(const void*) = nullptr;</span>
+<span id="L831"><a class="source-line" href="#L831"> 831</a> </span>
+<span id="L832"><a class="source-line" href="#L832"> 832</a>     template&lt;typename G&gt; static uint32_t node_count_of(const void* g) {</span>
+<span id="L833"><a class="source-line" href="#L833"> 833</a>         return static_cast&lt;const G*&gt;(g)-&gt;numberOfNodes();</span>
+<span id="L834"><a class="source-line" href="#L834"> 834</a>     }</span>
+<span id="L835"><a class="source-line" href="#L835"> 835</a> </span>
+<span id="L836"><a class="source-line" href="#L836"> 836</a>     void sync_() const {</span>
+<span id="L837"><a class="source-line" href="#L837"> 837</a>         if (size_fn_) {</span>
+<span id="L838"><a class="source-line" href="#L838"> 838</a>             uint32_t n = size_fn_(graph_);</span>
+<span id="L839"><a class="source-line" href="#L839"> 839</a>             if (data_.size() &lt; n) data_.resize(n, default_);</span>
+<span id="L840"><a class="source-line" href="#L840"> 840</a>         }</span>
+<span id="L841"><a class="source-line" href="#L841"> 841</a>     }</span>
+<span id="L842"><a class="source-line" href="#L842"> 842</a> public:</span>
+<span id="L843"><a class="source-line" href="#L843"> 843</a>     NodeArray() = default;</span>
+<span id="L844"><a class="source-line" href="#L844"> 844</a>     template&lt;typename G&gt; NodeArray(const G&amp; g, const T&amp; def = T())</span>
+<span id="L845"><a class="source-line" href="#L845"> 845</a>         : data_(g.numberOfNodes(), def), default_(def),</span>
+<span id="L846"><a class="source-line" href="#L846"> 846</a>           graph_(&amp;g), size_fn_(&amp;node_count_of&lt;G&gt;) {}</span>
+<span id="L847"><a class="source-line" href="#L847"> 847</a>     NodeArray(size_t n, const T&amp; def = T()) : data_(n, def), default_(def) {}</span>
+<span id="L848"><a class="source-line" href="#L848"> 848</a> </span>
+<span id="L849"><a class="source-line" href="#L849"> 849</a>     template&lt;typename G&gt; void init(const G&amp; g, const T&amp; def = T()) {</span>
+<span id="L850"><a class="source-line" href="#L850"> 850</a>         default_ = def;</span>
+<span id="L851"><a class="source-line" href="#L851"> 851</a>         graph_ = &amp;g;</span>
+<span id="L852"><a class="source-line" href="#L852"> 852</a>         size_fn_ = &amp;node_count_of&lt;G&gt;;</span>
+<span id="L853"><a class="source-line" href="#L853"> 853</a>         data_.assign(g.numberOfNodes(), def);</span>
+<span id="L854"><a class="source-line" href="#L854"> 854</a>     }</span>
+<span id="L855"><a class="source-line" href="#L855"> 855</a> </span>
+<span id="L856"><a class="source-line" href="#L856"> 856</a>     T&amp; operator[](size_t idx) {</span>
+<span id="L857"><a class="source-line" href="#L857"> 857</a>         sync_();</span>
+<span id="L858"><a class="source-line" href="#L858"> 858</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L859"><a class="source-line" href="#L859"> 859</a>         return data_[idx];</span>
+<span id="L860"><a class="source-line" href="#L860"> 860</a>     }</span>
+<span id="L861"><a class="source-line" href="#L861"> 861</a>     const T&amp; operator[](size_t idx) const {</span>
+<span id="L862"><a class="source-line" href="#L862"> 862</a>         sync_();</span>
+<span id="L863"><a class="source-line" href="#L863"> 863</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L864"><a class="source-line" href="#L864"> 864</a>         return data_[idx];</span>
+<span id="L865"><a class="source-line" href="#L865"> 865</a>     }</span>
+<span id="L866"><a class="source-line" href="#L866"> 866</a> </span>
+<span id="L867"><a class="source-line" href="#L867"> 867</a>     T&amp; operator()(node v) { return (*this)[v.idx]; }</span>
+<span id="L868"><a class="source-line" href="#L868"> 868</a>     const T&amp; operator()(node v) const { return (*this)[v.idx]; }</span>
+<span id="L869"><a class="source-line" href="#L869"> 869</a> </span>
+<span id="L870"><a class="source-line" href="#L870"> 870</a>     size_t size() const { sync_(); return data_.size(); }</span>
+<span id="L871"><a class="source-line" href="#L871"> 871</a>     void resize(size_t n, const T&amp; val = T()) { data_.resize(n, val); }</span>
+<span id="L872"><a class="source-line" href="#L872"> 872</a>     void clear() { data_.clear(); }</span>
+<span id="L873"><a class="source-line" href="#L873"> 873</a>     template&lt;typename Iter&gt; void assign(Iter first, Iter last) { data_.assign(first, last); }</span>
+<span id="L874"><a class="source-line" href="#L874"> 874</a>     void assign(size_t n, const T&amp; val) { data_.assign(n, val); }</span>
+<span id="L875"><a class="source-line" href="#L875"> 875</a>     auto begin() { sync_(); return data_.begin(); }</span>
+<span id="L876"><a class="source-line" href="#L876"> 876</a>     auto end() { sync_(); return data_.end(); }</span>
+<span id="L877"><a class="source-line" href="#L877"> 877</a>     auto begin() const { sync_(); return data_.begin(); }</span>
+<span id="L878"><a class="source-line" href="#L878"> 878</a>     auto end() const { sync_(); return data_.end(); }</span>
+<span id="L879"><a class="source-line" href="#L879"> 879</a> };</span>
+<span id="L880"><a class="source-line" href="#L880"> 880</a> </span>
+<span id="L881"><a class="source-line" href="#L881"> 881</a> // Specialization for bool to avoid std::vector&lt;bool&gt; proxy issues</span>
+<span id="L882"><a class="source-line" href="#L882"> 882</a> template&lt;&gt;</span>
+<span id="L883"><a class="source-line" href="#L883"> 883</a> class NodeArray&lt;bool&gt; {</span>
+<span id="L884"><a class="source-line" href="#L884"> 884</a>     mutable std::vector&lt;char&gt; data_;</span>
+<span id="L885"><a class="source-line" href="#L885"> 885</a>     char default_ = 0;</span>
+<span id="L886"><a class="source-line" href="#L886"> 886</a>     const void* graph_ = nullptr;</span>
+<span id="L887"><a class="source-line" href="#L887"> 887</a>     uint32_t (*size_fn_)(const void*) = nullptr;</span>
+<span id="L888"><a class="source-line" href="#L888"> 888</a> </span>
+<span id="L889"><a class="source-line" href="#L889"> 889</a>     template&lt;typename G&gt; static uint32_t node_count_of(const void* g) {</span>
+<span id="L890"><a class="source-line" href="#L890"> 890</a>         return static_cast&lt;const G*&gt;(g)-&gt;numberOfNodes();</span>
+<span id="L891"><a class="source-line" href="#L891"> 891</a>     }</span>
+<span id="L892"><a class="source-line" href="#L892"> 892</a> </span>
+<span id="L893"><a class="source-line" href="#L893"> 893</a>     void sync_() const {</span>
+<span id="L894"><a class="source-line" href="#L894"> 894</a>         if (size_fn_) {</span>
+<span id="L895"><a class="source-line" href="#L895"> 895</a>             uint32_t n = size_fn_(graph_);</span>
+<span id="L896"><a class="source-line" href="#L896"> 896</a>             if (data_.size() &lt; n) data_.resize(n, default_);</span>
+<span id="L897"><a class="source-line" href="#L897"> 897</a>         }</span>
+<span id="L898"><a class="source-line" href="#L898"> 898</a>     }</span>
+<span id="L899"><a class="source-line" href="#L899"> 899</a> public:</span>
+<span id="L900"><a class="source-line" href="#L900"> 900</a>     NodeArray() = default;</span>
+<span id="L901"><a class="source-line" href="#L901"> 901</a>     template&lt;typename G&gt; NodeArray(const G&amp; g, bool def = false)</span>
+<span id="L902"><a class="source-line" href="#L902"> 902</a>         : data_(g.numberOfNodes(), def ? 1 : 0), default_(def ? 1 : 0),</span>
+<span id="L903"><a class="source-line" href="#L903"> 903</a>           graph_(&amp;g), size_fn_(&amp;node_count_of&lt;G&gt;) {}</span>
+<span id="L904"><a class="source-line" href="#L904"> 904</a>     NodeArray(size_t n, bool def = false) : data_(n, def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L905"><a class="source-line" href="#L905"> 905</a> </span>
+<span id="L906"><a class="source-line" href="#L906"> 906</a>     template&lt;typename G&gt; void init(const G&amp; g, bool def = false) {</span>
+<span id="L907"><a class="source-line" href="#L907"> 907</a>         default_ = def ? 1 : 0;</span>
+<span id="L908"><a class="source-line" href="#L908"> 908</a>         graph_ = &amp;g;</span>
+<span id="L909"><a class="source-line" href="#L909"> 909</a>         size_fn_ = &amp;node_count_of&lt;G&gt;;</span>
+<span id="L910"><a class="source-line" href="#L910"> 910</a>         data_.assign(g.numberOfNodes(), default_);</span>
+<span id="L911"><a class="source-line" href="#L911"> 911</a>     }</span>
+<span id="L912"><a class="source-line" href="#L912"> 912</a> </span>
+<span id="L913"><a class="source-line" href="#L913"> 913</a>     class Ref {</span>
+<span id="L914"><a class="source-line" href="#L914"> 914</a>         char&amp; c_;</span>
+<span id="L915"><a class="source-line" href="#L915"> 915</a>     public:</span>
+<span id="L916"><a class="source-line" href="#L916"> 916</a>         Ref(char&amp; c) : c_(c) {}</span>
+<span id="L917"><a class="source-line" href="#L917"> 917</a>         operator bool() const { return c_ != 0; }</span>
+<span id="L918"><a class="source-line" href="#L918"> 918</a>         Ref&amp; operator=(bool b) { c_ = b ? 1 : 0; return *this; }</span>
+<span id="L919"><a class="source-line" href="#L919"> 919</a>     };</span>
+<span id="L920"><a class="source-line" href="#L920"> 920</a> </span>
+<span id="L921"><a class="source-line" href="#L921"> 921</a>     Ref operator[](size_t idx) {</span>
+<span id="L922"><a class="source-line" href="#L922"> 922</a>         sync_();</span>
+<span id="L923"><a class="source-line" href="#L923"> 923</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L924"><a class="source-line" href="#L924"> 924</a>         return Ref(data_[idx]);</span>
+<span id="L925"><a class="source-line" href="#L925"> 925</a>     }</span>
+<span id="L926"><a class="source-line" href="#L926"> 926</a>     bool operator[](size_t idx) const {</span>
+<span id="L927"><a class="source-line" href="#L927"> 927</a>         sync_();</span>
+<span id="L928"><a class="source-line" href="#L928"> 928</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L929"><a class="source-line" href="#L929"> 929</a>         return data_[idx] != 0;</span>
+<span id="L930"><a class="source-line" href="#L930"> 930</a>     }</span>
+<span id="L931"><a class="source-line" href="#L931"> 931</a> </span>
+<span id="L932"><a class="source-line" href="#L932"> 932</a>     Ref operator()(node v) { return (*this)[v.idx]; }</span>
+<span id="L933"><a class="source-line" href="#L933"> 933</a>     bool operator()(node v) const { return (*this)[v.idx]; }</span>
+<span id="L934"><a class="source-line" href="#L934"> 934</a> </span>
+<span id="L935"><a class="source-line" href="#L935"> 935</a>     size_t size() const { sync_(); return data_.size(); }</span>
+<span id="L936"><a class="source-line" href="#L936"> 936</a>     void resize(size_t n, bool val = false) { data_.resize(n, val ? 1 : 0); }</span>
+<span id="L937"><a class="source-line" href="#L937"> 937</a>     void clear() { data_.clear(); }</span>
+<span id="L938"><a class="source-line" href="#L938"> 938</a> };</span>
+<span id="L939"><a class="source-line" href="#L939"> 939</a> </span>
+<span id="L940"><a class="source-line" href="#L940"> 940</a> template&lt;typename T&gt;</span>
+<span id="L941"><a class="source-line" href="#L941"> 941</a> class EdgeArray {</span>
+<span id="L942"><a class="source-line" href="#L942"> 942</a>     mutable std::vector&lt;T&gt; data_;</span>
+<span id="L943"><a class="source-line" href="#L943"> 943</a>     T default_{};</span>
+<span id="L944"><a class="source-line" href="#L944"> 944</a>     const void* graph_ = nullptr;</span>
+<span id="L945"><a class="source-line" href="#L945"> 945</a>     uint32_t (*size_fn_)(const void*) = nullptr;</span>
+<span id="L946"><a class="source-line" href="#L946"> 946</a> </span>
+<span id="L947"><a class="source-line" href="#L947"> 947</a>     template&lt;typename G&gt; static uint32_t edge_count_of(const void* g) {</span>
+<span id="L948"><a class="source-line" href="#L948"> 948</a>         return static_cast&lt;const G*&gt;(g)-&gt;numberOfEdges();</span>
+<span id="L949"><a class="source-line" href="#L949"> 949</a>     }</span>
+<span id="L950"><a class="source-line" href="#L950"> 950</a> </span>
+<span id="L951"><a class="source-line" href="#L951"> 951</a>     void sync_() const {</span>
+<span id="L952"><a class="source-line" href="#L952"> 952</a>         if (size_fn_) {</span>
+<span id="L953"><a class="source-line" href="#L953"> 953</a>             uint32_t n = size_fn_(graph_);</span>
+<span id="L954"><a class="source-line" href="#L954"> 954</a>             if (data_.size() &lt; n) data_.resize(n, default_);</span>
+<span id="L955"><a class="source-line" href="#L955"> 955</a>         }</span>
+<span id="L956"><a class="source-line" href="#L956"> 956</a>     }</span>
+<span id="L957"><a class="source-line" href="#L957"> 957</a> public:</span>
+<span id="L958"><a class="source-line" href="#L958"> 958</a>     EdgeArray() = default;</span>
+<span id="L959"><a class="source-line" href="#L959"> 959</a>     template&lt;typename G&gt; EdgeArray(const G&amp; g, const T&amp; def = T())</span>
+<span id="L960"><a class="source-line" href="#L960"> 960</a>         : data_(g.numberOfEdges(), def), default_(def),</span>
+<span id="L961"><a class="source-line" href="#L961"> 961</a>           graph_(&amp;g), size_fn_(&amp;edge_count_of&lt;G&gt;) {}</span>
+<span id="L962"><a class="source-line" href="#L962"> 962</a>     EdgeArray(size_t n, const T&amp; def = T()) : data_(n, def), default_(def) {}</span>
+<span id="L963"><a class="source-line" href="#L963"> 963</a> </span>
+<span id="L964"><a class="source-line" href="#L964"> 964</a>     template&lt;typename G&gt; void init(const G&amp; g, const T&amp; def = T()) {</span>
+<span id="L965"><a class="source-line" href="#L965"> 965</a>         default_ = def;</span>
+<span id="L966"><a class="source-line" href="#L966"> 966</a>         graph_ = &amp;g;</span>
+<span id="L967"><a class="source-line" href="#L967"> 967</a>         size_fn_ = &amp;edge_count_of&lt;G&gt;;</span>
+<span id="L968"><a class="source-line" href="#L968"> 968</a>         data_.assign(g.numberOfEdges(), def);</span>
+<span id="L969"><a class="source-line" href="#L969"> 969</a>     }</span>
+<span id="L970"><a class="source-line" href="#L970"> 970</a> </span>
+<span id="L971"><a class="source-line" href="#L971"> 971</a>     T&amp; operator[](size_t idx) {</span>
+<span id="L972"><a class="source-line" href="#L972"> 972</a>         sync_();</span>
+<span id="L973"><a class="source-line" href="#L973"> 973</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L974"><a class="source-line" href="#L974"> 974</a>         return data_[idx];</span>
+<span id="L975"><a class="source-line" href="#L975"> 975</a>     }</span>
+<span id="L976"><a class="source-line" href="#L976"> 976</a>     const T&amp; operator[](size_t idx) const {</span>
+<span id="L977"><a class="source-line" href="#L977"> 977</a>         sync_();</span>
+<span id="L978"><a class="source-line" href="#L978"> 978</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L979"><a class="source-line" href="#L979"> 979</a>         return data_[idx];</span>
+<span id="L980"><a class="source-line" href="#L980"> 980</a>     }</span>
+<span id="L981"><a class="source-line" href="#L981"> 981</a> </span>
+<span id="L982"><a class="source-line" href="#L982"> 982</a>     T&amp; operator()(edge e) { return (*this)[e.idx]; }</span>
+<span id="L983"><a class="source-line" href="#L983"> 983</a>     const T&amp; operator()(edge e) const { return (*this)[e.idx]; }</span>
+<span id="L984"><a class="source-line" href="#L984"> 984</a>     T&amp; operator()(::spqr::edge e) { return (*this)[e.idx]; }</span>
+<span id="L985"><a class="source-line" href="#L985"> 985</a>     const T&amp; operator()(::spqr::edge e) const { return (*this)[e.idx]; }</span>
+<span id="L986"><a class="source-line" href="#L986"> 986</a> </span>
+<span id="L987"><a class="source-line" href="#L987"> 987</a>     size_t size() const { sync_(); return data_.size(); }</span>
+<span id="L988"><a class="source-line" href="#L988"> 988</a>     void resize(size_t n, const T&amp; val = T()) { data_.resize(n, val); }</span>
+<span id="L989"><a class="source-line" href="#L989"> 989</a>     void clear() { data_.clear(); }</span>
+<span id="L990"><a class="source-line" href="#L990"> 990</a>     template&lt;typename Iter&gt; void assign(Iter first, Iter last) { data_.assign(first, last); }</span>
+<span id="L991"><a class="source-line" href="#L991"> 991</a>     void assign(size_t n, const T&amp; val) { data_.assign(n, val); }</span>
+<span id="L992"><a class="source-line" href="#L992"> 992</a>     auto begin() { sync_(); return data_.begin(); }</span>
+<span id="L993"><a class="source-line" href="#L993"> 993</a>     auto end() { sync_(); return data_.end(); }</span>
+<span id="L994"><a class="source-line" href="#L994"> 994</a>     auto begin() const { sync_(); return data_.begin(); }</span>
+<span id="L995"><a class="source-line" href="#L995"> 995</a>     auto end() const { sync_(); return data_.end(); }</span>
+<span id="L996"><a class="source-line" href="#L996"> 996</a> };</span>
+<span id="L997"><a class="source-line" href="#L997"> 997</a> </span>
+<span id="L998"><a class="source-line" href="#L998"> 998</a> // Specialization for bool to avoid std::vector&lt;bool&gt; proxy issues</span>
+<span id="L999"><a class="source-line" href="#L999"> 999</a> template&lt;&gt;</span>
+<span id="L1000"><a class="source-line" href="#L1000">1000</a> class EdgeArray&lt;bool&gt; {</span>
+<span id="L1001"><a class="source-line" href="#L1001">1001</a>     mutable std::vector&lt;char&gt; data_;</span>
+<span id="L1002"><a class="source-line" href="#L1002">1002</a>     char default_ = 0;</span>
+<span id="L1003"><a class="source-line" href="#L1003">1003</a>     const void* graph_ = nullptr;</span>
+<span id="L1004"><a class="source-line" href="#L1004">1004</a>     uint32_t (*size_fn_)(const void*) = nullptr;</span>
+<span id="L1005"><a class="source-line" href="#L1005">1005</a> </span>
+<span id="L1006"><a class="source-line" href="#L1006">1006</a>     template&lt;typename G&gt; static uint32_t edge_count_of(const void* g) {</span>
+<span id="L1007"><a class="source-line" href="#L1007">1007</a>         return static_cast&lt;const G*&gt;(g)-&gt;numberOfEdges();</span>
+<span id="L1008"><a class="source-line" href="#L1008">1008</a>     }</span>
+<span id="L1009"><a class="source-line" href="#L1009">1009</a> </span>
+<span id="L1010"><a class="source-line" href="#L1010">1010</a>     void sync_() const {</span>
+<span id="L1011"><a class="source-line" href="#L1011">1011</a>         if (size_fn_) {</span>
+<span id="L1012"><a class="source-line" href="#L1012">1012</a>             uint32_t n = size_fn_(graph_);</span>
+<span id="L1013"><a class="source-line" href="#L1013">1013</a>             if (data_.size() &lt; n) data_.resize(n, default_);</span>
+<span id="L1014"><a class="source-line" href="#L1014">1014</a>         }</span>
+<span id="L1015"><a class="source-line" href="#L1015">1015</a>     }</span>
+<span id="L1016"><a class="source-line" href="#L1016">1016</a> public:</span>
+<span id="L1017"><a class="source-line" href="#L1017">1017</a>     EdgeArray() = default;</span>
+<span id="L1018"><a class="source-line" href="#L1018">1018</a>     template&lt;typename G&gt; EdgeArray(const G&amp; g, bool def = false)</span>
+<span id="L1019"><a class="source-line" href="#L1019">1019</a>         : data_(g.numberOfEdges(), def ? 1 : 0), default_(def ? 1 : 0),</span>
+<span id="L1020"><a class="source-line" href="#L1020">1020</a>           graph_(&amp;g), size_fn_(&amp;edge_count_of&lt;G&gt;) {}</span>
+<span id="L1021"><a class="source-line" href="#L1021">1021</a>     EdgeArray(size_t n, bool def = false) : data_(n, def ? 1 : 0), default_(def ? 1 : 0) {}</span>
+<span id="L1022"><a class="source-line" href="#L1022">1022</a> </span>
+<span id="L1023"><a class="source-line" href="#L1023">1023</a>     template&lt;typename G&gt; void init(const G&amp; g, bool def = false) {</span>
+<span id="L1024"><a class="source-line" href="#L1024">1024</a>         default_ = def ? 1 : 0;</span>
+<span id="L1025"><a class="source-line" href="#L1025">1025</a>         graph_ = &amp;g;</span>
+<span id="L1026"><a class="source-line" href="#L1026">1026</a>         size_fn_ = &amp;edge_count_of&lt;G&gt;;</span>
+<span id="L1027"><a class="source-line" href="#L1027">1027</a>         data_.assign(g.numberOfEdges(), default_);</span>
+<span id="L1028"><a class="source-line" href="#L1028">1028</a>     }</span>
+<span id="L1029"><a class="source-line" href="#L1029">1029</a> </span>
+<span id="L1030"><a class="source-line" href="#L1030">1030</a>     class Ref {</span>
+<span id="L1031"><a class="source-line" href="#L1031">1031</a>         char&amp; c_;</span>
+<span id="L1032"><a class="source-line" href="#L1032">1032</a>     public:</span>
+<span id="L1033"><a class="source-line" href="#L1033">1033</a>         Ref(char&amp; c) : c_(c) {}</span>
+<span id="L1034"><a class="source-line" href="#L1034">1034</a>         operator bool() const { return c_ != 0; }</span>
+<span id="L1035"><a class="source-line" href="#L1035">1035</a>         Ref&amp; operator=(bool b) { c_ = b ? 1 : 0; return *this; }</span>
+<span id="L1036"><a class="source-line" href="#L1036">1036</a>     };</span>
+<span id="L1037"><a class="source-line" href="#L1037">1037</a> </span>
+<span id="L1038"><a class="source-line" href="#L1038">1038</a>     Ref operator[](size_t idx) {</span>
+<span id="L1039"><a class="source-line" href="#L1039">1039</a>         sync_();</span>
+<span id="L1040"><a class="source-line" href="#L1040">1040</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L1041"><a class="source-line" href="#L1041">1041</a>         return Ref(data_[idx]);</span>
+<span id="L1042"><a class="source-line" href="#L1042">1042</a>     }</span>
+<span id="L1043"><a class="source-line" href="#L1043">1043</a>     bool operator[](size_t idx) const {</span>
+<span id="L1044"><a class="source-line" href="#L1044">1044</a>         sync_();</span>
+<span id="L1045"><a class="source-line" href="#L1045">1045</a>         if (idx &gt;= data_.size()) data_.resize(idx + 1, default_);</span>
+<span id="L1046"><a class="source-line" href="#L1046">1046</a>         return data_[idx] != 0;</span>
+<span id="L1047"><a class="source-line" href="#L1047">1047</a>     }</span>
+<span id="L1048"><a class="source-line" href="#L1048">1048</a> </span>
+<span id="L1049"><a class="source-line" href="#L1049">1049</a>     Ref operator()(edge e) { return (*this)[e.idx]; }</span>
+<span id="L1050"><a class="source-line" href="#L1050">1050</a>     bool operator()(edge e) const { return (*this)[e.idx]; }</span>
+<span id="L1051"><a class="source-line" href="#L1051">1051</a>     Ref operator()(::spqr::edge e) { return (*this)[e.idx]; }</span>
+<span id="L1052"><a class="source-line" href="#L1052">1052</a>     bool operator()(::spqr::edge e) const { return (*this)[e.idx]; }</span>
+<span id="L1053"><a class="source-line" href="#L1053">1053</a> </span>
+<span id="L1054"><a class="source-line" href="#L1054">1054</a>     size_t size() const { sync_(); return data_.size(); }</span>
+<span id="L1055"><a class="source-line" href="#L1055">1055</a>     void resize(size_t n, bool val = false) { data_.resize(n, val ? 1 : 0); }</span>
+<span id="L1056"><a class="source-line" href="#L1056">1056</a>     void clear() { data_.clear(); }</span>
+<span id="L1057"><a class="source-line" href="#L1057">1057</a> };</span>
+<span id="L1058"><a class="source-line" href="#L1058">1058</a> </span>
+<span id="L1059"><a class="source-line" href="#L1059">1059</a> class Graph {</span>
+<span id="L1060"><a class="source-line" href="#L1060">1060</a>     std::unique_ptr&lt;spqr_rust::RustGraph&gt; g_;</span>
+<span id="L1061"><a class="source-line" href="#L1061">1061</a>     mutable std::vector&lt;adjEntry&gt; adjCache_;</span>
+<span id="L1062"><a class="source-line" href="#L1062">1062</a> </span>
+<span id="L1063"><a class="source-line" href="#L1063">1063</a> public:</span>
+<span id="L1064"><a class="source-line" href="#L1064">1064</a>     struct NodesRange {</span>
+<span id="L1065"><a class="source-line" href="#L1065">1065</a>         const Graph* g;</span>
+<span id="L1066"><a class="source-line" href="#L1066">1066</a>         struct It { uint32_t i; node operator*() const { return node{i}; } It&amp; operator++() { ++i; return *this; } bool operator!=(It o) const { return i != o.i; } };</span>
+<span id="L1067"><a class="source-line" href="#L1067">1067</a>         It begin() const { return {0}; }</span>
+<span id="L1068"><a class="source-line" href="#L1068">1068</a>         It end() const { return {g-&gt;numberOfNodes()}; }</span>
+<span id="L1069"><a class="source-line" href="#L1069">1069</a>     };</span>
+<span id="L1070"><a class="source-line" href="#L1070">1070</a>     struct EdgesRange {</span>
+<span id="L1071"><a class="source-line" href="#L1071">1071</a>         const Graph* g;</span>
+<span id="L1072"><a class="source-line" href="#L1072">1072</a>         struct It { uint32_t i; const Graph* g; edge operator*() const { return edge{i, g}; } It&amp; operator++() { ++i; return *this; } bool operator!=(It o) const { return i != o.i; } };</span>
+<span id="L1073"><a class="source-line" href="#L1073">1073</a>         It begin() const { return {0, g}; }</span>
+<span id="L1074"><a class="source-line" href="#L1074">1074</a>         It end() const { return {g-&gt;numberOfEdges(), g}; }</span>
+<span id="L1075"><a class="source-line" href="#L1075">1075</a>     };</span>
+<span id="L1076"><a class="source-line" href="#L1076">1076</a> </span>
+<span id="L1077"><a class="source-line" href="#L1077">1077</a>     Graph() : g_(std::make_unique&lt;spqr_rust::RustGraph&gt;()), nodes{this}, edges{this} {}</span>
+<span id="L1078"><a class="source-line" href="#L1078">1078</a>     </span>
+<span id="L1079"><a class="source-line" href="#L1079">1079</a>     node newNode() { return node{g_-&gt;addNode()}; }</span>
+<span id="L1080"><a class="source-line" href="#L1080">1080</a>     edge newEdge(node u, node v) { return edge{g_-&gt;addEdge(u.idx, v.idx), this}; }</span>
+<span id="L1081"><a class="source-line" href="#L1081">1081</a>     </span>
+<span id="L1082"><a class="source-line" href="#L1082">1082</a>     uint32_t numberOfNodes() const { return g_-&gt;numNodes(); }</span>
+<span id="L1083"><a class="source-line" href="#L1083">1083</a>     uint32_t numberOfEdges() const { return g_-&gt;numEdges(); }</span>
+<span id="L1084"><a class="source-line" href="#L1084">1084</a>     </span>
+<span id="L1085"><a class="source-line" href="#L1085">1085</a>     node firstNode() const { return numberOfNodes() &gt; 0 ? node{0u} : INVALID_NODE; }</span>
+<span id="L1086"><a class="source-line" href="#L1086">1086</a>     </span>
+<span id="L1087"><a class="source-line" href="#L1087">1087</a>     node source(edge e) const { return node{g_-&gt;edgeSrc(e.idx)}; }</span>
+<span id="L1088"><a class="source-line" href="#L1088">1088</a>     node target(edge e) const { return node{g_-&gt;edgeDst(e.idx)}; }</span>
+<span id="L1089"><a class="source-line" href="#L1089">1089</a>     </span>
+<span id="L1090"><a class="source-line" href="#L1090">1090</a>     NodesRange nodes;</span>
+<span id="L1091"><a class="source-line" href="#L1091">1091</a>     EdgesRange edges;</span>
+<span id="L1092"><a class="source-line" href="#L1092">1092</a>     </span>
+<span id="L1093"><a class="source-line" href="#L1093">1093</a>     template&lt;typename F&gt;</span>
+<span id="L1094"><a class="source-line" href="#L1094">1094</a>     void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L1095"><a class="source-line" href="#L1095">1095</a>         g_-&gt;forEachNeighbor(v.idx, [&amp;](uint32_t n, uint32_t e) { f(node{n}, edge{e, this}); });</span>
+<span id="L1096"><a class="source-line" href="#L1096">1096</a>     }</span>
+<span id="L1097"><a class="source-line" href="#L1097">1097</a>     </span>
+<span id="L1098"><a class="source-line" href="#L1098">1098</a>     const std::vector&lt;adjEntry&gt;&amp; getAdjEntries(node v) const {</span>
+<span id="L1099"><a class="source-line" href="#L1099">1099</a>         adjCache_.clear();</span>
+<span id="L1100"><a class="source-line" href="#L1100">1100</a>         g_-&gt;forEachNeighbor(v.idx, [this](uint32_t n, uint32_t e) {</span>
+<span id="L1101"><a class="source-line" href="#L1101">1101</a>             adjCache_.push_back({node{n}, edge{e, this}});</span>
+<span id="L1102"><a class="source-line" href="#L1102">1102</a>         });</span>
+<span id="L1103"><a class="source-line" href="#L1103">1103</a>         return adjCache_;</span>
+<span id="L1104"><a class="source-line" href="#L1104">1104</a>     }</span>
+<span id="L1105"><a class="source-line" href="#L1105">1105</a>     </span>
+<span id="L1106"><a class="source-line" href="#L1106">1106</a>     uint32_t degree(node v) const { return g_-&gt;degree(v.idx); }</span>
+<span id="L1107"><a class="source-line" href="#L1107">1107</a>     </span>
+<span id="L1108"><a class="source-line" href="#L1108">1108</a>     spqr_rust::RustGraph&amp; raw() { return *g_; }</span>
+<span id="L1109"><a class="source-line" href="#L1109">1109</a>     const spqr_rust::RustGraph&amp; raw() const { return *g_; }</span>
+<span id="L1110"><a class="source-line" href="#L1110">1110</a> };</span>
+<span id="L1111"><a class="source-line" href="#L1111">1111</a> </span>
+<span id="L1112"><a class="source-line" href="#L1112">1112</a> inline node edge::source() const { return g-&gt;source(*this); }</span>
+<span id="L1113"><a class="source-line" href="#L1113">1113</a> inline node edge::target() const { return g-&gt;target(*this); }</span>
+<span id="L1114"><a class="source-line" href="#L1114">1114</a> </span>
+<span id="L1115"><a class="source-line" href="#L1115">1115</a> // BCTree / StaticSPQRTree for ogdf_compat</span>
+<span id="L1116"><a class="source-line" href="#L1116">1116</a> // (mostly copy-paste from above, but using ogdf_compat::edge)</span>
+<span id="L1117"><a class="source-line" href="#L1117">1117</a> </span>
+<span id="L1118"><a class="source-line" href="#L1118">1118</a> class BCTree {</span>
+<span id="L1119"><a class="source-line" href="#L1119">1119</a>     std::unique_ptr&lt;spqr_rust::RustBCTree&gt; bc_;</span>
+<span id="L1120"><a class="source-line" href="#L1120">1120</a>     std::vector&lt;bool&gt; isCut_;</span>
+<span id="L1121"><a class="source-line" href="#L1121">1121</a> public:</span>
+<span id="L1122"><a class="source-line" href="#L1122">1122</a>     enum class BNodeType { BComp, CComp };</span>
+<span id="L1123"><a class="source-line" href="#L1123">1123</a>     enum class GNodeType { Normal, CutVertex };</span>
+<span id="L1124"><a class="source-line" href="#L1124">1124</a>     </span>
+<span id="L1125"><a class="source-line" href="#L1125">1125</a>     explicit BCTree(const Graph&amp; g) : bc_(std::make_unique&lt;spqr_rust::RustBCTree&gt;(g.raw())) {</span>
+<span id="L1126"><a class="source-line" href="#L1126">1126</a>         isCut_.assign(g.numberOfNodes(), false);</span>
+<span id="L1127"><a class="source-line" href="#L1127">1127</a>         for (uint32_t v : bc_-&gt;cutVertices()) isCut_[v] = true;</span>
+<span id="L1128"><a class="source-line" href="#L1128">1128</a>     }</span>
+<span id="L1129"><a class="source-line" href="#L1129">1129</a>     </span>
+<span id="L1130"><a class="source-line" href="#L1130">1130</a>     uint32_t numberOfBComps() const { return bc_-&gt;numBlocks(); }</span>
+<span id="L1131"><a class="source-line" href="#L1131">1131</a>     uint32_t numberOfCComps() const { return bc_-&gt;numCutVertices(); }</span>
+<span id="L1132"><a class="source-line" href="#L1132">1132</a>     GNodeType typeOfGNode(node v) const { return isCut_[v.idx] ? GNodeType::CutVertex : GNodeType::Normal; }</span>
+<span id="L1133"><a class="source-line" href="#L1133">1133</a>     BNodeType typeOfBNode(node v) const { return v.idx &lt; bc_-&gt;numBlocks() ? BNodeType::BComp : BNodeType::CComp; }</span>
+<span id="L1134"><a class="source-line" href="#L1134">1134</a>     </span>
+<span id="L1135"><a class="source-line" href="#L1135">1135</a>     std::vector&lt;edge&gt; hEdges(node bNode) const {</span>
+<span id="L1136"><a class="source-line" href="#L1136">1136</a>         if (bNode.idx &gt;= bc_-&gt;numBlocks()) return {};</span>
+<span id="L1137"><a class="source-line" href="#L1137">1137</a>         auto raw = bc_-&gt;blockEdges(bNode.idx);</span>
+<span id="L1138"><a class="source-line" href="#L1138">1138</a>         std::vector&lt;edge&gt; r; r.reserve(raw.size());</span>
+<span id="L1139"><a class="source-line" href="#L1139">1139</a>         for (auto e : raw) r.push_back(edge{e});</span>
+<span id="L1140"><a class="source-line" href="#L1140">1140</a>         return r;</span>
+<span id="L1141"><a class="source-line" href="#L1141">1141</a>     }</span>
+<span id="L1142"><a class="source-line" href="#L1142">1142</a>     edge original(edge e) const { return e; }</span>
+<span id="L1143"><a class="source-line" href="#L1143">1143</a>     node repVertex(node v, node) const { return v; }</span>
+<span id="L1144"><a class="source-line" href="#L1144">1144</a>     node bcproper(node v) const { return v; }</span>
+<span id="L1145"><a class="source-line" href="#L1145">1145</a>     </span>
+<span id="L1146"><a class="source-line" href="#L1146">1146</a>     struct BCTreeGraph {</span>
+<span id="L1147"><a class="source-line" href="#L1147">1147</a>         uint32_t n_;</span>
+<span id="L1148"><a class="source-line" href="#L1148">1148</a>         struct NodesRange { </span>
+<span id="L1149"><a class="source-line" href="#L1149">1149</a>             uint32_t n; </span>
+<span id="L1150"><a class="source-line" href="#L1150">1150</a>             struct It { </span>
+<span id="L1151"><a class="source-line" href="#L1151">1151</a>                 uint32_t i; </span>
+<span id="L1152"><a class="source-line" href="#L1152">1152</a>                 node operator*() const { return node{i}; } </span>
+<span id="L1153"><a class="source-line" href="#L1153">1153</a>                 It&amp; operator++() { ++i; return *this; }</span>
+<span id="L1154"><a class="source-line" href="#L1154">1154</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L1155"><a class="source-line" href="#L1155">1155</a>                 bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L1156"><a class="source-line" href="#L1156">1156</a>                 bool operator==(It o) const { return i == o.i; }</span>
+<span id="L1157"><a class="source-line" href="#L1157">1157</a>             }; </span>
+<span id="L1158"><a class="source-line" href="#L1158">1158</a>             It begin() const { return {0}; } </span>
+<span id="L1159"><a class="source-line" href="#L1159">1159</a>             It end() const { return {n}; }</span>
+<span id="L1160"><a class="source-line" href="#L1160">1160</a>             uint32_t size() const { return n; }</span>
+<span id="L1161"><a class="source-line" href="#L1161">1161</a>         };</span>
+<span id="L1162"><a class="source-line" href="#L1162">1162</a>         NodesRange nodes{0};</span>
+<span id="L1163"><a class="source-line" href="#L1163">1163</a>         BCTreeGraph(uint32_t n) : n_(n), nodes{n} {}</span>
+<span id="L1164"><a class="source-line" href="#L1164">1164</a>         uint32_t numberOfNodes() const { return n_; }</span>
+<span id="L1165"><a class="source-line" href="#L1165">1165</a>     };</span>
+<span id="L1166"><a class="source-line" href="#L1166">1166</a>     BCTreeGraph bcTree() const { return BCTreeGraph{bc_-&gt;numBlocks() + bc_-&gt;numCutVertices()}; }</span>
+<span id="L1167"><a class="source-line" href="#L1167">1167</a> };</span>
+<span id="L1168"><a class="source-line" href="#L1168">1168</a> </span>
+<span id="L1169"><a class="source-line" href="#L1169">1169</a> using tree_node = node;</span>
+<span id="L1170"><a class="source-line" href="#L1170">1170</a> </span>
+<span id="L1171"><a class="source-line" href="#L1171">1171</a> class TreeGraph {</span>
+<span id="L1172"><a class="source-line" href="#L1172">1172</a>     uint32_t n_ = 0;</span>
+<span id="L1173"><a class="source-line" href="#L1173">1173</a>     std::vector&lt;uint32_t&gt; parents_, src_, tgt_;</span>
+<span id="L1174"><a class="source-line" href="#L1174">1174</a>     std::vector&lt;std::vector&lt;std::pair&lt;uint32_t, uint32_t&gt;&gt;&gt; adj_;</span>
+<span id="L1175"><a class="source-line" href="#L1175">1175</a> public:</span>
+<span id="L1176"><a class="source-line" href="#L1176">1176</a>     void build(uint32_t n, const std::vector&lt;uint32_t&gt;&amp; parents) {</span>
+<span id="L1177"><a class="source-line" href="#L1177">1177</a>         n_ = n; parents_ = parents; src_.clear(); tgt_.clear();</span>
+<span id="L1178"><a class="source-line" href="#L1178">1178</a>         adj_.assign(n, {});</span>
+<span id="L1179"><a class="source-line" href="#L1179">1179</a>         for (uint32_t i = 0; i &lt; n; ++i) {</span>
+<span id="L1180"><a class="source-line" href="#L1180">1180</a>             if (parents[i] != UINT32_MAX &amp;&amp; parents[i] != i) {</span>
+<span id="L1181"><a class="source-line" href="#L1181">1181</a>                 uint32_t eIdx = src_.size();</span>
+<span id="L1182"><a class="source-line" href="#L1182">1182</a>                 src_.push_back(parents[i]);</span>
+<span id="L1183"><a class="source-line" href="#L1183">1183</a>                 tgt_.push_back(i);</span>
+<span id="L1184"><a class="source-line" href="#L1184">1184</a>                 adj_[parents[i]].push_back({i, eIdx});</span>
+<span id="L1185"><a class="source-line" href="#L1185">1185</a>                 adj_[i].push_back({parents[i], eIdx});</span>
+<span id="L1186"><a class="source-line" href="#L1186">1186</a>             }</span>
+<span id="L1187"><a class="source-line" href="#L1187">1187</a>         }</span>
+<span id="L1188"><a class="source-line" href="#L1188">1188</a>     }</span>
+<span id="L1189"><a class="source-line" href="#L1189">1189</a>     uint32_t numberOfNodes() const { return n_; }</span>
+<span id="L1190"><a class="source-line" href="#L1190">1190</a>     uint32_t numberOfEdges() const { return src_.size(); }</span>
+<span id="L1191"><a class="source-line" href="#L1191">1191</a>     node source(edge e) const { return node{src_[e.idx]}; }</span>
+<span id="L1192"><a class="source-line" href="#L1192">1192</a>     node target(edge e) const { return node{tgt_[e.idx]}; }</span>
+<span id="L1193"><a class="source-line" href="#L1193">1193</a>     template&lt;typename F&gt;</span>
+<span id="L1194"><a class="source-line" href="#L1194">1194</a>     void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L1195"><a class="source-line" href="#L1195">1195</a>         for (auto&amp; [neighbor, eIdx] : adj_[v.idx]) {</span>
+<span id="L1196"><a class="source-line" href="#L1196">1196</a>             f(node{neighbor}, edge{eIdx});</span>
+<span id="L1197"><a class="source-line" href="#L1197">1197</a>         }</span>
+<span id="L1198"><a class="source-line" href="#L1198">1198</a>     }</span>
+<span id="L1199"><a class="source-line" href="#L1199">1199</a>     </span>
+<span id="L1200"><a class="source-line" href="#L1200">1200</a>     // Zero-overhead ranges - size computed on access</span>
+<span id="L1201"><a class="source-line" href="#L1201">1201</a>     struct NodesRange {</span>
+<span id="L1202"><a class="source-line" href="#L1202">1202</a>         const TreeGraph* g;</span>
+<span id="L1203"><a class="source-line" href="#L1203">1203</a>         struct It { </span>
+<span id="L1204"><a class="source-line" href="#L1204">1204</a>             uint32_t i; </span>
+<span id="L1205"><a class="source-line" href="#L1205">1205</a>             node operator*() const { return node{i}; } </span>
+<span id="L1206"><a class="source-line" href="#L1206">1206</a>             It&amp; operator++() { ++i; return *this; }</span>
+<span id="L1207"><a class="source-line" href="#L1207">1207</a>             It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L1208"><a class="source-line" href="#L1208">1208</a>             bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L1209"><a class="source-line" href="#L1209">1209</a>             bool operator==(It o) const { return i == o.i; }</span>
+<span id="L1210"><a class="source-line" href="#L1210">1210</a>         };</span>
+<span id="L1211"><a class="source-line" href="#L1211">1211</a>         It begin() const { return {0}; }</span>
+<span id="L1212"><a class="source-line" href="#L1212">1212</a>         It end() const { return {g-&gt;n_}; }</span>
+<span id="L1213"><a class="source-line" href="#L1213">1213</a>         uint32_t size() const { return g-&gt;n_; }</span>
+<span id="L1214"><a class="source-line" href="#L1214">1214</a>     };</span>
+<span id="L1215"><a class="source-line" href="#L1215">1215</a>     struct EdgesRange {</span>
+<span id="L1216"><a class="source-line" href="#L1216">1216</a>         const TreeGraph* g;</span>
+<span id="L1217"><a class="source-line" href="#L1217">1217</a>         struct It { </span>
+<span id="L1218"><a class="source-line" href="#L1218">1218</a>             uint32_t i; </span>
+<span id="L1219"><a class="source-line" href="#L1219">1219</a>             edge operator*() const { return edge{i}; } </span>
+<span id="L1220"><a class="source-line" href="#L1220">1220</a>             It&amp; operator++() { ++i; return *this; }</span>
+<span id="L1221"><a class="source-line" href="#L1221">1221</a>             It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L1222"><a class="source-line" href="#L1222">1222</a>             bool operator!=(It o) const { return i != o.i; }</span>
+<span id="L1223"><a class="source-line" href="#L1223">1223</a>             bool operator==(It o) const { return i == o.i; }</span>
+<span id="L1224"><a class="source-line" href="#L1224">1224</a>         };</span>
+<span id="L1225"><a class="source-line" href="#L1225">1225</a>         It begin() const { return {0}; }</span>
+<span id="L1226"><a class="source-line" href="#L1226">1226</a>         It end() const { return {uint32_t(g-&gt;src_.size())}; }</span>
+<span id="L1227"><a class="source-line" href="#L1227">1227</a>         uint32_t size() const { return g-&gt;src_.size(); }</span>
+<span id="L1228"><a class="source-line" href="#L1228">1228</a>     };</span>
+<span id="L1229"><a class="source-line" href="#L1229">1229</a>     </span>
+<span id="L1230"><a class="source-line" href="#L1230">1230</a>     NodesRange nodes{this};</span>
+<span id="L1231"><a class="source-line" href="#L1231">1231</a>     EdgesRange edges{this};</span>
+<span id="L1232"><a class="source-line" href="#L1232">1232</a>     node firstNode() const { return n_ &gt; 0 ? node{0u} : node{}; }</span>
+<span id="L1233"><a class="source-line" href="#L1233">1233</a> };</span>
+<span id="L1234"><a class="source-line" href="#L1234">1234</a> </span>
+<span id="L1235"><a class="source-line" href="#L1235">1235</a> class StaticSPQRTree {</span>
+<span id="L1236"><a class="source-line" href="#L1236">1236</a>     std::unique_ptr&lt;spqr_rust::RustSPQRResult&gt; result_;</span>
+<span id="L1237"><a class="source-line" href="#L1237">1237</a>     spqr_rust::SpqrTreeFlatView view_;</span>
+<span id="L1238"><a class="source-line" href="#L1238">1238</a>     std::vector&lt;uint32_t&gt; parents_;</span>
+<span id="L1239"><a class="source-line" href="#L1239">1239</a>     TreeGraph tree_;</span>
+<span id="L1240"><a class="source-line" href="#L1240">1240</a> </span>
+<span id="L1241"><a class="source-line" href="#L1241">1241</a>     // Precomputed O(1) virtual-edge index (see spqr::StaticSPQRTree for rationale).</span>
+<span id="L1242"><a class="source-line" href="#L1242">1242</a>     mutable std::unordered_map&lt;uint64_t, uint32_t&gt; virtualIndex_;</span>
+<span id="L1243"><a class="source-line" href="#L1243">1243</a>     mutable bool virtualIndexBuilt_ = false;</span>
+<span id="L1244"><a class="source-line" href="#L1244">1244</a> </span>
+<span id="L1245"><a class="source-line" href="#L1245">1245</a>     static uint64_t packTreePair_(uint32_t from, uint32_t to) {</span>
+<span id="L1246"><a class="source-line" href="#L1246">1246</a>         return (static_cast&lt;uint64_t&gt;(from) &lt;&lt; 32) | static_cast&lt;uint64_t&gt;(to);</span>
+<span id="L1247"><a class="source-line" href="#L1247">1247</a>     }</span>
+<span id="L1248"><a class="source-line" href="#L1248">1248</a> </span>
+<span id="L1249"><a class="source-line" href="#L1249">1249</a>     void buildVirtualIndex_() const {</span>
+<span id="L1250"><a class="source-line" href="#L1250">1250</a>         if (virtualIndexBuilt_) return;</span>
+<span id="L1251"><a class="source-line" href="#L1251">1251</a>         virtualIndex_.reserve(view_.numNodes * 2);</span>
+<span id="L1252"><a class="source-line" href="#L1252">1252</a>         for (uint32_t tn = 0; tn &lt; view_.numNodes; ++tn) {</span>
+<span id="L1253"><a class="source-line" href="#L1253">1253</a>             uint32_t s = view_.skeletonOffsets[tn];</span>
+<span id="L1254"><a class="source-line" href="#L1254">1254</a>             uint32_t e = view_.skeletonOffsets[tn + 1];</span>
+<span id="L1255"><a class="source-line" href="#L1255">1255</a>             for (uint32_t i = s; i &lt; e; ++i) {</span>
+<span id="L1256"><a class="source-line" href="#L1256">1256</a>                 const auto&amp; se = view_.skeletonEdges[i];</span>
+<span id="L1257"><a class="source-line" href="#L1257">1257</a>                 if (se.real_edge == UINT32_MAX) {</span>
+<span id="L1258"><a class="source-line" href="#L1258">1258</a>                     virtualIndex_.emplace(packTreePair_(tn, se.twin_tree_node), i);</span>
+<span id="L1259"><a class="source-line" href="#L1259">1259</a>                 }</span>
+<span id="L1260"><a class="source-line" href="#L1260">1260</a>             }</span>
+<span id="L1261"><a class="source-line" href="#L1261">1261</a>         }</span>
+<span id="L1262"><a class="source-line" href="#L1262">1262</a>         virtualIndexBuilt_ = true;</span>
+<span id="L1263"><a class="source-line" href="#L1263">1263</a>     }</span>
+<span id="L1264"><a class="source-line" href="#L1264">1264</a> </span>
+<span id="L1265"><a class="source-line" href="#L1265">1265</a>     void buildTree() { parents_.resize(view_.numNodes); for (uint32_t i = 0; i &lt; view_.numNodes; ++i) parents_[i] = view_.nodeParents[i]; tree_.build(view_.numNodes, parents_); }</span>
+<span id="L1266"><a class="source-line" href="#L1266">1266</a>     edge findVirtual(tree_node from, tree_node to) const {</span>
+<span id="L1267"><a class="source-line" href="#L1267">1267</a>         buildVirtualIndex_();</span>
+<span id="L1268"><a class="source-line" href="#L1268">1268</a>         auto it = virtualIndex_.find(packTreePair_(from.idx, to.idx));</span>
+<span id="L1269"><a class="source-line" href="#L1269">1269</a>         if (it == virtualIndex_.end()) return INVALID_EDGE;</span>
+<span id="L1270"><a class="source-line" href="#L1270">1270</a>         return edge{it-&gt;second - view_.skeletonOffsets[from.idx]};</span>
+<span id="L1271"><a class="source-line" href="#L1271">1271</a>     }</span>
+<span id="L1272"><a class="source-line" href="#L1272">1272</a>     edge findVirtualGlobal(tree_node from, tree_node to) const {</span>
+<span id="L1273"><a class="source-line" href="#L1273">1273</a>         buildVirtualIndex_();</span>
+<span id="L1274"><a class="source-line" href="#L1274">1274</a>         auto it = virtualIndex_.find(packTreePair_(from.idx, to.idx));</span>
+<span id="L1275"><a class="source-line" href="#L1275">1275</a>         if (it == virtualIndex_.end()) return INVALID_EDGE;</span>
+<span id="L1276"><a class="source-line" href="#L1276">1276</a>         return edge{it-&gt;second};</span>
+<span id="L1277"><a class="source-line" href="#L1277">1277</a>     }</span>
+<span id="L1278"><a class="source-line" href="#L1278">1278</a> public:</span>
+<span id="L1279"><a class="source-line" href="#L1279">1279</a>     enum class NodeType { SNode, PNode, RNode };</span>
+<span id="L1280"><a class="source-line" href="#L1280">1280</a>     using SkeletonEdge = ::SkeletonEdge;</span>
+<span id="L1281"><a class="source-line" href="#L1281">1281</a>     </span>
+<span id="L1282"><a class="source-line" href="#L1282">1282</a>     explicit StaticSPQRTree(const Graph&amp; g) : result_(std::make_unique&lt;spqr_rust::RustSPQRResult&gt;(g.raw())), view_(*result_) { buildTree(); }</span>
+<span id="L1283"><a class="source-line" href="#L1283">1283</a> </span>
+<span id="L1284"><a class="source-line" href="#L1284">1284</a>     /**</span>
+<span id="L1285"><a class="source-line" href="#L1285">1285</a>      * Build via SP-Compress + Reconstruct.</span>
+<span id="L1286"><a class="source-line" href="#L1286">1286</a>      *</span>
+<span id="L1287"><a class="source-line" href="#L1287">1287</a>      * contractible is a byte mask indexed by node ID: contractible[v] != 0</span>
+<span id="L1288"><a class="source-line" href="#L1288">1288</a>      * iff vertex v is eligible for Series compression. Typically, the caller</span>
+<span id="L1289"><a class="source-line" href="#L1289">1289</a>      * marks every interior vertex of the biconnected block (= all vertices</span>
+<span id="L1290"><a class="source-line" href="#L1290">1290</a>      * except the BC-tree poles, or equivalently every vertex whose degree in</span>
+<span id="L1291"><a class="source-line" href="#L1291">1291</a>      * the block equals its degree in the global graph minus 0... in practice,</span>
+<span id="L1292"><a class="source-line" href="#L1292">1292</a>      * just all vertices that are not BCcut vertices)</span>
+<span id="L1293"><a class="source-line" href="#L1293">1293</a>      *</span>
+<span id="L1294"><a class="source-line" href="#L1294">1294</a>      * The SPQR tree returned is isomorphic to that of the regular</span>
+<span id="L1295"><a class="source-line" href="#L1295">1295</a>      * constructor StaticSPQRTree(const Graph&amp;) (modulo as permutation of skeleton </span>
+<span id="L1296"><a class="source-line" href="#L1296">1296</a>      * edges and children).</span>
+<span id="L1297"><a class="source-line" href="#L1297">1297</a>      */</span>
+<span id="L1298"><a class="source-line" href="#L1298">1298</a>     StaticSPQRTree(const Graph&amp; g, const uint8_t* contractible, uint32_t contractible_len)</span>
+<span id="L1299"><a class="source-line" href="#L1299">1299</a>         : result_(buildViaSpCompress_(g, contractible, contractible_len)),</span>
+<span id="L1300"><a class="source-line" href="#L1300">1300</a>           view_(*result_) {</span>
+<span id="L1301"><a class="source-line" href="#L1301">1301</a>         buildTree();</span>
+<span id="L1302"><a class="source-line" href="#L1302">1302</a>     }</span>
+<span id="L1303"><a class="source-line" href="#L1303">1303</a> </span>
+<span id="L1304"><a class="source-line" href="#L1304">1304</a> private:</span>
+<span id="L1305"><a class="source-line" href="#L1305">1305</a>     static std::unique_ptr&lt;spqr_rust::RustSPQRResult&gt; buildViaSpCompress_(</span>
+<span id="L1306"><a class="source-line" href="#L1306">1306</a>         const Graph&amp; g, const uint8_t* contractible, uint32_t contractible_len)</span>
+<span id="L1307"><a class="source-line" href="#L1307">1307</a>     {</span>
+<span id="L1308"><a class="source-line" href="#L1308">1308</a>         const uint32_t n_nodes = static_cast&lt;uint32_t&gt;(g.numberOfNodes());</span>
+<span id="L1309"><a class="source-line" href="#L1309">1309</a>         const uint32_t n_edges = static_cast&lt;uint32_t&gt;(g.numberOfEdges());</span>
+<span id="L1310"><a class="source-line" href="#L1310">1310</a> </span>
+<span id="L1311"><a class="source-line" href="#L1311">1311</a>         // Materialize edges into the FFI representation.</span>
+<span id="L1312"><a class="source-line" href="#L1312">1312</a>         std::vector&lt;SpCompressInputEdge&gt; in_edges;</span>
+<span id="L1313"><a class="source-line" href="#L1313">1313</a>         in_edges.reserve(n_edges);</span>
+<span id="L1314"><a class="source-line" href="#L1314">1314</a>         for (uint32_t i = 0; i &lt; n_edges; ++i) {</span>
+<span id="L1315"><a class="source-line" href="#L1315">1315</a>             edge e{i};</span>
+<span id="L1316"><a class="source-line" href="#L1316">1316</a>             // Use the raw graph to get src/dst.</span>
+<span id="L1317"><a class="source-line" href="#L1317">1317</a>             uint32_t u = spqr_graph_edge_src(g.raw().raw(), i);</span>
+<span id="L1318"><a class="source-line" href="#L1318">1318</a>             uint32_t v = spqr_graph_edge_dst(g.raw().raw(), i);</span>
+<span id="L1319"><a class="source-line" href="#L1319">1319</a>             in_edges.push_back(SpCompressInputEdge{ u, v, i });</span>
+<span id="L1320"><a class="source-line" href="#L1320">1320</a>         }</span>
+<span id="L1321"><a class="source-line" href="#L1321">1321</a> </span>
+<span id="L1322"><a class="source-line" href="#L1322">1322</a>         return std::make_unique&lt;spqr_rust::RustSPQRResult&gt;(</span>
+<span id="L1323"><a class="source-line" href="#L1323">1323</a>             n_nodes,</span>
+<span id="L1324"><a class="source-line" href="#L1324">1324</a>             in_edges.empty() ? nullptr : in_edges.data(),</span>
+<span id="L1325"><a class="source-line" href="#L1325">1325</a>             n_edges,</span>
+<span id="L1326"><a class="source-line" href="#L1326">1326</a>             n_edges == 0 ? 0u : n_edges - 1u,</span>
+<span id="L1327"><a class="source-line" href="#L1327">1327</a>             contractible,</span>
+<span id="L1328"><a class="source-line" href="#L1328">1328</a>             contractible_len);</span>
+<span id="L1329"><a class="source-line" href="#L1329">1329</a>     }</span>
+<span id="L1330"><a class="source-line" href="#L1330">1330</a> </span>
+<span id="L1331"><a class="source-line" href="#L1331">1331</a> public:</span>
+<span id="L1332"><a class="source-line" href="#L1332">1332</a>     tree_node rootNode() const { return node{view_.root}; }</span>
+<span id="L1333"><a class="source-line" href="#L1333">1333</a>     uint32_t numberOfNodes() const { return view_.numNodes; }</span>
+<span id="L1334"><a class="source-line" href="#L1334">1334</a>     NodeType typeOf(tree_node tn) const { return view_.nodeTypes[tn.idx] == 0 ? NodeType::SNode : view_.nodeTypes[tn.idx] == 1 ? NodeType::PNode : NodeType::RNode; }</span>
+<span id="L1335"><a class="source-line" href="#L1335">1335</a>     const TreeGraph&amp; tree() const { return tree_; }</span>
+<span id="L1336"><a class="source-line" href="#L1336">1336</a>     tree_node parent(tree_node tn) const { return node{parents_[tn.idx]}; }</span>
+<span id="L1337"><a class="source-line" href="#L1337">1337</a> </span>
+<span id="L1338"><a class="source-line" href="#L1338">1338</a>     const spqr_rust::SpqrTreeFlatView&amp; flatView() const { return view_; }</span>
+<span id="L1339"><a class="source-line" href="#L1339">1339</a>     </span>
+<span id="L1340"><a class="source-line" href="#L1340">1340</a>     class SkeletonGraph {</span>
+<span id="L1341"><a class="source-line" href="#L1341">1341</a>         const spqr_rust::SpqrTreeFlatView&amp; view_;</span>
+<span id="L1342"><a class="source-line" href="#L1342">1342</a>         tree_node tn_;</span>
+<span id="L1343"><a class="source-line" href="#L1343">1343</a>         uint32_t nNodes_, edgeOff_, edgeEnd_;</span>
+<span id="L1344"><a class="source-line" href="#L1344">1344</a>         mutable std::vector&lt;uint32_t&gt; adjStart_;</span>
+<span id="L1345"><a class="source-line" href="#L1345">1345</a>         mutable std::vector&lt;uint32_t&gt; adjEdges_;</span>
+<span id="L1346"><a class="source-line" href="#L1346">1346</a>         mutable std::vector&lt;uint32_t&gt; adjNeighbors_;</span>
+<span id="L1347"><a class="source-line" href="#L1347">1347</a>         mutable bool adjBuilt_ = false;</span>
+<span id="L1348"><a class="source-line" href="#L1348">1348</a> </span>
+<span id="L1349"><a class="source-line" href="#L1349">1349</a>         void buildAdj_() const {</span>
+<span id="L1350"><a class="source-line" href="#L1350">1350</a>             if (adjBuilt_) return;</span>
+<span id="L1351"><a class="source-line" href="#L1351">1351</a>             const uint32_t n = nNodes_;</span>
+<span id="L1352"><a class="source-line" href="#L1352">1352</a>             adjStart_.assign(n + 1, 0);</span>
+<span id="L1353"><a class="source-line" href="#L1353">1353</a>             for (uint32_t i = edgeOff_; i &lt; edgeEnd_; ++i) {</span>
+<span id="L1354"><a class="source-line" href="#L1354">1354</a>                 const auto&amp; se = view_.skeletonEdges[i];</span>
+<span id="L1355"><a class="source-line" href="#L1355">1355</a>                 ++adjStart_[se.src + 1];</span>
+<span id="L1356"><a class="source-line" href="#L1356">1356</a>                 if (se.dst != se.src) ++adjStart_[se.dst + 1];</span>
+<span id="L1357"><a class="source-line" href="#L1357">1357</a>             }</span>
+<span id="L1358"><a class="source-line" href="#L1358">1358</a>             for (uint32_t v = 0; v &lt; n; ++v)</span>
+<span id="L1359"><a class="source-line" href="#L1359">1359</a>                 adjStart_[v + 1] += adjStart_[v];</span>
+<span id="L1360"><a class="source-line" href="#L1360">1360</a>             const uint32_t total = adjStart_[n];</span>
+<span id="L1361"><a class="source-line" href="#L1361">1361</a>             adjEdges_.assign(total, 0);</span>
+<span id="L1362"><a class="source-line" href="#L1362">1362</a>             adjNeighbors_.assign(total, 0);</span>
+<span id="L1363"><a class="source-line" href="#L1363">1363</a>             std::vector&lt;uint32_t&gt; cursor(adjStart_.begin(), adjStart_.begin() + n);</span>
+<span id="L1364"><a class="source-line" href="#L1364">1364</a>             for (uint32_t i = edgeOff_; i &lt; edgeEnd_; ++i) {</span>
+<span id="L1365"><a class="source-line" href="#L1365">1365</a>                 const auto&amp; se = view_.skeletonEdges[i];</span>
+<span id="L1366"><a class="source-line" href="#L1366">1366</a>                 uint32_t ps = cursor[se.src]++;</span>
+<span id="L1367"><a class="source-line" href="#L1367">1367</a>                 adjEdges_[ps] = i;</span>
+<span id="L1368"><a class="source-line" href="#L1368">1368</a>                 adjNeighbors_[ps] = se.dst;</span>
+<span id="L1369"><a class="source-line" href="#L1369">1369</a>                 if (se.dst != se.src) {</span>
+<span id="L1370"><a class="source-line" href="#L1370">1370</a>                     uint32_t pd = cursor[se.dst]++;</span>
+<span id="L1371"><a class="source-line" href="#L1371">1371</a>                     adjEdges_[pd] = i;</span>
+<span id="L1372"><a class="source-line" href="#L1372">1372</a>                     adjNeighbors_[pd] = se.src;</span>
+<span id="L1373"><a class="source-line" href="#L1373">1373</a>                 }</span>
+<span id="L1374"><a class="source-line" href="#L1374">1374</a>             }</span>
+<span id="L1375"><a class="source-line" href="#L1375">1375</a>             adjBuilt_ = true;</span>
+<span id="L1376"><a class="source-line" href="#L1376">1376</a>         }</span>
+<span id="L1377"><a class="source-line" href="#L1377">1377</a> </span>
+<span id="L1378"><a class="source-line" href="#L1378">1378</a>     public:</span>
+<span id="L1379"><a class="source-line" href="#L1379">1379</a>         SkeletonGraph(const spqr_rust::SpqrTreeFlatView&amp; view, tree_node tn)</span>
+<span id="L1380"><a class="source-line" href="#L1380">1380</a>             : view_(view), tn_(tn), </span>
+<span id="L1381"><a class="source-line" href="#L1381">1381</a>               nNodes_(view.skeletonNumNodes[tn.idx]),</span>
+<span id="L1382"><a class="source-line" href="#L1382">1382</a>               edgeOff_(view.skeletonOffsets[tn.idx]), </span>
+<span id="L1383"><a class="source-line" href="#L1383">1383</a>               edgeEnd_(view.skeletonOffsets[tn.idx + 1]) {}</span>
+<span id="L1384"><a class="source-line" href="#L1384">1384</a>         </span>
+<span id="L1385"><a class="source-line" href="#L1385">1385</a>         uint32_t numberOfNodes() const { return nNodes_; }</span>
+<span id="L1386"><a class="source-line" href="#L1386">1386</a>         uint32_t numberOfEdges() const { return edgeEnd_ - edgeOff_; }</span>
+<span id="L1387"><a class="source-line" href="#L1387">1387</a>         node source(edge e) const { return node{view_.skeletonEdges[e.idx].src}; }</span>
+<span id="L1388"><a class="source-line" href="#L1388">1388</a>         node target(edge e) const { return node{view_.skeletonEdges[e.idx].dst}; }</span>
+<span id="L1389"><a class="source-line" href="#L1389">1389</a>         node firstNode() const { return nNodes_ &gt; 0 ? node{0u} : node{}; }</span>
+<span id="L1390"><a class="source-line" href="#L1390">1390</a>         </span>
+<span id="L1391"><a class="source-line" href="#L1391">1391</a>         // O(deg(v)) after a single O(E_skel) build on first call.</span>
+<span id="L1392"><a class="source-line" href="#L1392">1392</a>         template&lt;typename F&gt;</span>
+<span id="L1393"><a class="source-line" href="#L1393">1393</a>         void forEachAdj(node v, F&amp;&amp; f) const {</span>
+<span id="L1394"><a class="source-line" href="#L1394">1394</a>             buildAdj_();</span>
+<span id="L1395"><a class="source-line" href="#L1395">1395</a>             const uint32_t begin = adjStart_[v.idx];</span>
+<span id="L1396"><a class="source-line" href="#L1396">1396</a>             const uint32_t end   = adjStart_[v.idx + 1];</span>
+<span id="L1397"><a class="source-line" href="#L1397">1397</a>             for (uint32_t k = begin; k &lt; end; ++k)</span>
+<span id="L1398"><a class="source-line" href="#L1398">1398</a>                 f(node{adjNeighbors_[k]}, edge{adjEdges_[k]});</span>
+<span id="L1399"><a class="source-line" href="#L1399">1399</a>         }</span>
+<span id="L1400"><a class="source-line" href="#L1400">1400</a>         </span>
+<span id="L1401"><a class="source-line" href="#L1401">1401</a>         struct NodesRange {</span>
+<span id="L1402"><a class="source-line" href="#L1402">1402</a>             uint32_t n;</span>
+<span id="L1403"><a class="source-line" href="#L1403">1403</a>             struct It { </span>
+<span id="L1404"><a class="source-line" href="#L1404">1404</a>                 uint32_t i; </span>
+<span id="L1405"><a class="source-line" href="#L1405">1405</a>                 node operator*() const { return node{i}; } </span>
+<span id="L1406"><a class="source-line" href="#L1406">1406</a>                 It&amp; operator++() { ++i; return *this; } </span>
+<span id="L1407"><a class="source-line" href="#L1407">1407</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L1408"><a class="source-line" href="#L1408">1408</a>                 bool operator!=(It o) const { return i != o.i; } </span>
+<span id="L1409"><a class="source-line" href="#L1409">1409</a>             };</span>
+<span id="L1410"><a class="source-line" href="#L1410">1410</a>             It begin() const { return {0}; }</span>
+<span id="L1411"><a class="source-line" href="#L1411">1411</a>             It end() const { return {n}; }</span>
+<span id="L1412"><a class="source-line" href="#L1412">1412</a>             uint32_t size() const { return n; }</span>
+<span id="L1413"><a class="source-line" href="#L1413">1413</a>         };</span>
+<span id="L1414"><a class="source-line" href="#L1414">1414</a>         NodesRange nodes{nNodes_};</span>
+<span id="L1415"><a class="source-line" href="#L1415">1415</a>         </span>
+<span id="L1416"><a class="source-line" href="#L1416">1416</a>         struct EdgesRange {</span>
+<span id="L1417"><a class="source-line" href="#L1417">1417</a>             uint32_t off, end_;</span>
+<span id="L1418"><a class="source-line" href="#L1418">1418</a>             struct It { </span>
+<span id="L1419"><a class="source-line" href="#L1419">1419</a>                 uint32_t i; </span>
+<span id="L1420"><a class="source-line" href="#L1420">1420</a>                 edge operator*() const { return edge{i}; } </span>
+<span id="L1421"><a class="source-line" href="#L1421">1421</a>                 It&amp; operator++() { ++i; return *this; } </span>
+<span id="L1422"><a class="source-line" href="#L1422">1422</a>                 It operator++(int) { It tmp = *this; ++i; return tmp; }</span>
+<span id="L1423"><a class="source-line" href="#L1423">1423</a>                 bool operator!=(It o) const { return i != o.i; } </span>
+<span id="L1424"><a class="source-line" href="#L1424">1424</a>             };</span>
+<span id="L1425"><a class="source-line" href="#L1425">1425</a>             It begin() const { return {off}; }</span>
+<span id="L1426"><a class="source-line" href="#L1426">1426</a>             It end() const { return {end_}; }</span>
+<span id="L1427"><a class="source-line" href="#L1427">1427</a>             uint32_t size() const { return end_ - off; }</span>
+<span id="L1428"><a class="source-line" href="#L1428">1428</a>         };</span>
+<span id="L1429"><a class="source-line" href="#L1429">1429</a>         EdgesRange edges{edgeOff_, edgeEnd_};</span>
+<span id="L1430"><a class="source-line" href="#L1430">1430</a>     };</span>
+<span id="L1431"><a class="source-line" href="#L1431">1431</a> </span>
+<span id="L1432"><a class="source-line" href="#L1432">1432</a>     class Skeleton {</span>
+<span id="L1433"><a class="source-line" href="#L1433">1433</a>         const StaticSPQRTree&amp; t_; tree_node tn_; mutable std::unique_ptr&lt;SkeletonGraph&gt; g_;</span>
+<span id="L1434"><a class="source-line" href="#L1434">1434</a>         const SkeletonEdge* edgeAt(edge e) const { return &amp;t_.view_.skeletonEdges[e.idx]; }</span>
+<span id="L1435"><a class="source-line" href="#L1435">1435</a>     public:</span>
+<span id="L1436"><a class="source-line" href="#L1436">1436</a>         Skeleton(const StaticSPQRTree&amp; t, tree_node tn) : t_(t), tn_(tn) {}</span>
+<span id="L1437"><a class="source-line" href="#L1437">1437</a>         const SkeletonGraph&amp; getGraph() const { if (!g_) g_ = std::make_unique&lt;SkeletonGraph&gt;(t_.view_, tn_); return *g_; }</span>
+<span id="L1438"><a class="source-line" href="#L1438">1438</a>         node original(node local) const { return node{t_.view_.nodeMapping[t_.view_.nodeMappingOffsets[tn_.idx] + local.idx]}; }</span>
+<span id="L1439"><a class="source-line" href="#L1439">1439</a>         bool isVirtual(edge e) const { return edgeAt(e)-&gt;real_edge == UINT32_MAX; }</span>
+<span id="L1440"><a class="source-line" href="#L1440">1440</a>         tree_node twinTreeNode(edge e) const { auto* se = edgeAt(e); return se-&gt;real_edge == UINT32_MAX ? node{se-&gt;twin_tree_node} : INVALID_NODE; }</span>
+<span id="L1441"><a class="source-line" href="#L1441">1441</a>         edge realEdge(edge e) const { auto* se = edgeAt(e); return se-&gt;real_edge != UINT32_MAX ? edge{se-&gt;real_edge} : INVALID_EDGE; }</span>
+<span id="L1442"><a class="source-line" href="#L1442">1442</a> </span>
+<span id="L1443"><a class="source-line" href="#L1443">1443</a>         // V2 zero-alloc accessors (added 2026-04-23). Same semantics as</span>
+<span id="L1444"><a class="source-line" href="#L1444">1444</a>         // this namespace&#x27;s SkeletonGraph::source/target (no reorientation).</span>
+<span id="L1445"><a class="source-line" href="#L1445">1445</a>         uint32_t numberOfNodes() const {</span>
+<span id="L1446"><a class="source-line" href="#L1446">1446</a>             return t_.view_.skeletonNumNodes[tn_.idx];</span>
+<span id="L1447"><a class="source-line" href="#L1447">1447</a>         }</span>
+<span id="L1448"><a class="source-line" href="#L1448">1448</a>         uint32_t numberOfEdges() const {</span>
+<span id="L1449"><a class="source-line" href="#L1449">1449</a>             return t_.view_.skeletonOffsets[tn_.idx + 1] - t_.view_.skeletonOffsets[tn_.idx];</span>
+<span id="L1450"><a class="source-line" href="#L1450">1450</a>         }</span>
+<span id="L1451"><a class="source-line" href="#L1451">1451</a> </span>
+<span id="L1452"><a class="source-line" href="#L1452">1452</a>         template&lt;typename F&gt;</span>
+<span id="L1453"><a class="source-line" href="#L1453">1453</a>         void forEachEdge(F&amp;&amp; f) const {</span>
+<span id="L1454"><a class="source-line" href="#L1454">1454</a>             const auto&amp; view = t_.view_;</span>
+<span id="L1455"><a class="source-line" href="#L1455">1455</a>             const uint32_t off = view.skeletonOffsets[tn_.idx];</span>
+<span id="L1456"><a class="source-line" href="#L1456">1456</a>             const uint32_t end = view.skeletonOffsets[tn_.idx + 1];</span>
+<span id="L1457"><a class="source-line" href="#L1457">1457</a>             for (uint32_t i = off; i &lt; end; ++i) {</span>
+<span id="L1458"><a class="source-line" href="#L1458">1458</a>                 const auto&amp; se = view.skeletonEdges[i];</span>
+<span id="L1459"><a class="source-line" href="#L1459">1459</a>                 f(edge{i}, node{se.src}, node{se.dst});</span>
+<span id="L1460"><a class="source-line" href="#L1460">1460</a>             }</span>
+<span id="L1461"><a class="source-line" href="#L1461">1461</a>         }</span>
+<span id="L1462"><a class="source-line" href="#L1462">1462</a>     };</span>
+<span id="L1463"><a class="source-line" href="#L1463">1463</a>     </span>
+<span id="L1464"><a class="source-line" href="#L1464">1464</a>     Skeleton skeleton(tree_node tn) const { return Skeleton(*this, tn); }</span>
+<span id="L1465"><a class="source-line" href="#L1465">1465</a>     edge skeletonEdgeSrc(edge te) const { return findVirtualGlobal(tree_.source(te), tree_.target(te)); }</span>
+<span id="L1466"><a class="source-line" href="#L1466">1466</a>     edge skeletonEdgeTgt(edge te) const { return findVirtualGlobal(tree_.target(te), tree_.source(te)); }</span>
+<span id="L1467"><a class="source-line" href="#L1467">1467</a> };</span>
+<span id="L1468"><a class="source-line" href="#L1468">1468</a> </span>
+<span id="L1469"><a class="source-line" href="#L1469">1469</a> using SPQRTree = StaticSPQRTree;</span>
+<span id="L1470"><a class="source-line" href="#L1470">1470</a> using Skeleton = StaticSPQRTree::Skeleton;</span>
+<span id="L1471"><a class="source-line" href="#L1471">1471</a> </span>
+<span id="L1472"><a class="source-line" href="#L1472">1472</a> inline uint32_t connectedComponents(const Graph&amp; g, NodeArray&lt;int&gt;&amp; comp) {</span>
+<span id="L1473"><a class="source-line" href="#L1473">1473</a>     spqr_rust::RustConnectedComponents cc(g.raw());</span>
+<span id="L1474"><a class="source-line" href="#L1474">1474</a>     auto [data, len] = cc.componentsRaw();</span>
+<span id="L1475"><a class="source-line" href="#L1475">1475</a>     comp.assign(data, data + len);</span>
+<span id="L1476"><a class="source-line" href="#L1476">1476</a>     return cc.count();</span>
+<span id="L1477"><a class="source-line" href="#L1477">1477</a> }</span>
+<span id="L1478"><a class="source-line" href="#L1478">1478</a> </span>
+<span id="L1479"><a class="source-line" href="#L1479">1479</a> template&lt;typename NA&gt;</span>
+<span id="L1480"><a class="source-line" href="#L1480">1480</a> inline uint32_t connectedComponents(const Graph&amp; g, NA&amp; comp) {</span>
+<span id="L1481"><a class="source-line" href="#L1481">1481</a>     spqr_rust::RustConnectedComponents cc(g.raw());</span>
+<span id="L1482"><a class="source-line" href="#L1482">1482</a>     auto [data, len] = cc.componentsRaw();</span>
+<span id="L1483"><a class="source-line" href="#L1483">1483</a>     comp.assign(data, data + len);</span>
+<span id="L1484"><a class="source-line" href="#L1484">1484</a>     return cc.count();</span>
+<span id="L1485"><a class="source-line" href="#L1485">1485</a> }</span>
+<span id="L1486"><a class="source-line" href="#L1486">1486</a> </span>
+<span id="L1487"><a class="source-line" href="#L1487">1487</a> } </span>
+<span id="L1488"><a class="source-line" href="#L1488">1488</a> } </span>
+<span id="L1489"><a class="source-line" href="#L1489">1489</a> </span>
+<span id="L1490"><a class="source-line" href="#L1490">1490</a> namespace spqr {</span>
+<span id="L1491"><a class="source-line" href="#L1491">1491</a> </span>
+<span id="L1492"><a class="source-line" href="#L1492">1492</a> // Check if directed graph is acyclic </span>
+<span id="L1493"><a class="source-line" href="#L1493">1493</a> inline bool isAcyclic(const Graph&amp; G) {</span>
+<span id="L1494"><a class="source-line" href="#L1494">1494</a>     NodeArray&lt;int&gt; state(G, 0);  // 0=unvisited, 1=visiting, 2=done</span>
+<span id="L1495"><a class="source-line" href="#L1495">1495</a>     bool hasCycle = false;</span>
+<span id="L1496"><a class="source-line" href="#L1496">1496</a>     </span>
+<span id="L1497"><a class="source-line" href="#L1497">1497</a>     std::function&lt;void(node)&gt; dfs = [&amp;](node u) {</span>
+<span id="L1498"><a class="source-line" href="#L1498">1498</a>         if (hasCycle) return;</span>
+<span id="L1499"><a class="source-line" href="#L1499">1499</a>         state[u] = 1;</span>
+<span id="L1500"><a class="source-line" href="#L1500">1500</a>         G.forEachAdj(u, [&amp;](node v, edge e) {</span>
+<span id="L1501"><a class="source-line" href="#L1501">1501</a>             if (hasCycle) return;</span>
+<span id="L1502"><a class="source-line" href="#L1502">1502</a>             if (G.source(e) != u) return; </span>
+<span id="L1503"><a class="source-line" href="#L1503">1503</a>             if (state[v] == 1) { hasCycle = true; return; }</span>
+<span id="L1504"><a class="source-line" href="#L1504">1504</a>             if (state[v] == 0) dfs(v);</span>
+<span id="L1505"><a class="source-line" href="#L1505">1505</a>         });</span>
+<span id="L1506"><a class="source-line" href="#L1506">1506</a>         state[u] = 2;</span>
+<span id="L1507"><a class="source-line" href="#L1507">1507</a>     };</span>
+<span id="L1508"><a class="source-line" href="#L1508">1508</a>     </span>
+<span id="L1509"><a class="source-line" href="#L1509">1509</a>     for (node v : G.nodes) {</span>
+<span id="L1510"><a class="source-line" href="#L1510">1510</a>         if (state[v] == 0) dfs(v);</span>
+<span id="L1511"><a class="source-line" href="#L1511">1511</a>         if (hasCycle) return false;</span>
+<span id="L1512"><a class="source-line" href="#L1512">1512</a>     }</span>
+<span id="L1513"><a class="source-line" href="#L1513">1513</a>     return true;</span>
+<span id="L1514"><a class="source-line" href="#L1514">1514</a> }</span>
+<span id="L1515"><a class="source-line" href="#L1515">1515</a> </span>
+<span id="L1516"><a class="source-line" href="#L1516">1516</a> // Acyclicity check pretending edge skip is absent</span>
+<span id="L1517"><a class="source-line" href="#L1517">1517</a> inline bool isAcyclicWithoutEdge(const Graph&amp; G, edge skip) {</span>
+<span id="L1518"><a class="source-line" href="#L1518">1518</a>     NodeArray&lt;int&gt; state(G, 0);</span>
+<span id="L1519"><a class="source-line" href="#L1519">1519</a>     bool hasCycle = false;</span>
+<span id="L1520"><a class="source-line" href="#L1520">1520</a> </span>
+<span id="L1521"><a class="source-line" href="#L1521">1521</a>     std::function&lt;void(node)&gt; dfs = [&amp;](node u) {</span>
+<span id="L1522"><a class="source-line" href="#L1522">1522</a>         if (hasCycle) return;</span>
+<span id="L1523"><a class="source-line" href="#L1523">1523</a>         state[u] = 1;</span>
+<span id="L1524"><a class="source-line" href="#L1524">1524</a>         G.forEachAdj(u, [&amp;](node v, edge e) {</span>
+<span id="L1525"><a class="source-line" href="#L1525">1525</a>             if (hasCycle) return;</span>
+<span id="L1526"><a class="source-line" href="#L1526">1526</a>             if (e.idx == skip.idx) return; // pretend this edge is gone</span>
+<span id="L1527"><a class="source-line" href="#L1527">1527</a>             if (G.source(e) != u) return; // only outgoing</span>
+<span id="L1528"><a class="source-line" href="#L1528">1528</a>             if (state[v] == 1) { hasCycle = true; return; }</span>
+<span id="L1529"><a class="source-line" href="#L1529">1529</a>             if (state[v] == 0) dfs(v);</span>
+<span id="L1530"><a class="source-line" href="#L1530">1530</a>         });</span>
+<span id="L1531"><a class="source-line" href="#L1531">1531</a>         state[u] = 2;</span>
+<span id="L1532"><a class="source-line" href="#L1532">1532</a>     };</span>
+<span id="L1533"><a class="source-line" href="#L1533">1533</a> </span>
+<span id="L1534"><a class="source-line" href="#L1534">1534</a>     for (node v : G.nodes) {</span>
+<span id="L1535"><a class="source-line" href="#L1535">1535</a>         if (state[v] == 0) dfs(v);</span>
+<span id="L1536"><a class="source-line" href="#L1536">1536</a>         if (hasCycle) return false;</span>
+<span id="L1537"><a class="source-line" href="#L1537">1537</a>     }</span>
+<span id="L1538"><a class="source-line" href="#L1538">1538</a>     return true;</span>
+<span id="L1539"><a class="source-line" href="#L1539">1539</a> }</span>
+<span id="L1540"><a class="source-line" href="#L1540">1540</a> </span>
+<span id="L1541"><a class="source-line" href="#L1541">1541</a> // Compute strongly CC (with Kosaraju algorithm)</span>
+<span id="L1542"><a class="source-line" href="#L1542">1542</a> template&lt;typename NA&gt;</span>
+<span id="L1543"><a class="source-line" href="#L1543">1543</a> inline int strongComponents(const Graph&amp; G, NA&amp; comp) {</span>
+<span id="L1544"><a class="source-line" href="#L1544">1544</a>     const uint32_t n = G.numberOfNodes();</span>
+<span id="L1545"><a class="source-line" href="#L1545">1545</a>     comp.init(G, -1);</span>
+<span id="L1546"><a class="source-line" href="#L1546">1546</a>     </span>
+<span id="L1547"><a class="source-line" href="#L1547">1547</a>     // First DFS to get finish order</span>
+<span id="L1548"><a class="source-line" href="#L1548">1548</a>     std::vector&lt;node&gt; order;</span>
+<span id="L1549"><a class="source-line" href="#L1549">1549</a>     order.reserve(n);</span>
+<span id="L1550"><a class="source-line" href="#L1550">1550</a>     NodeArray&lt;bool&gt; vis(G, false);</span>
+<span id="L1551"><a class="source-line" href="#L1551">1551</a>     </span>
+<span id="L1552"><a class="source-line" href="#L1552">1552</a>     std::function&lt;void(node)&gt; dfs1 = [&amp;](node u) {</span>
+<span id="L1553"><a class="source-line" href="#L1553">1553</a>         vis[u] = true;</span>
+<span id="L1554"><a class="source-line" href="#L1554">1554</a>         G.forEachAdj(u, [&amp;](node v, edge e) {</span>
+<span id="L1555"><a class="source-line" href="#L1555">1555</a>             if (G.source(e) != u) return;  // outgoing only</span>
+<span id="L1556"><a class="source-line" href="#L1556">1556</a>             if (!vis[v]) dfs1(v);</span>
+<span id="L1557"><a class="source-line" href="#L1557">1557</a>         });</span>
+<span id="L1558"><a class="source-line" href="#L1558">1558</a>         order.push_back(u);</span>
+<span id="L1559"><a class="source-line" href="#L1559">1559</a>     };</span>
+<span id="L1560"><a class="source-line" href="#L1560">1560</a>     </span>
+<span id="L1561"><a class="source-line" href="#L1561">1561</a>     for (node v : G.nodes) {</span>
+<span id="L1562"><a class="source-line" href="#L1562">1562</a>         if (!vis[v]) dfs1(v);</span>
+<span id="L1563"><a class="source-line" href="#L1563">1563</a>     }</span>
+<span id="L1564"><a class="source-line" href="#L1564">1564</a>     </span>
+<span id="L1565"><a class="source-line" href="#L1565">1565</a>     // Build reverse adjacency</span>
+<span id="L1566"><a class="source-line" href="#L1566">1566</a>     std::vector&lt;std::vector&lt;node&gt;&gt; radj(n);</span>
+<span id="L1567"><a class="source-line" href="#L1567">1567</a>     for (edge e : G.edges) {</span>
+<span id="L1568"><a class="source-line" href="#L1568">1568</a>         radj[G.target(e).idx].push_back(G.source(e));</span>
+<span id="L1569"><a class="source-line" href="#L1569">1569</a>     }</span>
+<span id="L1570"><a class="source-line" href="#L1570">1570</a>     </span>
+<span id="L1571"><a class="source-line" href="#L1571">1571</a>     // Second DFS on reverse graph in reverse finish order</span>
+<span id="L1572"><a class="source-line" href="#L1572">1572</a>     int numSCC = 0;</span>
+<span id="L1573"><a class="source-line" href="#L1573">1573</a>     std::function&lt;void(node, int)&gt; dfs2 = [&amp;](node u, int c) {</span>
+<span id="L1574"><a class="source-line" href="#L1574">1574</a>         comp[u] = c;</span>
+<span id="L1575"><a class="source-line" href="#L1575">1575</a>         for (node v : radj[u.idx]) {</span>
+<span id="L1576"><a class="source-line" href="#L1576">1576</a>             if (comp[v] == -1) dfs2(v, c);</span>
+<span id="L1577"><a class="source-line" href="#L1577">1577</a>         }</span>
+<span id="L1578"><a class="source-line" href="#L1578">1578</a>     };</span>
+<span id="L1579"><a class="source-line" href="#L1579">1579</a>     </span>
+<span id="L1580"><a class="source-line" href="#L1580">1580</a>     for (int i = n - 1; i &gt;= 0; --i) {</span>
+<span id="L1581"><a class="source-line" href="#L1581">1581</a>         node u = order[i];</span>
+<span id="L1582"><a class="source-line" href="#L1582">1582</a>         if (comp[u] == -1) {</span>
+<span id="L1583"><a class="source-line" href="#L1583">1583</a>             dfs2(u, numSCC++);</span>
+<span id="L1584"><a class="source-line" href="#L1584">1584</a>         }</span>
+<span id="L1585"><a class="source-line" href="#L1585">1585</a>     }</span>
+<span id="L1586"><a class="source-line" href="#L1586">1586</a>     </span>
+<span id="L1587"><a class="source-line" href="#L1587">1587</a>     return numSCC;</span>
+<span id="L1588"><a class="source-line" href="#L1588">1588</a> }</span>
+<span id="L1589"><a class="source-line" href="#L1589">1589</a> </span>
+<span id="L1590"><a class="source-line" href="#L1590">1590</a> }</span>
+<span id="L1591"><a class="source-line" href="#L1591">1591</a> </span>
+<span id="L1592"><a class="source-line" href="#L1592">1592</a> namespace std {</span>
+<span id="L1593"><a class="source-line" href="#L1593">1593</a>     template&lt;&gt; struct hash&lt;spqr::node&gt; {</span>
+<span id="L1594"><a class="source-line" href="#L1594">1594</a>         size_t operator()(spqr::node n) const noexcept {</span>
+<span id="L1595"><a class="source-line" href="#L1595">1595</a>             return std::hash&lt;uint32_t&gt;{}(n.idx);</span>
+<span id="L1596"><a class="source-line" href="#L1596">1596</a>         }</span>
+<span id="L1597"><a class="source-line" href="#L1597">1597</a>     };</span>
+<span id="L1598"><a class="source-line" href="#L1598">1598</a>     template&lt;&gt; struct hash&lt;spqr::edge&gt; {</span>
+<span id="L1599"><a class="source-line" href="#L1599">1599</a>         size_t operator()(spqr::edge e) const noexcept {</span>
+<span id="L1600"><a class="source-line" href="#L1600">1600</a>             return std::hash&lt;uint32_t&gt;{}(e.idx);</span>
+<span id="L1601"><a class="source-line" href="#L1601">1601</a>         }</span>
+<span id="L1602"><a class="source-line" href="#L1602">1602</a>     };</span>
+<span id="L1603"><a class="source-line" href="#L1603">1603</a> }</span></code></pre></main>
+<footer class="site-footer">SPQR-Rust · MIT · Generated source reference</footer>
+</div></body></html>

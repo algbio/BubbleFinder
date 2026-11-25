@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="Choose a BubbleFinder method and understand its input, ultrabubble options, output conventions and SPQR decomposition." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Documentation · BubbleFinder</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="index.html">BubbleFinder</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="index.html">Home</a></li>
+<li><a href="get-started.html">Getting started</a></li>
+<li><a aria-current="page" href="documentation.html">Documentation</a></li>
+<li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content">
+<header class="page-heading">
+<h1>Documentation</h1>
+<p class="lead">A short guide to bubble types, ultrabubble options and output conventions. The <a href="https://github.com/algbio/BubbleFinder#running-bubblefinder">README</a> has the full command reference.</p>
+</header>
+<div class="reading-layout">
+<div>
+<section class="article-section" id="ultrabubbles">
+<h2>Ultrabubbles</h2>
+<p>Choose these for regions with alternative paths but no internal loops or branches ending inside them, as in region (a) of the <a href="index.html#figure-title">figure</a>. The definition was introduced by <a href="#ref-paten2017">Paten et al., 2017</a>.</p>
+<p>The default method worked on all pangenome graphs we tested. We did not observe the <a href="#special-cases">special cases</a> below. The default method and <code>--d-bubbles</code> are generally the fastest options.</p>
+<div class="table-scroll"><table class="compact-table">
+<thead><tr><th scope="col">Method flag</th><th scope="col">How it finds ultrabubbles</th></tr></thead>
+<tbody>
+<tr><td>None (default)</td><td>Orients the graph, using the method of <a href="#ref-harviainen2026">Harviainen et al., 2026</a>.</td></tr>
+<tr><td><code>--spqr-weak-superbubbles</code></td><td>Uses SPQR trees and the framework of <a href="#ref-sena2026">Sena et al., 2026</a>.</td></tr>
+<tr><td><code>--d-bubbles</code></td><td>Finds ultrabubbles among d-bubbles using dominator trees. See <a href="#d-bubbles">the regions searched</a>.</td></tr>
+<tr><td><code>--doubled</code></td><td>Uses a doubled graph. Uses more RAM than the default method.</td></tr>
+</tbody>
+</table></div>
+<p class="small-note">The method flags cannot (of course) be combined.</p>
+<details class="method-detail" id="special-cases">
+<summary>Special cases: parts of a graph with no end</summary>
+<p>For GFA/GBZ files, the default method needs each connected part of the graph to have an end (a tip, often a chromosome end) or a point whose removal separates that part into several pieces (a cut vertex).</p>
+<p>The SPQR framework in <a href="#ref-sena2026">Sena et al., 2026</a> covers parts with neither. The current <code>--spqr-weak-superbubbles</code> option does not yet support this case. The <code>--doubled</code> option can be used, at a higher memory cost.</p>
+<p>The <code>--d-bubbles</code> method needs at least two ends and searches regions on walks between them.</p>
+</details>
+<h3>Output options</h3>
+<ul>
+<li><code>-T</code> / <code>--include-trivial</code> includes trivial ultrabubbles.</li>
+<li><code>--clsd-trees &lt;file&gt;</code> writes the nesting hierarchy, with the default or <code>--doubled</code> method.</li>
+<li><code>--compact-output-chains</code> joins compatible endpoint pairs into chains. See <a href="#output">output conventions</a>.</li>
+</ul>
+<p class="small-note"><code>--d-bubbles</code> cannot be combined with <code>--clsd-trees</code> or <code>--compact-output-chains</code>. Common options such as <code>-g</code>, <code>-o</code> and <code>-j</code> are listed in the <a href="https://github.com/algbio/BubbleFinder#command-line-options">full command reference</a>.</p>
+</section>
+<section class="article-section" id="snarls">
+<h2>Snarls</h2>
+<p>Snarls also allow loops or branches ending inside the region, as in (b). BubbleFinder computes all snarls. The definition was introduced by <a href="#ref-paten2017">Paten et al., 2017</a>.</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="cmd-snarls" type="button">Copy</button></div><pre><code id="cmd-snarls">BubbleFinder snarls -g graph.gfa -o snarls.txt</code></pre></div>
+<p class="small-note">The algorithm uses the <a href="#spqr-trees">SPQR-tree framework</a>. See the <a href="https://github.com/algbio/BubbleFinder#output-format">README</a> for the snarl clique representation.</p>
+</section>
+<section class="article-section" id="d-bubbles">
+<h2>D-bubbles</h2>
+<p>We defined d-bubbles using dominator trees. They allow links between nodes inside the region and nodes outside its boundaries, as in (c).</p>
+<p>This method needs at least two graph ends (tips). It searches regions on walks between graph tips. The <a href="https://github.com/algbio/BubbleFinder/blob/main/docs/d-bubbles.md">definition and coverage</a> explain which parts of a graph are considered.</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="cmd-d-bubbles" type="button">Copy</button></div><pre><code id="cmd-d-bubbles">BubbleFinder d-bubbles -g graph.gfa -o d-bubbles.txt</code></pre></div>
+<p class="small-note">The preprint describing the definition, proofs and experiments is <a href="#ref-d-bubbles">forthcoming</a>.</p>
+</section>
+<section class="article-section" id="superbubbles">
+<h2>Superbubbles</h2>
+<p>Superbubbles have one entrance, one exit and no internal loops in a directed sequence graph (<a href="#ref-onodera2013">Onodera et al., 2013</a>).</p>
+<p>By default, BubbleFinder reads GFA/GBZ graphs as bidirected. For a directed interpretation of a GFA file:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="cmd-superbubbles" type="button">Copy</button></div><pre><code id="cmd-superbubbles">BubbleFinder superbubbles --directed -g graph.gfa -o superbubbles.txt</code></pre></div>
+<details class="method-detail">
+<summary>How a GFA graph is interpreted</summary>
+<p>Each segment has two states, <code>a+</code> and <code>a-</code>, representing its two sequence orientations. In bidirected mode, a link <code>L a + b - 0M</code> gives <code>a+ → b-</code> and its reverse-complement arc <code>b+ → a-</code>.</p>
+<p>With automatic format detection, <code>superbubbles --directed</code> follows only the direction written in each GFA link record. To read the GFA as bidirected while reporting oriented endpoints, use <code>superbubbles --directed --gfa</code>.</p>
+</details>
+</section>
+<section class="article-section" id="output">
+<h2>Output and nesting hierarchies</h2>
+<p>The bubble commands write a text file. Its first line counts the result lines. The remaining lines identify bubbles by their boundary nodes.</p>
+<p><code>snarls</code>, <code>ultrabubbles</code> and <code>d-bubbles</code> report node sides, such as <code>u+ v-</code>. By default, <code>superbubbles</code> reports segment IDs without signs. With <code>--directed</code>, it reports oriented IDs.</p>
+<h3>Ultrabubbles inside other ultrabubbles</h3>
+<p>Export their nesting hierarchy with the default or <code>--doubled</code> method:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="cmd-hierarchy" type="button">Copy</button></div><pre><code id="cmd-hierarchy">BubbleFinder ultrabubbles -g graph.gfa -o ultrabubbles.txt \
+  --clsd-trees hierarchy.txt</code></pre></div>
+<h3>Compact chains</h3>
+<p>For snarls and ultrabubbles, <code>--compact-output-chains</code> joins pairs such as <code>a+ b-</code> and <code>b+ c-</code> into <code>a+ c-</code>. The output contains the two outer boundaries. Snarl clique rows are not compacted.</p>
+<p class="small-note">This option is incompatible with <code>ultrabubbles --d-bubbles</code>. For <code>superbubbles</code> with unsigned endpoints, it leaves the output unchanged. See the <a href="https://github.com/algbio/BubbleFinder#output-format">complete output format</a> for details.</p>
+</section>
+<section class="article-section" id="spqr-trees">
+<h2>SPQR trees</h2>
+<p>SPQR trees split the pangenome graph into smaller parts, making bubbles easier to find (<a href="#ref-dibattista1990">Di Battista and Tamassia, 1990</a>). BubbleFinder builds them with our <a href="spqr-rust.html">SPQR-Rust library</a>.</p>
+<p>The commands <code>snarls</code>, <code>superbubbles</code> and <code>ultrabubbles --spqr-weak-superbubbles</code> use the unified framework of <a href="#ref-sena2026">Sena et al., 2026</a>. Its theoretical running time is linear in the number of graph nodes and links.</p>
+<h3>Export a decomposition</h3>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="cmd-spqr" type="button">Copy</button></div><pre><code id="cmd-spqr">BubbleFinder spqr-tree -g graph.gfa -o graph.spqr</code></pre></div>
+<p class="small-note">This command reads GFA or GBZ and writes a <code>.spqr</code> v0.4 text file containing connected components, the BC-tree and SPQR trees.</p>
+</section>
+<section class="article-section" id="references">
+<h2>References</h2>
+<ol class="publications">
+<li id="ref-sena2026">Sena et al.. arXiv:2604.08071 (2026). <a href="https://arxiv.org/abs/2604.08071">Identifying bubble-like subgraphs in linear-time via a unified SPQR-tree framework</a></li>
+<li id="ref-harviainen2026">Harviainen et al.. Bioinformatics (2026). <a href="https://doi.org/10.1093/bioinformatics/btag235">Scalable Computation of Ultrabubbles in Pangenomes by Orienting Bidirected Graphs</a></li>
+<li id="ref-onodera2013">Onodera, Sadakane &amp; Shibuya (2013). <a href="https://doi.org/10.1007/978-3-642-40453-5_26">Detecting superbubbles in assembly graphs</a></li>
+<li id="ref-paten2017">Paten, Eizenga, Rosen, Novak &amp; Hickey (2017). <a href="https://doi.org/10.1007/978-3-319-56970-3_11">Superbubbles, Ultrabubbles, and Cacti</a></li>
+<li id="ref-dibattista1990">Di Battista &amp; Tamassia (1990). <a href="https://doi.org/10.1007/BFb0032061">On-line graph algorithms with SPQR-trees</a></li>
+<li id="ref-d-bubbles">Sena, Moumard, Harviainen, Russo &amp; Tomescu. Preprint forthcoming. Dominator-bubbles: variation structures beyond separability in pangenome graphs</li>
+</ol>
+<p class="small-note"><a href="https://github.com/algbio/BubbleFinder/wiki/Validation">Validation tests</a> · <a href="https://github.com/algbio/BubbleFinder/wiki/Flowchart">Execution flowchart</a> · <a href="https://github.com/algbio/BubbleFinder/wiki/Internals">Implementation details</a></p>
+</section>
+</div>
+</div>
+</main>
+<aside aria-label="Project resources" class="sidebar">
+<section>
+<h2>BubbleFinder</h2>
+<ul>
+<li><a href="https://github.com/algbio/BubbleFinder/releases/latest">Download</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder">Source repository</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/issues">Report an issue</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/wiki/Validation">Validation tests</a></li>
+</ul>
+</section>
+<section>
+<h2>On this page</h2>
+<nav aria-label="On this page"><ul><li><a href="#ultrabubbles">Ultrabubbles</a></li><li><a href="#snarls">Snarls</a></li><li><a href="#d-bubbles">D-bubbles</a></li><li><a href="#superbubbles">Superbubbles</a></li><li><a href="#output">Output &amp; hierarchies</a></li><li><a href="#spqr-trees">SPQR trees</a></li><li><a href="#references">References</a></li></ul></nav>
+</section>
+<section>
+<h2>Related</h2>
+<ul><li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</section>
+</aside>
+</div>
+<footer class="site-footer">
+<a href="https://github.com/algbio/BubbleFinder">BubbleFinder</a> · <a href="https://github.com/algbio/BubbleFinder/blob/main/LICENSE">GPLv3</a>
+</footer>
+</div>
+</body>
+</html>

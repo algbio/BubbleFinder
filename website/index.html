@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="Find superbubbles, snarls, ultrabubbles and d-bubbles in genome and pangenome graphs with BubbleFinder." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Variation sites in pangenome graphs · BubbleFinder</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="index.html">BubbleFinder</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a aria-current="page" href="index.html">Home</a></li>
+<li><a href="get-started.html">Getting started</a></li>
+<li><a href="documentation.html">Documentation</a></li>
+<li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content">
+<h1 id="introduction">Introduction</h1>
+<p>BubbleFinder identifies potential sites of genetic variation in pangenome graphs. It reads an existing graph in GFA or GBZ format and reports the boundaries of regions with alternative sequences.</p>
+<p>See <a href="get-started.html">Getting started</a> for installation and an example.</p>
+<figure class="bubble-figure">
+<div aria-label="Example pangenome graph. Scroll horizontally on small screens." class="graph-container" role="region" tabindex="0">
+<img alt="One pangenome graph with three regions: (a) an ultrabubble and snarl with A and G alternatives between u and v, (b) a snarl with a loop, and (c) a d-bubble with a link to the surrounding graph." class="graph-image" height="512" src="assets/bubble-examples.svg" width="1432"/>
+</div>
+<figcaption id="figure-title"><strong>Figure 1.</strong> Nodes contain DNA sequences and links connect them. For example, the paths in (a) share the flanking sequences <code>u</code> and <code>v</code>, and differ at one base: A or G. Arrow-shaped nodes show sequence orientation. A path can follow links in either direction, but must leave each node through the opposite end from which it entered.</figcaption>
+</figure>
+<section aria-labelledby="choose-title" class="section">
+<h2 id="choose-title">Bubble types</h2>
+<table class="method-table">
+<thead><tr><th scope="col">Fig. 1</th><th scope="col">Command</th><th scope="col">Regions to look for</th></tr></thead>
+<tbody>
+<tr><td>(a)</td><td><a href="documentation.html#ultrabubbles"><code>ultrabubbles</code></a></td><td>Regions without loops or branches ending inside them.</td></tr>
+<tr><td>(b)</td><td><a href="documentation.html#snarls"><code>snarls</code></a></td><td>Regions that also allow loops or branches ending inside them.</td></tr>
+<tr><td>(c)</td><td><a href="documentation.html#d-bubbles"><code>d-bubbles</code></a></td><td>Regions that allow links between internal nodes and nodes outside their boundaries.</td></tr>
+<tr><td>—</td><td><a href="documentation.html#superbubbles"><code>superbubbles</code></a></td><td>Regions with one entrance, one exit and no internal loops in a directed sequence graph.</td></tr>
+</tbody>
+</table>
+<p class="small-note">Definitions: <a href="https://doi.org/10.1007/978-3-642-40453-5_26">Onodera et al., 2013</a> (superbubbles), <a href="https://doi.org/10.1007/978-3-319-56970-3_11">Paten et al., 2017</a> (snarls and ultrabubbles), and <a href="documentation.html#ref-d-bubbles">Sena et al., forthcoming</a> (d-bubbles).</p>
+</section>
+<section aria-labelledby="algorithms-title" class="section">
+<h2 id="algorithms-title">Algorithms</h2>
+<p>We developed algorithms for finding these regions efficiently. The commands <code>snarls</code>, <code>superbubbles</code> and <code>ultrabubbles --spqr-weak-superbubbles</code> use a unified SPQR-tree framework (<a href="https://arxiv.org/abs/2604.08071">Sena et al., 2026</a>), built with our <a href="spqr-rust.html">SPQR-Rust</a> library. SPQR trees split the pangenome graph into smaller parts, making bubbles easier to find (<a href="https://doi.org/10.1007/BFb0032061">Di Battista and Tamassia, 1990</a>).</p>
+<p>We also defined d-bubbles using dominator trees. See their <a href="documentation.html#d-bubbles">definition and coverage</a>. Other methods for computing ultrabubbles are described in the <a href="documentation.html#ultrabubbles">documentation</a>.</p>
+<p>BubbleFinder can also export <a href="documentation.html#output">ultrabubble nesting hierarchies</a> and <a href="documentation.html#spqr-trees">SPQR-tree decompositions</a>.</p>
+</section>
+<section aria-labelledby="validation-title" class="section">
+<h2 id="validation-title">Validation</h2>
+<p>BubbleFinder has been tested on real and synthetic graphs. The papers below describe the experiments and provide correctness proofs for the algorithms. Additional tests are described on the <a href="https://github.com/algbio/BubbleFinder/wiki/Validation">Validation wiki</a>.</p>
+</section>
+<section aria-labelledby="papers-title" class="section">
+<h2 id="papers-title">Publications</h2>
+<ol class="publications">
+<li>Sena, Politov, Moumard, Cairo, Rizzi, Cáceres, Schmidt, Harviainen and Tomescu (2026). <a href="https://arxiv.org/abs/2604.08071"><em>Identifying bubble-like subgraphs in linear-time via a unified SPQR-tree framework.</em></a> arXiv:2604.08071.</li>
+<li>Harviainen et al. (2026). <a href="https://doi.org/10.1093/bioinformatics/btag235"><em>Scalable Computation of Ultrabubbles in Pangenomes by Orienting Bidirected Graphs.</em></a> Bioinformatics.</li>
+<li>Sena, Moumard, Harviainen, Russo and Tomescu. <em>Dominator-bubbles: variation structures beyond separability in pangenome graphs.</em> Preprint forthcoming.</li>
+</ol>
+</section>
+</main>
+<aside aria-label="Project resources" class="sidebar">
+<section>
+<h2>BubbleFinder</h2>
+<ul>
+<li><a href="https://github.com/algbio/BubbleFinder/releases/latest">Download</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder">Source repository</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/issues">Report an issue</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/wiki/Validation">Validation tests</a></li>
+</ul>
+</section>
+<section>
+<h2>On this page</h2>
+<nav aria-label="On this page"><ul><li><a href="#introduction">Introduction</a></li><li><a href="#choose-title">Bubble types</a></li><li><a href="#algorithms-title">Algorithms</a></li><li><a href="#validation-title">Validation</a></li><li><a href="#papers-title">Publications</a></li></ul></nav>
+</section>
+<section>
+<h2>Related</h2>
+<ul><li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</section>
+</aside>
+</div>
+<footer class="site-footer">
+<a href="https://github.com/algbio/BubbleFinder">BubbleFinder</a> · <a href="https://github.com/algbio/BubbleFinder/blob/main/LICENSE">GPLv3</a>
+</footer>
+</div>
+</body>
+</html>

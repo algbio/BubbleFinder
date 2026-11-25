@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["INVALID_ADJ"],"struct":["AdjLink","AdjStore"]};

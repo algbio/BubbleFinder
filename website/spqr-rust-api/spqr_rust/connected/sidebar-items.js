@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["connected_components","connected_components_simple","count_connected_components"],"struct":["ConnectedComponents"]};

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="SPQR-Rust series/parallel compression: input contracts, reconstruction, macros and mappings." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Compression · SPQR-Rust</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="spqr-rust.html">SPQR-Rust</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="spqr-rust.html">Home</a></li><li><a class="current-section" href="spqr-rust-documentation.html">Documentation</a></li><li><a href="spqr-rust-api.html">API reference</a></li><li><a href="index.html">BubbleFinder</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content"><p class="manual-breadcrumb"><a href="spqr-rust-documentation.html">Documentation</a> / Compression</p><h1 id="compression">Compression</h1>
+<p><code>sp_compress</code> shortens paths and merges parallel edges before SPQR construction. This can reduce the work required for graphs containing many such structures.</p>
+<p>The remaining graph is the <em>core</em>. Saved records called <em>macros</em> describe the removed structures. Reconstruction uses the macros and the core tree to recover the full SPQR tree.</p>
+<section class="section" id="workflow">
+<h2>Workflow</h2>
+<p>Compression is an alternative to calling <code>build_spqr</code> directly.</p>
+<ol>
+<li>Prepare the edge list and mark vertices eligible for path shortening.</li>
+<li>Apply series reductions through vertices with two incident edges and merge parallel edges. Store the replacements as macros.</li>
+<li>Build the core tree, then reconstruct the full tree when needed.</li>
+</ol>
+<p>Reconstruction returns a <code>SpqrTree</code>.</p>
+<p>For full-tree output, compare direct construction with the total time for compression, core construction and reconstruction.</p>
+</section><section class="section" id="contract"><h2>Prepare the input</h2><table class="compact-table reference-table"><thead><tr><th scope="col">Input</th><th scope="col">Meaning</th></tr></thead><tbody><tr><td><code>n_nodes</code></td><td>Number of vertices, numbered consecutively from zero.</td></tr><tr><td><code>InputEdge</code></td><td>The two vertices joined by an input edge, and that edge's ID. For reconstruction, use each edge's position in the input list as its ID, starting at zero.</td></tr><tr><td><code>contractible</code></td><td>A mask with one byte per vertex. Zero protects the vertex from removal during series reductions. A nonzero value allows its removal when it has two incident edges. Parallel reductions remain possible.</td></tr></tbody></table><p>The mask needs at least <code>n_nodes</code> entries. For a full SPQR tree, process one <a href="spqr-rust-guide.html#blocks">biconnected block</a> at a time.</p><p>Check <code>success</code> and <code>error_message</code> in results from <code>compress</code> or <code>compress_borrowed</code>. <code>compress_and_build_spqr</code> instead returns a <code>CompressAndSpqrResult</code> containing macros, an optional core tree and vertex mappings.</p></section><section class="section" id="compression-example"><h2>Compress and reconstruct</h2><p>This example uses the graph shown on the <a href="spqr-rust.html">project page</a>. It checks the reconstructed decomposition and recovers every original edge.</p><div class="code-block"><div class="code-header"><span>spqr-compression.rs</span><button aria-label="Copy spqr-compression.rs" class="copy-button" data-copy="compress-program" type="button">Copy</button></div><pre><code id="compress-program">use spqr_rust::{EdgeId, Graph, NodeId};
+use spqr_rust::sp_compress::{
+    compress_and_build_spqr, CompressionInput, InputEdge,
+};
+use spqr_rust::sp_compress::reconstruct::reconstruct_from_compress_result;
+
+fn main() {
+    let pairs = [
+        (0, 1),
+        (0, 2), (0, 3), (1, 2), (1, 3), (2, 3),
+        (0, 4), (0, 5), (1, 4), (1, 5), (4, 5),
+        (0, 6), (6, 7), (7, 1),
+    ];
+    let mut graph = Graph::with_capacity(8, pairs.len());
+    graph.add_nodes(8);
+    let edges = pairs.iter().map(|&amp;(u, v)| {
+        let original_edge_id = graph.add_edge(NodeId(u), NodeId(v));
+        InputEdge { u: NodeId(u), v: NodeId(v), original_edge_id }
+    }).collect();
+
+    let input = CompressionInput {
+        n_nodes: 8,
+        edges,
+        contractible: vec![1; 8],
+    };
+    let compressed = compress_and_build_spqr(&amp;input);
+    let tree = reconstruct_from_compress_result(&amp;compressed);
+    assert!(spqr_rust::verify::verify_spqr_tree(&amp;graph, &amp;tree).is_ok());
+    assert_eq!(tree.count_by_type(), (1, 1, 2));
+
+    let stats = compressed.stats();
+    println!("Core: {} vertices, {} edges", stats.core_nodes, stats.core_edges_count);
+    let mut recovered = Vec::&lt;EdgeId&gt;::new();
+    for edge in &amp;compressed.macro_tree.core_edges {
+        compressed.macro_tree.for_each_original_edge(
+            edge.child, &amp;mut |id| recovered.push(id));
+    }
+    recovered.sort_by_key(|id| id.0);
+    assert_eq!(recovered, (0..pairs.len() as u32).map(EdgeId).collect::&lt;Vec&lt;_&gt;&gt;());
+    println!("Recovered {} original edges", recovered.len());
+}</code></pre></div><p><a download="" href="examples/spqr-compression.rs">Download the complete example</a>. It reports a core with 6 vertices and 11 edges and recovers the 14 original edges. The reconstructed tree has one S node, one P node and two R nodes.</p></section><section class="section" id="entry-points"><h2>Entry points</h2><table class="compact-table reference-table"><thead><tr><th scope="col">Function</th><th scope="col">Use</th></tr></thead><tbody><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reduction/fn.compress.html"><code>compress</code></a></td><td>Compression only. Takes a reference to a <code>CompressionInput</code> record containing its own edge and mask vectors.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reduction/fn.compress_borrowed.html"><code>compress_borrowed</code></a></td><td>Compression only. Reads your existing edge and mask arrays without copying them into an input record. Keep them alive for the call.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/integration/fn.compress_and_build_spqr.html"><code>compress_and_build_spqr</code></a></td><td>Compression plus the core SPQR decomposition.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/integration/fn.compress_and_build_spqr_borrowed.html"><code>compress_and_build_spqr_borrowed</code></a></td><td>Compress the graph and build the core's SPQR tree using your existing edge and mask arrays.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reconstruct/fn.reconstruct_from_compress_result.html"><code>reconstruct_from_compress_result</code></a></td><td>Recover the full tree from a <code>CompressAndSpqrResult</code>, including graphs that reduce completely.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reconstruct/fn.reconstruct.html"><code>reconstruct</code></a></td><td>Recover the full tree by supplying the core tree, macros and vertex mapping separately.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reconstruct/fn.reconstruct_timed.html"><code>reconstruct_timed</code></a></td><td>Reconstruction plus timings for its individual phases.</td></tr></tbody></table></section><section class="section" id="macros"><h2>Read the compression result</h2><p>The saved macros and core graph form a <code>SpTree</code>, stored in <code>macro_tree</code>. A macro's children are input edges or nested macros. A child reference encodes the child's kind and ID.</p><table class="compact-table reference-table"><thead><tr><th scope="col">Result</th><th scope="col">Meaning</th></tr></thead><tbody><tr><td><code>macro_tree.macros</code></td><td>Records of the replaced paths and parallel connections. Each gives its endpoints and the positions of its children in the child array.</td></tr><tr><td><code>macro_tree.children</code></td><td>Child references to original edges or nested macros. Use <code>child_is_edge</code>, <code>child_as_edge</code>, <code>child_is_macro</code> and <code>child_as_macro</code> rather than treating every value as an edge ID.</td></tr><tr><td><code>macro_tree.core_edges</code></td><td>The reduced graph edges and the child references describing their expansions.</td></tr><tr><td><code>core_spqr</code></td><td>The SPQR result for the core graph. It is <code>None</code> when no separate core tree is needed.</td></tr><tr><td><code>core_node_remap</code>, <code>core_node_inv</code></td><td>Translate vertex IDs in both directions: <code>core_node_remap</code> maps original IDs to core IDs and <code>core_node_inv</code> maps core IDs back to original IDs.</td></tr></tbody></table><p><code>SpTree::for_each_original_edge</code> visits the input edges represented by a child reference. <code>count_atomic_descendants</code> counts them for a child reference, and <code>count_atomic_descendants_macro</code> for a macro ID. <code>stats()</code> reports graph sizes and reduction counts.</p><p>When <code>fully_sp_reducible</code> is set, the macros represent the entire graph. Reconstruction uses them alone, with <code>core_spqr</code> set to <code>None</code>.</p></section><section class="section" id="reconstruction"><h2>Reconstruction and self-loops</h2><p>Rust reconstruction returns a <code>SpqrTree</code>. Retain self-loops separately when packaging a <code>SpqrResult</code> for export. C reconstruction results already include them.</p><p>Check a reconstructed tree with <code>verify_spqr_tree</code> against the input graph. The <a href="spqr-rust-api/spqr_rust/sp_compress/iso/index.html">comparison module</a> provides <code>canonical_form</code> for byte representations of trees and <code>isomorphic</code> to compare them.</p></section><section class="section" id="advanced-compression"><h2>Specialised compression interfaces</h2><p><a href="spqr-rust-interfaces.html#wide">64-bit compression</a> is in <code>sp_compress::wide</code>. The <a href="spqr-rust-interfaces.html#compression-ffi">C compression interface</a> can read separate endpoint arrays, return timings and expose the core graph. It can also restore an earlier compression state from an in-memory snapshot.</p><p>The public <code>adj</code>, <code>arena</code>, <code>pmap</code> and <code>types</code> modules store neighbours, macros and endpoint pairs during compression. See the <a href="spqr-rust-api.html#compression-modules">module index</a>.</p></section><p>Next: <a href="spqr-rust-interfaces.html">C/C++ and advanced interfaces</a>.</p></main>
+<aside aria-label="Project resources" class="sidebar"><section><h2>Documentation</h2><nav aria-label="Documentation chapters" class="manual-nav"><ul><li><a href="spqr-rust-documentation.html">Contents</a></li><li><a href="spqr-rust-guide.html">Getting started</a></li><li><a aria-current="page" href="spqr-rust-compression.html">Compression</a></li><li><a href="spqr-rust-interfaces.html">Advanced interfaces</a></li><li><a href="spqr-rust-api.html">API reference</a></li></ul></nav></section>
+<section><h2>On this page</h2><nav aria-label="On this page"><ul><li><a href="#workflow">Workflow</a></li><li><a href="#contract">Prepare the input</a></li><li><a href="#compression-example">Example</a></li><li><a href="#entry-points">Entry points</a></li><li><a href="#macros">Read the result</a></li><li><a href="#reconstruction">Reconstruction</a></li><li><a href="#advanced-compression">Specialised interfaces</a></li></ul></nav></section>
+<section><h2>Project</h2><ul><li><a href="spqr-rust.html">SPQR-Rust home</a></li><li><a href="https://github.com/algbio/spqr-rust">Source repository</a></li><li><a href="index.html">BubbleFinder</a></li></ul></section></aside>
+</div>
+<footer class="site-footer"><a href="https://github.com/algbio/spqr-rust">SPQR-Rust</a> · MIT · API 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a></footer>
+</div>
+</body>
+</html>

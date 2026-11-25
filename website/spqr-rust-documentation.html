@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="SPQR-Rust documentation: a structured manual and complete local API reference." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Documentation · SPQR-Rust</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="spqr-rust.html">SPQR-Rust</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="spqr-rust.html">Home</a></li><li><a aria-current="page" href="spqr-rust-documentation.html">Documentation</a></li><li><a href="spqr-rust-api.html">API reference</a></li><li><a href="index.html">BubbleFinder</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content"><h1 id="documentation">Documentation</h1>
+<p>SPQR-Rust computes connected components, biconnected blocks and SPQR trees.</p>
+<p>IDs are 32-bit by default. The optional <code>wide</code> API uses 64-bit IDs. See <a href="spqr-rust-interfaces.html#wide">Identifier size</a>.</p><p>For C++ code using OGDF, a C++ graph library, choose <a href="spqr-rust-interfaces.html#cpp-migration"><code>spqr::ogdf_compat</code></a> to simplify the transition to SPQR-Rust. Choose <a href="spqr-rust-interfaces.html#cpp-performance"><code>spqr</code></a> when reducing storage and data-access costs is the priority. Both use the same Rust SPQR builder. Compare the <a href="spqr-rust-interfaces.html#cpp-interfaces">two interfaces</a>, then choose <a href="spqr-rust-compression.html#workflow">direct construction or compression followed by reconstruction</a>.</p><section class="section" id="manual"><h2>User manual</h2><table class="compact-table reference-table"><thead><tr><th scope="col">Chapter</th><th scope="col">Contents</th></tr></thead><tbody><tr><td><a href="spqr-rust-guide.html">Getting started</a></td><td>Installation, graph input, building and reading a tree, verification and file output.</td></tr><tr><td><a href="spqr-rust-compression.html">Compression</a></td><td>Reduce paths and parallel edges, build a tree of the smaller graph, then recover the full tree.</td></tr><tr><td><a href="spqr-rust-interfaces.html">Advanced interfaces</a></td><td>Adapting OGDF code, choosing a C++ interface, memory use, 32-bit or 64-bit IDs, C compression calls, snapshots and runtime settings.</td></tr><tr><td><a href="spqr-rust-api.html">API reference</a></td><td>Generated Rust reference for public types, methods and functions, plus complete C/C++ headers.</td></tr></tbody></table></section><section class="section" id="find"><h2>Find a topic</h2><ul>
+<li id="installation"><a href="spqr-rust-guide.html#installation">Install the library</a></li>
+<li id="input"><a href="spqr-rust-guide.html#input">Prepare a graph or extract biconnected blocks</a></li>
+<li id="rust-example"><a href="spqr-rust-guide.html#rust-example">Build an SPQR tree</a></li>
+<li id="skeletons"><a href="spqr-rust-guide.html#skeletons">Read real and virtual edges</a></li>
+<li id="verification"><a href="spqr-rust-guide.html#verification">Verify a decomposition</a></li>
+<li id="export"><a href="spqr-rust-guide.html#export">Write, parse and validate a .spqr file</a></li>
+<li><a href="spqr-rust-compression.html#compression-example">Compress and reconstruct a graph</a></li>
+<li><a href="spqr-rust-interfaces.html#wide">Choose 32-bit or 64-bit identifiers</a></li>
+<li id="c-cpp"><a href="spqr-rust-interfaces.html#c-cpp">Build the C and C++ library</a></li>
+<li><a href="spqr-rust-interfaces.html#cpp-interfaces">Choose a C++ interface or migrate an OGDF-based library</a></li><li><a href="spqr-rust-interfaces.html#snapshots">Reuse a compression state (snapshots)</a></li>
+<li><a href="spqr-rust-interfaces.html#cli">Run spqr_cli</a></li>
+<li id="api"><a href="spqr-rust-api.html#modules">Look up a Rust module or function</a></li>
+</ul></section><section class="section" id="coverage"><h2>Reference version</h2><p>The reference is generated from SPQR-Rust 0.1.0, commit <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a>. It includes the public Rust API and all five C/C++ headers.</p></section></main>
+<aside aria-label="Project resources" class="sidebar"><section><h2>Documentation</h2><nav aria-label="Documentation chapters" class="manual-nav"><ul><li><a aria-current="page" href="spqr-rust-documentation.html">Contents</a></li><li><a href="spqr-rust-guide.html">Getting started</a></li><li><a href="spqr-rust-compression.html">Compression</a></li><li><a href="spqr-rust-interfaces.html">Advanced interfaces</a></li><li><a href="spqr-rust-api.html">API reference</a></li></ul></nav></section>
+<section><h2>On this page</h2><nav aria-label="On this page"><ul><li><a href="#manual">User manual</a></li><li><a href="#find">Find a topic</a></li><li><a href="#coverage">Reference version</a></li></ul></nav></section>
+<section><h2>Project</h2><ul><li><a href="spqr-rust.html">SPQR-Rust home</a></li><li><a href="https://github.com/algbio/spqr-rust">Source repository</a></li><li><a href="index.html">BubbleFinder</a></li></ul></section></aside>
+</div>
+<footer class="site-footer"><a href="https://github.com/algbio/spqr-rust">SPQR-Rust</a> · MIT · API 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a></footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["spqr_rust",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/struct.EdgeId.html\" title=\"struct spqr_rust::EdgeId\">EdgeId</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/struct.NodeId.html\" title=\"struct spqr_rust::NodeId\">NodeId</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/struct.TreeNodeId.html\" title=\"struct spqr_rust::TreeNodeId\">TreeNodeId</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/wide/struct.EdgeId.html\" title=\"struct spqr_rust::wide::EdgeId\">EdgeId</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/wide/struct.NodeId.html\" title=\"struct spqr_rust::wide::NodeId\">NodeId</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"spqr_rust/wide/struct.TreeNodeId.html\" title=\"struct spqr_rust::wide::TreeNodeId\">TreeNodeId</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1518]}
