@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="SPQR-Rust guide: graph input, SPQR trees, skeletons, verification and file formats." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Getting started · SPQR-Rust</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="spqr-rust.html">SPQR-Rust</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="spqr-rust.html">Home</a></li><li><a class="current-section" href="spqr-rust-documentation.html">Documentation</a></li><li><a href="spqr-rust-api.html">API reference</a></li><li><a href="index.html">BubbleFinder</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content"><p class="manual-breadcrumb"><a href="spqr-rust-documentation.html">Documentation</a> / Getting started</p><h1 id="guide">Getting started</h1><p>Build and read an SPQR tree in Rust. For C++, see <a href="spqr-rust-interfaces.html#cpp-interfaces">Choosing a C++ interface</a>.</p><section class="section" id="installation">
+<h2>Installation</h2>
+<p>Add SPQR-Rust to the dependencies in your project's Cargo.toml:</p>
+<div class="code-block"><div class="code-header"><span>Cargo.toml</span><button aria-label="Copy Cargo.toml" class="copy-button" data-copy="dependency" type="button">Copy</button></div><pre><code id="dependency">[dependencies]
+spqr-rust = { git = "https://github.com/algbio/spqr-rust" }</code></pre></div>
+<p>The <a href="https://github.com/algbio/spqr-rust/blob/main/rust-toolchain.toml">repository toolchain file</a> specifies the Rust version used for development.</p>
+</section><section class="section" id="input">
+<h2>Input graphs</h2>
+<p><code>Graph</code> stores an undirected multigraph. Parallel edges and self-loops are allowed.</p>
+<p>Create vertices before adding edges. IDs are consecutive, starting at zero. <code>add_edge</code> returns the new edge's <code>EdgeId</code>.</p>
+<p><code>Graph</code> and <code>SpqrTree</code> use 32-bit IDs. For larger graphs, see <a href="spqr-rust-interfaces.html#wide">Identifier size</a>.</p>
+<p>The SPQR builders require a biconnected graph: it stays connected after removing any single vertex. For other graphs, <a href="#blocks">extract the blocks first</a>.</p>
+
+<table class="compact-table">
+<thead><tr><th scope="col">Entry point</th><th scope="col">Input and result</th></tr></thead>
+<tbody>
+<tr><td><code>connected_components</code></td><td>Any graph. Returns the connected parts and a component ID for each vertex.</td></tr>
+<tr><td><code>BCTree::build</code></td><td>Finds the biconnected blocks and the vertices where blocks meet.</td></tr>
+<tr><td><code>build_spqr</code></td><td>A biconnected graph. Returns its SPQR tree, with self-loops collected separately in <code>result.self_loops</code>.</td></tr>
+<tr><td><code>build_spqr_tree</code></td><td>A biconnected graph without self-loops. Returns the tree directly.</td></tr>
+</tbody>
+</table>
+
+<p>The following fragment uses an existing <code>graph</code>:</p>
+<div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="components" type="button">Copy</button></div><pre><code id="components">let components = spqr_rust::connected::connected_components(&amp;graph);
+println!("Connected components: {}", components.num_components);
+
+let blocks = spqr_rust::biconnected::BCTree::build(&amp;graph);
+for block in 0..blocks.num_blocks() {
+    println!("Block {block}: {} vertices, {} edges",
+        blocks.block_nodes(block).len(),
+        blocks.block_edges(block).len());
+}</code></pre></div>
+<p class="small-note">API source: <a href="https://github.com/algbio/spqr-rust/blob/main/src/connected.rs">connected components</a> and <a href="https://github.com/algbio/spqr-rust/blob/main/src/biconnected.rs">biconnected blocks</a>.</p>
+</section><section class="section" id="blocks"><h2>Extract biconnected blocks</h2><p><code>BCTree::build</code> computes the block-cut tree (BC-tree): the biconnected blocks and their shared cut vertices. Build a graph for each block with vertex IDs from zero and retain the mapping to the full graph. Original vertex and edge IDs in the SPQR tree refer to that block graph. Bridges (edges whose removal disconnects the graph) need no separate SPQR tree.</p><p>The <a download="" href="examples/spqr-blocks.rs">complete block example</a> uses two triangles sharing one vertex, plus an isolated vertex. It finds two connected components, two blocks and one cut vertex, then builds and verifies each triangle's SPQR tree.</p></section><section class="section" id="tree-basics">
+<h2>What an SPQR tree contains</h2>
+<p>Each SPQR tree node contains a graph called its skeleton, of type S, P or R:</p>
+<table class="compact-table"><thead><tr><th scope="col">Type</th><th scope="col">Skeleton</th></tr></thead><tbody>
+<tr><td>S</td><td>A cycle.</td></tr>
+<tr><td>P</td><td>Two vertices joined by parallel edges.</td></tr>
+<tr><td>R</td><td>A triconnected graph: it has at least four vertices and stays connected after removing any two vertices.</td></tr>
+</tbody></table>
+<p>A real edge is an edge from the input graph. A virtual edge represents the part connected through another skeleton. Virtual edges come in matching pairs, one in each of the two neighbouring skeletons. They are dashed in the <a href="spqr-rust.html">figure</a>.</p>
+
+</section><section class="section" id="rust-example">
+<h2>Build an SPQR tree</h2>
+<p>This example uses the eight-vertex graph from the <a href="spqr-rust.html">overview</a>:</p>
+
+<div class="code-block"><div class="code-header"><span>src/main.rs</span><button aria-label="Copy src/main.rs" class="copy-button" data-copy="usage" type="button">Copy</button></div><pre><code id="usage">use spqr_rust::{build_spqr, Graph, NodeId};
+
+fn main() {
+    let edges = [
+        (0, 1),
+        (0, 2), (0, 3), (1, 2), (1, 3), (2, 3),
+        (0, 4), (0, 5), (1, 4), (1, 5), (4, 5),
+        (0, 6), (6, 7), (7, 1),
+    ];
+    let mut graph = Graph::with_capacity(8, edges.len());
+    graph.add_nodes(8);
+    for (u, v) in edges {
+        graph.add_edge(NodeId(u), NodeId(v));
+    }
+
+    let mut result = build_spqr(&amp;graph);
+    result.tree.normalize();
+    result.tree.compact();
+
+    let report = spqr_rust::verify::verify_spqr_tree(&amp;graph, &amp;result.tree);
+    assert!(report.is_ok());
+
+    let (s, p, r) = result.tree.count_by_type();
+    println!("S: {s}, P: {p}, R: {r}");
+}</code></pre></div><p><code>normalize()</code> merges adjacent S nodes and adjacent P nodes to obtain a reduced tree. <code>compact()</code> removes emptied nodes and can renumber the remaining tree nodes. Read IDs after these calls.</p>
+<p>Run with <code>cargo run</code>. The output is <code>S: 1, P: 1, R: 2</code>. <a download="" href="examples/spqr-usage.rs">Download this Rust example</a>.</p>
+</section><section class="section" id="skeletons">
+<h2>Read the tree and its skeletons</h2>
+<p>Skeleton vertex indices are local to each skeleton. The fields below map them to the input graph.</p>
+<p>The following Rust fragments use <code>graph</code> and <code>result</code> created in <a href="#rust-example">Build an SPQR tree</a>.</p>
+<div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="inspect" type="button">Copy</button></div><pre><code id="inspect">for id in result.tree.iter() {
+    let node = result.tree.node(id);
+    println!("{id:?}: {:?}, {} vertices, {} edges",
+        node.node_type,
+        node.skeleton.num_nodes,
+        node.skeleton.edges.len());
+}</code></pre></div>
+<table class="compact-table">
+<thead><tr><th scope="col">Field or method</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>node.parent</code>, <code>node.children</code></td><td>Connections to neighbouring tree nodes. The root has no parent: <code>node.parent.is_valid()</code> is false.</td></tr>
+<tr><td><code>node.skeleton.node_to_original</code></td><td>Maps skeleton vertex indices to vertices in the input graph.</td></tr>
+<tr><td><code>edge.real_edge</code></td><td><code>edge.real_edge.is_valid()</code> is true for a real edge. The value is its input-graph edge ID.</td></tr>
+<tr><td><code>edge.twin_tree_node</code>, <code>edge.twin_edge_idx</code></td><td>For a virtual edge, locate its matching edge in the neighbouring skeleton.</td></tr>
+</tbody>
+</table>
+<p>Self-loops are kept in <code>result.self_loops</code> and are not assigned to a skeleton.</p>
+<p class="small-note">Data structures and accessors: <a href="https://github.com/algbio/spqr-rust/blob/main/src/lib.rs">Rust API source</a>.</p>
+</section><section class="section" id="identifiers"><h2>Identifiers and tree updates</h2><p>Canonicalization methods choose a root and order tree and skeleton data consistently. Tree updates can change IDs or move arrays. Retain IDs and create borrowed views (array access without copying) after those updates. See the <a href="spqr-rust-api.html">tree API</a>.</p></section><section class="section" id="verification">
+<h2>Verify a decomposition</h2>
+<p><code>verify_spqr_tree</code> checks edge mappings, skeletons, virtual-edge pairs and tree connectivity. By default it also requires a reduced tree.</p>
+<p>To check a tree before reduction:</p>
+<div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="unreduced" type="button">Copy</button></div><pre><code id="unreduced">use spqr_rust::verify::{verify_spqr_tree_with_options, VerifyOptions};
+
+let report = verify_spqr_tree_with_options(
+    &amp;graph, &amp;result.tree,
+    VerifyOptions { require_reduced: false });
+assert!(report.is_ok(), "{:?}", report.errors);</code></pre></div>
+<p class="small-note">Failures are available in <code>report.errors</code>. See the <a href="https://github.com/algbio/spqr-rust/blob/main/src/verify.rs">verification module</a>.</p>
+</section><section class="section" id="export">
+<h2>Export a decomposition</h2>
+<p>Write the result to a <a href="https://github.com/sebschmi/SPQR-tree-file-format"><code>.spqr</code> v0.4 text file</a>:</p>
+<div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="export-example" type="button">Copy</button></div><pre><code id="export-example">let mut file = std::fs::File::create("example.spqr").unwrap();
+spqr_rust::spqr_format::write_spqr_format(
+    &amp;mut file, &amp;graph, &amp;result).unwrap();</code></pre></div>
+<p>Use <code>to_spqr_string(&amp;graph, &amp;result)</code> for text in memory. Keep the complete <code>SpqrResult</code> to include self-loops. The tree-only functions <code>write_spqr_tree_format</code> and <code>tree_to_spqr_string</code> omit them.</p>
+</section><section class="section" id="files"><h2>Read and validate .spqr files</h2><p><code>parse_spqr_format</code> returns <code>ParsedSpqrFormat</code> records for the file contents. <code>validate_spqr_format</code> checks them against the graph and its SPQR result. Parsing produces file records, rather than a traversable <code>SpqrTree</code>.</p><div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="parse-format" type="button">Copy</button></div><pre><code id="parse-format">let text = spqr_rust::spqr_format::to_spqr_string(&amp;graph, &amp;result);
+let parsed = spqr_rust::spqr_format::parse_spqr_format(&amp;text).unwrap();
+spqr_rust::spqr_format::validate_spqr_format(
+    &amp;parsed, &amp;graph, &amp;result).unwrap();</code></pre></div></section><p>Next: <a href="spqr-rust-compression.html">Compression</a>.</p></main>
+<aside aria-label="Project resources" class="sidebar"><section><h2>Documentation</h2><nav aria-label="Documentation chapters" class="manual-nav"><ul><li><a href="spqr-rust-documentation.html">Contents</a></li><li><a aria-current="page" href="spqr-rust-guide.html">Getting started</a></li><li><a href="spqr-rust-compression.html">Compression</a></li><li><a href="spqr-rust-interfaces.html">Advanced interfaces</a></li><li><a href="spqr-rust-api.html">API reference</a></li></ul></nav></section>
+<section><h2>On this page</h2><nav aria-label="On this page"><ul><li><a href="#installation">Installation</a></li><li><a href="#input">Input graphs</a></li><li><a href="#blocks">Biconnected blocks</a></li><li><a href="#tree-basics">Tree and skeletons</a></li><li><a href="#rust-example">Build a tree</a></li><li><a href="#skeletons">Read skeletons</a></li><li><a href="#identifiers">Identifiers</a></li><li><a href="#verification">Verification</a></li><li><a href="#export">Export</a></li><li><a href="#files">Read files</a></li></ul></nav></section>
+<section><h2>Project</h2><ul><li><a href="spqr-rust.html">SPQR-Rust home</a></li><li><a href="https://github.com/algbio/spqr-rust">Source repository</a></li><li><a href="index.html">BubbleFinder</a></li></ul></section></aside>
+</div>
+<footer class="site-footer"><a href="https://github.com/algbio/spqr-rust">SPQR-Rust</a> · MIT · API 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a></footer>
+</div>
+</body>
+</html>

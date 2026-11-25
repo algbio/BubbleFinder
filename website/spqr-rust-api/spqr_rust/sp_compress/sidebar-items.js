@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["adj","arena","direct","ffi","integration","iso","pmap","reconstruct","reconstruct_wide","reduction","types","wide"]};

@@ -1,0 +1,13 @@
+H	VN:Z:1.0
+S	left	ACGT
+S	u	TTC
+S	a	A
+S	g	G
+S	v	CGA
+S	right	TTAG
+L	left	+	u	+	0M
+L	u	+	a	+	0M
+L	u	+	g	+	0M
+L	a	+	v	+	0M
+L	g	+	v	+	0M
+L	v	+	right	+	0M

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["parse_spqr_format","to_spqr_string","tree_to_spqr_string","validate_spqr_format","write_spqr_format","write_spqr_tree_format"],"struct":["ParsedBlock","ParsedRealEdge","ParsedSpqrFormat","ParsedSpqrNode","ParsedVirtualEdge","SpqrFormatDisplay"]};

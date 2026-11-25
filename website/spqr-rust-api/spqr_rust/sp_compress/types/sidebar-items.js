@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["INVALID_SP_NODE","PAYLOAD_MASK","SP_KIND_PARALLEL","SP_KIND_SERIES","TAG_BIT"],"fn":["child_as_edge","child_as_macro","child_is_edge","child_is_macro","make_child_edge","make_child_macro"],"struct":["CompressionInput","CompressionResult","CompressionStats","CoreEdge","InputEdge","SpNode","SpTree"],"type":["ChildRef","SpNodeId"]};

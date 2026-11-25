@@ -1,0 +1,2 @@
+createSrcSidebar('[["spqr_rust",["",[["sp_compress",[],["adj.rs","arena.rs","direct.rs","direct_wide.rs","ffi.rs","integration.rs","iso.rs","mod.rs","pmap.rs","pmap32.rs","reconstruct.rs","reconstruct_wide.rs","reduction.rs","reduction32.rs","types.rs","types32.rs","wide.rs"]]],["biconnected.rs","connected.rs","ffi.rs","lib.rs","spqr_format.rs","verify.rs","wide.rs"]]]]');
+//{"start":19,"fragment_lengths":[352]}

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="SPQR-Rust C++ interface choices, C integration, memory ownership, 64-bit IDs, compression and runtime settings." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Advanced interfaces · SPQR-Rust</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="spqr-rust.html">SPQR-Rust</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="spqr-rust.html">Home</a></li><li><a class="current-section" href="spqr-rust-documentation.html">Documentation</a></li><li><a href="spqr-rust-api.html">API reference</a></li><li><a href="index.html">BubbleFinder</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content"><p class="manual-breadcrumb"><a href="spqr-rust-documentation.html">Documentation</a> / Advanced interfaces</p><h1 id="interfaces">Advanced interfaces</h1>
+
+
+
+
+
+
+
+<section class="section" id="cpp-interfaces">
+<h2 id="compatibility">Choosing a C++ interface</h2>
+<p>OGDF is a C++ library for graph algorithms. SPQR-Rust provides two C++ interfaces for two priorities: <code>spqr::ogdf_compat</code> to simplify the transition from existing OGDF code, and <code>spqr</code> for code where performance is the priority, with compact edge values and fewer checks when accessing arrays.</p>
+<table class="compact-table"><thead><tr><th scope="col">Your priority</th><th scope="col">Interface</th><th scope="col">What it provides</th></tr></thead><tbody>
+<tr><td>Simplify the transition from OGDF.</td><td><code>spqr::ogdf_compat</code></td><td>Keeps familiar calls such as <code>e-&gt;source()</code> and <code>e-&gt;target()</code>. Arrays linked to a graph grow automatically when accessed after the graph grows. See <a href="#cpp-migration">migration steps</a>.</td></tr>
+<tr><td>Reduce storage and repeated checks in C++ code.</td><td><code>spqr</code></td><td>Stores edges as compact integer IDs and accesses arrays without querying the graph's size. You manage array sizes as the graph grows. See <a href="#cpp-performance">memory and runtime costs</a>.</td></tr>
+</tbody></table>
+<p>Both interfaces use the same Rust SPQR builder and require an SPQR-Rust graph. To retain OGDF elsewhere in your library, see <a href="#cpp-adapter">Keeping your OGDF graph</a>.</p>
+<h3 id="cpp-performance">Memory and runtime</h3>
+<p>Both interfaces use 32-bit IDs and read input-edge endpoints through the same Rust function.</p>
+<table class="compact-table"><thead><tr><th scope="col">Operation</th><th scope="col"><code>spqr::ogdf_compat</code></th><th scope="col"><code>spqr</code></th></tr></thead><tbody>
+<tr><td>Store one C++ edge value</td><td>Typically 16 bytes with 8-byte pointers: its ID and a pointer to the graph.</td><td>4 bytes: its ID.</td></tr>
+<tr><td>Index a node/edge array constructed with an input graph</td><td>Queries the graph's size before indexing, and grows the array if needed.</td><td>Does not query the graph's size. Writable indexing can still grow the array.</td></tr>
+<tr><td>Read a real skeleton edge with <code>source()</code>, <code>target()</code> or <code>forEachEdge()</code></td><td>Reads the endpoints stored in the skeleton.</td><td>Reads the original input edge's source to match the input endpoint order.</td></tr>
+</tbody></table>
+<p>One million stored edge values occupy 16 MB with <code>spqr::ogdf_compat</code> and 4 MB with <code>spqr</code>. Total memory also includes the Rust graph and tree, other C++ objects and reserved array capacity.</p>
+<p>The runtime effect depends on how often your code performs these operations. Compile both C++ and Rust with optimisation enabled.</p>
+</section><section class="section" id="c-cpp">
+<h2>Build and link</h2>
+<p>Build the library from its repository:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy Terminal" class="copy-button" data-copy="library-build" type="button">Copy</button></div><pre><code id="library-build">git clone https://github.com/algbio/spqr-rust
+cd spqr-rust
+cargo build --release</code></pre></div>
+<p>On Linux, Cargo produces <code>target/release/libspqr_rust.a</code> (static) and <code>target/release/libspqr_rust.so</code> (shared). C functions (FFI) are declared in <a href="https://github.com/algbio/spqr-rust/blob/main/include/spqr_tree.h"><code>include/spqr_tree.h</code></a>.</p>
+
+<p><a download="" href="examples/spqr-example.cpp">Download the C++ example</a> and compile it from the repository root:</p><div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy Terminal" class="copy-button" data-copy="cpp-build" type="button">Copy</button></div><pre><code id="cpp-build">c++ -O3 -std=c++17 spqr-example.cpp -I include -L target/release \
+  -Wl,-rpath,'$ORIGIN/target/release' -lspqr_rust -o example
+./example</code></pre></div></section><section class="section" id="cpp-migration"><h2>Changes to your code</h2>
+<p>Most changes needed to port OGDF code apply to both interfaces.</p>
+<ol>
+<li>Include <code>spqr_compat.hpp</code> and link <code>libspqr_rust</code> using the <a href="#cpp-build">build command</a>.</li>
+<li>Replace the OGDF types used by the SPQR routine with those from the chosen namespace: <code>Graph</code>, <code>node</code>, <code>edge</code>, <code>NodeArray&lt;T&gt;</code>, <code>EdgeArray&lt;T&gt;</code> and <code>StaticSPQRTree</code>.</li>
+<li>Update the calls below. Both interfaces implement part of OGDF's API. Check any other methods you use in the <a href="spqr-rust-api/headers/spqr_compat.hpp.html">header reference</a>.</li>
+</ol>
+<p>For example, the same input-graph operation becomes:</p>
+<div class="code-block"><div class="code-header"><span>C++: spqr</span><button aria-label="Copy C++: spqr" class="copy-button" data-copy="cpp-light" type="button">Copy</button></div><pre><code id="cpp-light">spqr::Graph graph;
+auto a = graph.newNode();
+auto b = graph.newNode();
+auto edge = graph.newEdge(a, b);
+auto source = graph.source(edge);</code></pre></div>
+<div class="code-block"><div class="code-header"><span>C++: spqr::ogdf_compat</span><button aria-label="Copy C++: spqr::ogdf_compat" class="copy-button" data-copy="cpp-ogdf" type="button">Copy</button></div><pre><code id="cpp-ogdf">spqr::ogdf_compat::Graph graph;
+auto a = graph.newNode();
+auto b = graph.newNode();
+auto edge = graph.newEdge(a, b);
+auto source = edge-&gt;source();</code></pre></div>
+<table class="compact-table"><thead><tr><th scope="col">Existing OGDF code</th><th scope="col"><code>spqr::ogdf_compat</code></th><th scope="col"><code>spqr</code></th></tr></thead><tbody>
+<tr><td><code>e-&gt;source()</code>, <code>e-&gt;target()</code></td><td><code>e-&gt;source()</code>, <code>e-&gt;target()</code></td><td><code>graph.source(e)</code>, <code>graph.target(e)</code></td></tr>
+<tr><td><code>v-&gt;index()</code>, <code>e-&gt;index()</code></td><td><code>v.index()</code>, <code>e.index()</code></td><td><code>v.index()</code>, <code>e.index()</code></td></tr>
+<tr><td><code>v-&gt;degree()</code></td><td><code>graph.degree(v)</code></td><td><code>graph.degree(v)</code></td></tr>
+<tr><td><code>edgeValues[e]</code></td><td><code>edgeValues[e.index()]</code></td><td><code>edgeValues[e]</code> or <code>edgeValues[e.index()]</code></td></tr>
+<tr><td>Loop over <code>v-&gt;adjEntries</code>.</td><td><code>graph.forEachAdj(v, ...)</code></td><td><code>graph.forEachAdj(v, ...)</code></td></tr>
+<tr><td><code>auto&amp; skel = tree.skeleton(tn)</code></td><td><code>auto skel = tree.skeleton(tn)</code></td><td><code>auto skel = tree.skeleton(tn)</code></td></tr>
+</tbody></table>
+
+<p>For tree edges, use <code>tree.tree().source(e)</code> and <code>tree.tree().target(e)</code>. For skeleton edges, create <code>auto skeleton = tree.skeleton(tn)</code>, where <code>tn</code> is a tree node, then use <code>skeleton.getGraph().source(e)</code> and <code>skeleton.getGraph().target(e)</code>.</p>
+<h3 id="cpp-semantics">Behavior when switching interfaces</h3><p><code>source</code> and <code>target</code> name the stored endpoints of an undirected edge.</p>
+<ul>
+<li>Arrays created with a graph in <code>spqr::ogdf_compat</code> grow when accessed after the graph grows. With <code>spqr</code>, resize before const reads, <code>size()</code> or iteration. Writable indexing extends the array only as needed for that index.</li>
+<li><code>spqr</code> matches real skeleton edge endpoints to the input order. <code>spqr::ogdf_compat</code> keeps the stored skeleton order. <code>source</code> and <code>target</code> can therefore be exchanged between interfaces.</li>
+</ul>
+<h3 id="cpp-adapter">Keeping your OGDF graph</h3>
+<p>To keep your library's existing <code>ogdf::Graph</code> API, convert the graph inside the SPQR routine:</p>
+<ol>
+<li>Copy each <a href="spqr-rust-guide.html#blocks">biconnected block</a> into an SPQR-Rust graph, numbering its vertices from zero.</li>
+<li>Keep mappings from the copied vertices and edges back to the OGDF objects.</li>
+<li>Compute the tree and use those mappings when returning results.</li>
+</ol>
+<p>Copying adds a pass over the vertices and edges and storage for a second graph. This applies to both interfaces. Alternatively, change the graph types in your public API and update its callers.</p>
+<h3 id="cpp-traversal">Reading the tree</h3>
+<p>Use <code>forEachAdj</code> for neighbours and <code>skeleton.forEachEdge</code> for skeleton edges, without building temporary neighbour vectors or skeleton graphs. <code>tree.flatView()</code> reads Rust's arrays without copying. Keep the graph and tree alive while using these views.</p>
+<p><a download="" href="examples/spqr-cpp-ogdf.cpp"><code>spqr::ogdf_compat</code> example</a> · <a download="" href="examples/spqr-cpp-light.cpp"><code>spqr</code> example</a>. Both use the <a href="spqr-rust.html">illustrated graph</a> and print <code>S: 1, P: 1, R: 2, original edges: 14</code>. Use the <a href="#cpp-build">build command</a> with the corresponding source filename.</p>
+<p>Both interfaces support direct construction with <code>StaticSPQRTree(graph)</code>, or <a href="spqr-rust-compression.html">compression and reconstruction</a> with <code>StaticSPQRTree(graph, contractible, length)</code>. The <code>contractible</code> mask has one byte per vertex: zero prevents series removal, while a nonzero value allows it at degree two. <code>length</code> is the mask length.</p>
+<p class="small-note"><code>ogdf_compat.hpp</code> is an alternative filename for <code>spqr_compat.hpp</code>. Declarations: <a href="spqr-rust-api/headers/spqr_compat.hpp.html">SPQR-Rust header</a>. Original interfaces: OGDF <a href="https://ogdf.github.io/doc/ogdf/classogdf_1_1_graph.html">Graph</a>, <a href="https://ogdf.github.io/doc/ogdf/classogdf_1_1_node_element.html">NodeElement</a>, <a href="https://ogdf.github.io/doc/ogdf/classogdf_1_1_edge_element.html">EdgeElement</a> and <a href="https://ogdf.github.io/doc/ogdf/classogdf_1_1_static_s_p_q_r_tree.html">StaticSPQRTree</a>.</p>
+</section><section class="section" id="cpp-wrapper"><h2>Lower-level C++ wrapper</h2><p><code>spqr_rust_wrapper.hpp</code> defines classes owning Rust graphs and decomposition results: <code>RustGraph</code>, <code>RustSPQRResult</code>, <code>RustBCTree</code> and <code>RustConnectedComponents</code>. They release memory on destruction and support moves rather than copies. Both C++ interfaces use them internally.</p><p>This C++17 example builds a complete graph on four vertices. Its tree has one R node:</p>
+<div class="code-block"><div class="code-header"><span>spqr-example.cpp</span><button aria-label="Copy spqr-example.cpp" class="copy-button" data-copy="cpp-example" type="button">Copy</button></div><pre><code id="cpp-example">#include "spqr_rust_wrapper.hpp"
+#include &lt;iostream&gt;
+
+int main() {
+    spqr_rust::RustGraph graph;
+    graph.addNodes(4);
+    for (const auto&amp; edge : {std::pair{0u, 1u}, {0u, 2u}, {0u, 3u},
+                            {1u, 2u}, {1u, 3u}, {2u, 3u}}) {
+        graph.addEdge(edge.first, edge.second);
+    }
+
+    spqr_rust::RustSPQRResult result(graph);
+    std::cout &lt;&lt; result.treeLen() &lt;&lt; "\n";
+}</code></pre></div>
+
+
+<p>The output is <code>1</code>. In C, free results with <code>spqr_result_free</code> and graphs with <code>spqr_graph_free</code>. The tree returned by <code>spqr_result_tree</code> belongs to the result. Release text from <code>spqr_format_to_string</code> with <code>spqr_string_free</code>.</p>
+<section class="section" id="ownership"><h3>Memory ownership and array access</h3><p>Borrowed views read Rust-owned arrays without copying them. Keep the owner alive and avoid tree updates while using them.</p><table class="compact-table reference-table"><thead><tr><th scope="col">Interface</th><th scope="col">Storage</th></tr></thead><tbody><tr><td><code>SPQRTreeExport</code>, <code>BCTreeExport</code></td><td>Copy decomposition arrays into C++ vectors.</td></tr><tr><td><code>SpqrTreeFlatView</code>, <code>BCTreeZeroCopy</code></td><td>Borrow arrays owned by the Rust result. Keep the owner alive and avoid tree mutations while views are in use.</td></tr><tr><td><code>spqr_tree_*_raw</code></td><td>Borrow C pointers into tree storage.</td></tr><tr><td><code>spqr_tree_bulk_export*</code>, <code>*_copy_u64</code></td><td>Fill caller-provided buffers. Obtain sizes before allocating them.</td></tr></tbody></table></section></section><section class="section" id="wide"><h2>Identifier size: 32 or 64 bits</h2><p>The standard Rust types and both C++ interfaces use 32-bit IDs (4 bytes) for vertices, edges and tree nodes. The optional <code>spqr_rust::wide</code> module provides separate 64-bit types (8 bytes) for larger ID ranges. The C functions ending in <code>_u64</code> also take separate 64-bit graph and tree types.</p>
+<div class="code-block"><div class="code-header"><span>Rust</span><button aria-label="Copy Rust" class="copy-button" data-copy="wide-program" type="button">Copy</button></div><pre><code id="wide-program">use spqr_rust::wide::{build_spqr, Graph, NodeId};</code></pre></div><p><a download="" href="examples/spqr-wide.rs">Download a complete 64-bit example</a>.</p><table class="compact-table reference-table"><thead><tr><th scope="col">Interface</th><th scope="col">Purpose</th></tr></thead><tbody><tr><td><a href="spqr-rust-api/spqr_rust/index.html"><code>spqr_rust</code></a></td><td>Default 32-bit graph and SPQR tree types. See <a href="spqr-rust-guide.html">Getting started</a>.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/wide/index.html"><code>wide</code></a></td><td>Optional 64-bit graph and SPQR tree types.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/wide/fn.compress_dense.html"><code>compress_dense</code></a></td><td>64-bit compression from a record containing its own edge and mask arrays.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/wide/fn.compress_borrowed_dense.html"><code>compress_borrowed_dense</code></a></td><td>64-bit compression using consecutive IDs and your existing edge and mask arrays.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/wide/fn.compress_borrowed_remapped.html"><code>compress_borrowed_remapped</code></a></td><td>For widely spaced input IDs, compress only vertices that appear in the edge list, then restore the original endpoint IDs.</td></tr><tr><td><a href="spqr-rust-api/spqr_rust/sp_compress/reconstruct_wide/fn.reconstruct.html"><code>reconstruct_wide::reconstruct</code></a></td><td>Recover the full 64-bit tree from the tree of the compressed graph, its saved reductions and the vertex mapping.</td></tr></tbody></table><p>In <code>compress_borrowed_remapped</code>, an active vertex is a vertex present in the edge list. If the mask has one entry per active vertex, its entries follow their sorted original IDs. Otherwise, positions in the mask are original vertex IDs. Missing entries in this second form prevent series removal through those vertices. The input <code>n_nodes</code> must exceed the largest original vertex ID.</p><p>The general <code>verify</code> and <code>spqr_format</code> modules use the ordinary 32-bit graph and tree types. Their functions do not accept <code>wide::Graph</code> or <code>wide::SpqrTree</code>. See the API signatures before combining interfaces.</p></section><section class="section" id="compression-ffi"><h2>Compression through C</h2><p>As described in <a href="spqr-rust-compression.html">Compression</a>, the core is the graph left after replacing paths and parallel edges. Macros record those replacements so the full tree can be recovered.</p><p>A <code>SpCompressHandle*</code> owns the compression data. <code>sp_compress_get_tree</code> returns a <code>SpCompressTreeView</code> borrowing its macro and core arrays. Keep the handle alive while using the view.</p><table class="compact-table reference-table"><thead><tr><th scope="col">Function family</th><th scope="col">Purpose</th></tr></thead><tbody><tr><td><code>sp_compress_ffi</code></td><td>Compress explicit input-edge records. Set <code>build_core_spqr</code> to request an SPQR tree of the compressed graph.</td></tr><tr><td><code>sp_compress_indexed_ffi</code></td><td>Read two arrays containing the first and second endpoint of each edge. Original edge IDs are the array positions. <code>sp_compress_indexed_ffi</code> can use a specialised method for shortening paths through vertices with two incident edges.</td></tr><tr><td><code>sp_compress_timed_ffi</code></td><td>Return compression/core timing measurements in <code>SpCompressTimings</code>.</td></tr><tr><td><code>sp_compress_get_tree</code>, <code>sp_compress_get_core_spqr</code></td><td>Read the saved reductions, compressed graph and its optional SPQR tree without copying them.</td></tr><tr><td><code>sp_compress_core_node_inv</code></td><td>Read the array mapping each vertex ID in the core graph to its vertex ID before compression.</td></tr><tr><td><code>sp_compress_reconstruct_ffi</code>, <code>sp_compress_reconstruct_with_timings_ffi</code></td><td>Compress the graph, build the core tree and reconstruct the full tree. The timing variant also reports statistics and elapsed times.</td></tr><tr><td><code>sp_compress_from_snapshot_ffi</code></td><td>Restore a handle from a snapshot of the compression state.</td></tr><tr><td><code>sp_compress_free</code></td><td>Release a compression handle.</td></tr></tbody></table><p>Check the returned handle for null and call <code>sp_compress_success</code> before reading results. Copy arrays before freeing the handle if you need to retain them. Free reconstruction results with <code>spqr_result_free</code>, or <code>spqr_result_free_u64</code> for 64-bit results.</p><p>The 64-bit compression calls use names ending in <code>_ffi64</code> or <code>_ffi_u64</code>. Use the input and output types in their declarations, including <code>SpCompressTreeView64</code> and <code>SpCompressStats64</code>. The exact function arguments and record fields are listed in <a href="spqr-rust-api/headers/sp_compress.h.html">sp_compress.h</a> and the <a href="spqr-rust-api/spqr_rust/sp_compress/ffi/index.html">Rust FFI reference</a>.</p><div class="code-block"><div class="code-header"><span>spqr-compression.c</span><button aria-label="Copy spqr-compression.c" class="copy-button" data-copy="compression-c" type="button">Copy</button></div><pre><code id="compression-c">#include "sp_compress.h"
+#include &lt;assert.h&gt;
+#include &lt;stdio.h&gt;
+
+int main(void) {
+    const SpCompressInputEdge edges[] = {
+        {0, 1, 0}, {0, 2, 1}, {0, 3, 2}, {1, 2, 3}, {1, 3, 4},
+        {2, 3, 5}, {0, 4, 6}, {0, 5, 7}, {1, 4, 8}, {1, 5, 9},
+        {4, 5, 10}, {0, 6, 11}, {6, 7, 12}, {7, 1, 13}
+    };
+    const uint8_t contractible[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    SpCompressHandle* handle = sp_compress_ffi(
+        8, edges, 14, 13, contractible, 8, 1);
+    assert(handle &amp;&amp; sp_compress_success(handle));
+    SpCompressTreeView view = sp_compress_get_tree(handle);
+    assert(view.core_edges_len &gt; 0);
+    printf("Core edges: %llu\n", (unsigned long long)view.core_edges_len);
+    sp_compress_free(handle);
+
+    SpqrResult* result = sp_compress_reconstruct_ffi(
+        8, edges, 14, 13, contractible, 8);
+    assert(result);
+    const SpqrTree* tree = spqr_result_tree(result);
+    uint32_t s, p, r;
+    spqr_tree_count_by_type(tree, &amp;s, &amp;p, &amp;r);
+    assert(s == 1 &amp;&amp; p == 1 &amp;&amp; r == 2);
+    printf("S: %u, P: %u, R: %u\n", s, p, r);
+    spqr_result_free(result);
+    return 0;
+}</code></pre></div><p><a download="" href="examples/spqr-compression.c">Download the C example</a>. Compile it like the C++ example, using <code>cc -std=c11</code> and the C filename. It reports 11 core edges and reconstructs a tree with S=1, P=1 and R=2.</p></section><section class="section" id="snapshots">
+<h2>Snapshots: compression state in memory</h2>
+<p>A snapshot captures compression state in memory: macros, the core graph, input endpoints, statistics and an optional core tree with its vertex mapping.</p>
+<p><a href="spqr-rust-api/spqr_rust/sp_compress/ffi/fn.sp_compress_from_snapshot_ffi.html"><code>sp_compress_from_snapshot_ffi</code></a> copies a <code>SpCompressSnapshotView</code> into a new compression handle. Keep the input arrays valid during the call and release the handle with <code>sp_compress_free</code>.</p>
+<p>The calling application handles saving snapshots to disk and reading them back.</p>
+<p class="small-note"><code>sp_compress_from_snapshot_ffi</code> accepts the 32-bit snapshot records declared in <a href="spqr-rust-api/headers/sp_compress.h.html">sp_compress.h</a>.</p>
+</section><section class="section" id="cli"><h2>Command-line example</h2><p>The repository includes <code>spqr_cli</code> for inspecting a graph from an undirected edge list:</p><div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy Terminal" class="copy-button" data-copy="cli-command" type="button">Copy</button></div><pre><code id="cli-command">cargo run --release --bin spqr_cli -- spqr-graph.txt</code></pre></div><p><a download="" href="examples/spqr-graph.txt">Download the example edge list</a>. Each nonempty line gives two vertex names or IDs, separated by whitespace. Empty lines and lines starting with <code>#</code> are ignored. The reader assigns consecutive internal vertex IDs to the distinct input names.</p><p>The program processes the connected component with the most vertices. It must be <a href="spqr-rust-guide.html#input">biconnected</a>. Isolated vertices cannot be specified in the edge-list input.</p><p>It prints graph sizes and tree counts, plus the decomposition when it has at most 20 tree nodes. For graphs with several blocks, <a href="spqr-rust-guide.html#blocks">build one SPQR tree per block</a> in the library.</p></section><section class="section" id="runtime"><h2>Runtime settings and validation</h2><p><code>OMP_NUM_THREADS</code> sets the thread count. If unset or invalid, the library tries <code>RAYON_NUM_THREADS</code>, then defaults to one thread. The count is capped by available hardware threads and cached on first use.</p><p><code>CANONICALIZE_ROOT_ENABLED</code> selects a consistent tree root, with C getters and setters. Diagnostic functions report cycle-handling counters and compression/reconstruction timings. See the <a href="spqr-rust-api.html#c-functions">C function index</a>.</p><p><code>cargo test</code> runs the default test suite. Additional tests marked as ignored can be run explicitly with <code>cargo test --release -- --ignored</code>. In tests that use <code>SPQR_NUM_RANDOM</code>, this environment variable sets the number of random graphs to generate.</p></section></main>
+<aside aria-label="Project resources" class="sidebar"><section><h2>Documentation</h2><nav aria-label="Documentation chapters" class="manual-nav"><ul><li><a href="spqr-rust-documentation.html">Contents</a></li><li><a href="spqr-rust-guide.html">Getting started</a></li><li><a href="spqr-rust-compression.html">Compression</a></li><li><a aria-current="page" href="spqr-rust-interfaces.html">Advanced interfaces</a></li><li><a href="spqr-rust-api.html">API reference</a></li></ul></nav></section>
+<section><h2>On this page</h2><nav aria-label="On this page"><ul>
+<li><a href="#cpp-interfaces">Choose a C++ interface</a></li><li><a href="#cpp-performance">Memory and runtime</a></li>
+<li><a href="#c-cpp">Build and link</a></li><li><a href="#cpp-migration">Adapt OGDF code</a></li>
+<li><a href="#cpp-semantics">Behavior differences</a></li><li><a href="#cpp-adapter">Keep your OGDF graph</a></li>
+<li><a href="#cpp-traversal">Read the tree</a></li><li><a href="#cpp-wrapper">C++ wrappers</a></li>
+<li><a href="#ownership">Memory and arrays</a></li><li><a href="#wide">Identifier size</a></li>
+<li><a href="#compression-ffi">Compression FFI</a></li><li>Snapshots</li>
+<li><a href="#cli">Command-line tool</a></li><li><a href="#runtime">Runtime settings</a></li></ul></nav></section>
+<section><h2>Project</h2><ul><li><a href="spqr-rust.html">SPQR-Rust home</a></li><li><a href="https://github.com/algbio/spqr-rust">Source repository</a></li><li><a href="index.html">BubbleFinder</a></li></ul></section></aside>
+</div>
+<footer class="site-footer"><a href="https://github.com/algbio/spqr-rust">SPQR-Rust</a> · MIT · API 0.1.0, source <a href="https://github.com/algbio/spqr-rust/tree/f715f217de367df04e8dd339b63a9bae653a7eba">f715f217</a></footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="Install BubbleFinder and find variation sites in a small GFA example, then analyze your own pangenome graph." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>Get started · BubbleFinder</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="index.html">BubbleFinder</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a href="index.html">Home</a></li>
+<li><a aria-current="page" href="get-started.html">Getting started</a></li>
+<li><a href="documentation.html">Documentation</a></li>
+<li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content">
+<header class="page-heading">
+<h1>Getting started</h1>
+<p class="lead">Install BubbleFinder, try a small example, then use your own GFA or GBZ graph.</p>
+</header>
+<div class="reading-layout">
+<div>
+<section class="article-section" id="install">
+<h2>Installation</h2>
+<div aria-label="Installation method" class="tabs" data-tab-group="" role="tablist">
+<button aria-controls="panel-conda" aria-selected="true" id="tab-conda" role="tab" type="button">Conda</button>
+<button aria-controls="panel-binary" aria-selected="false" id="tab-binary" role="tab" tabindex="-1" type="button">Linux binary</button>
+<button aria-controls="panel-source" aria-selected="false" id="tab-source" role="tab" tabindex="-1" type="button">Build from source</button>
+</div>
+<div aria-labelledby="tab-conda" id="panel-conda" role="tabpanel" tabindex="0">
+<p>In a terminal with Conda available:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="install-conda" type="button">Copy</button></div><pre><code id="install-conda">conda create -n bubblefinder -c conda-forge -c bioconda bubblefinder
+conda activate bubblefinder
+BubbleFinder --help</code></pre></div>
+</div>
+<div aria-labelledby="tab-binary" id="panel-binary" role="tabpanel" tabindex="0">
+<p><a href="https://github.com/algbio/BubbleFinder/releases/latest">Download the latest Linux release</a>, then open a terminal in the download directory.</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="install-binary" type="button">Copy</button></div><pre><code id="install-binary">chmod +x BubbleFinder
+./BubbleFinder --help</code></pre></div>
+<p class="small-note">Use <code>./BubbleFinder</code> in the commands below when running a downloaded binary.</p>
+</div>
+<div aria-labelledby="tab-source" id="panel-source" role="tabpanel" tabindex="0">
+<p>On Linux, with Git, CMake, a C++ compiler, Rust/Cargo and OpenSSL installed:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="install-source" type="button">Copy</button></div><pre><code id="install-source">git clone --recurse-submodules https://github.com/algbio/BubbleFinder
+cd BubbleFinder
+cmake -S . -B build
+cmake --build build -j 4
+./build/BubbleFinder --help</code></pre></div>
+<p class="small-note">Use <code>./build/BubbleFinder</code> in the commands below when running from this directory. See the <a href="https://github.com/algbio/BubbleFinder#build-from-source-linux">build instructions</a> for dependencies.</p>
+</div>
+</section>
+<section class="article-section" id="try-it">
+<h2>Example graph</h2>
+<p><a download="" href="examples/variation.gfa">Download variation.gfa</a>. It contains six short sequence nodes, including two alternative paths with an A or a G.</p>
+<p>In the directory containing the file, run:</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="example-command" type="button">Copy</button></div><pre><code id="example-command">BubbleFinder ultrabubbles -g variation.gfa -o ultrabubbles.txt</code></pre></div>
+<p class="small-note">This writes the result to <code>ultrabubbles.txt</code>.</p>
+</section>
+<section class="article-section" id="read-output">
+<h2>Output</h2>
+<div class="output-grid">
+<div class="code-block"><div class="code-header"><span>Output format example</span></div><pre><code id="example-output">1
+u+ v-</code></pre></div>
+<p>The first line counts the result lines that follow. Each pair identifies a region by its boundary nodes, with <code>+</code> and <code>-</code> indicating their sides. Here, <code>u</code> and <code>v</code> enclose the A/G alternative.</p>
+</div>
+<p class="small-note">BubbleFinder reports graph regions. Interpreting them as genetic variants also requires the sequences and paths in your graph. See <a href="documentation.html#output">output conventions</a></p>
+</section>
+<section class="article-section" id="your-graph">
+<h2>Your own graph</h2>
+<p>Replace the example with your GFA or GBZ file. Use <code>-j</code> to set the number of threads.</p>
+<div class="code-block"><div class="code-header"><span>Terminal</span><button aria-label="Copy terminal" class="copy-button" data-copy="own-command" type="button">Copy</button></div><pre><code id="own-command">BubbleFinder ultrabubbles -g pangenome.gbz -o ultrabubbles.txt -j 8</code></pre></div>
+<p>To look for regions with different properties, choose <a href="documentation.html#snarls">snarls</a>, <a href="documentation.html#d-bubbles">d-bubbles</a> or <a href="documentation.html#superbubbles">superbubbles</a>.</p>
+<div class="text-callout"><p>The default ultrabubble method worked on all pangenome graphs we tested. See <a href="documentation.html#special-cases">special cases</a> for the graph conditions.</p></div>
+</section>
+</div>
+</div>
+</main>
+<aside aria-label="Project resources" class="sidebar">
+<section>
+<h2>BubbleFinder</h2>
+<ul>
+<li><a href="https://github.com/algbio/BubbleFinder/releases/latest">Download</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder">Source repository</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/issues">Report an issue</a></li>
+<li><a href="https://github.com/algbio/BubbleFinder/wiki/Validation">Validation tests</a></li>
+</ul>
+</section>
+<section>
+<h2>On this page</h2>
+<nav aria-label="On this page"><ul><li><a href="#install">Install</a></li><li><a href="#try-it">Try a small graph</a></li><li><a href="#read-output">Read the result</a></li><li><a href="#your-graph">Use your own graph</a></li></ul></nav>
+</section>
+<section>
+<h2>Related</h2>
+<ul><li><a href="spqr-rust.html">SPQR-Rust</a></li></ul>
+</section>
+</aside>
+</div>
+<footer class="site-footer">
+<a href="https://github.com/algbio/BubbleFinder">BubbleFinder</a> · <a href="https://github.com/algbio/BubbleFinder/blob/main/LICENSE">GPLv3</a>
+</footer>
+</div>
+</body>
+</html>

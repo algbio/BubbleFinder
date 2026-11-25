@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["INVALID"],"enum":["SpqrNodeType"],"fn":["build_spqr","build_spqr_tree"],"static":["FAST_CYCLE_CALLS","FAST_CYCLE_HITS"],"struct":["Edge","EdgeId","Graph","NeighborIter","NodeId","SkeletonEdge","SkeletonView","SpqrResult","SpqrTree","SpqrTreeNodeView","TreeNodeId"]};

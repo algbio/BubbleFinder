@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="SPQR-Rust: a Rust library for SPQR trees, biconnected blocks and connected components of undirected multigraphs, with C and C++ interfaces." name="description"/>
+<meta content="#ffffff" name="theme-color"/>
+<title>SPQR-Rust · BubbleFinder</title>
+<link href="assets/mark.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/styles.css?v=6" rel="stylesheet"/>
+<script defer="" src="assets/site.js?v=5"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="site-wrap">
+<header class="site-header">
+<a class="brand" href="spqr-rust.html">SPQR-Rust</a>
+</header>
+<nav aria-label="Main navigation" class="main-nav">
+<ul><li><a aria-current="page" href="spqr-rust.html">Home</a></li>
+<li><a href="spqr-rust-documentation.html">Documentation</a></li>
+<li><a href="index.html">BubbleFinder</a></li></ul>
+</nav>
+<div class="site-layout">
+<main id="main-content">
+<h1 id="spqr-introduction">Introduction</h1>
+<p>SPQR-Rust is a Rust library for computing SPQR trees of undirected multigraphs. An SPQR tree describes how a graph splits into parts joined through pairs of vertices. The library also provides C and C++ interfaces.</p>
+<p>The implementation follows the algorithm of <a href="#ref-hopcroft1973">Hopcroft and Tarjan</a>, with corrections by <a href="#ref-gutwenger2001">Gutwenger and Mutzel</a>.</p>
+<p>Each tree node contains a small graph called a skeleton. S skeletons are cycles, P skeletons have parallel edges between two vertices, and R skeletons stay connected after removing any two vertices. Real edges come from the input graph. A virtual edge represents the part attached through another skeleton. Virtual edges come in matching pairs, one in each neighbouring skeleton.</p>
+<figure class="bubble-figure">
+<div aria-label="A graph and its SPQR tree. Scroll horizontally on small screens." class="graph-container" role="region" tabindex="0">
+<img alt="An undirected graph with eight vertices and fourteen edges. Its reduced SPQR tree has one P node joined to two R nodes and one S node. Each tree node shows its skeleton, with real and virtual edges." class="graph-image" height="581" src="assets/spqr-example.svg?v=3" width="1000"/>
+</div>
+<figcaption>Each tree node shows its skeleton. Colours match the graph edges. Dashed edges are virtual, paired between neighbouring skeletons.</figcaption>
+</figure>
+<section class="section" id="decompositions">
+<h2>Decompositions</h2>
+<p>The input to <code>build_spqr</code> must be biconnected: removing any single vertex must leave the graph connected. For a more general graph, find its biconnected blocks first.</p>
+<table class="compact-table">
+<thead><tr><th scope="col">Function</th><th scope="col">Result</th></tr></thead>
+<tbody>
+<tr><td><a href="https://github.com/algbio/spqr-rust/blob/main/src/connected.rs"><code>connected_components</code></a></td><td>The separate connected parts of a graph.</td></tr>
+<tr><td><a href="https://github.com/algbio/spqr-rust/blob/main/src/biconnected.rs"><code>BCTree::build</code></a></td><td>Biconnected blocks and the vertices where they meet.</td></tr>
+<tr><td><a href="https://github.com/algbio/spqr-rust#building-an-spqr-tree"><code>build_spqr</code></a></td><td>An SPQR tree of a biconnected multigraph. Edges joining a vertex to itself (self-loops) are returned separately.</td></tr>
+<tr><td><a href="https://github.com/algbio/spqr-rust/blob/main/src/spqr_format.rs"><code>write_spqr_format</code></a></td><td>A decomposition written in the <code>.spqr</code> text format.</td></tr>
+</tbody>
+</table>
+</section><section class="section" id="documentation">
+<h2>Documentation</h2>
+<p>The <a href="spqr-rust-documentation.html">manual</a> covers ordinary graph use, compression and specialised interfaces. The <a href="spqr-rust-api.html">API reference</a> contains the public Rust API and complete C/C++ headers.</p>
+<p>For C++ integration, SPQR-Rust offers two interfaces: <code>spqr::ogdf_compat</code> to simplify the transition from OGDF, a C++ graph library, and <code>spqr</code> for code where performance is the priority, using compact edge values and fewer array checks. Both use the same Rust SPQR builder. See <a href="spqr-rust-interfaces.html#cpp-interfaces">which interface to choose</a> and their <a href="spqr-rust-interfaces.html#cpp-performance">memory and runtime costs</a>.</p>
+</section>
+<section class="section" id="bubblefinder">
+<h2>Use in BubbleFinder</h2>
+<p><a href="index.html">BubbleFinder</a> uses SPQR-Rust for <code>snarls</code>, <code>superbubbles</code> and <code>ultrabubbles --spqr-weak-superbubbles</code>, through the framework of <a href="https://arxiv.org/abs/2604.08071">Sena et al., 2026</a>.</p>
+<p>BubbleFinder handles GFA and GBZ graphs and can <a href="documentation.html#spqr-trees">export their SPQR-tree decompositions</a>.</p>
+</section>
+<section class="section" id="spqr-references">
+<h2>References</h2>
+<ol class="publications">
+<li id="ref-hopcroft1973">J. E. Hopcroft and R. E. Tarjan (1973). <a href="https://doi.org/10.1137/0202012"><em>Dividing a Graph into Triconnected Components.</em></a> SIAM Journal on Computing, 2(3), 135–158.</li>
+<li id="ref-gutwenger2001">C. Gutwenger and P. Mutzel (2001). <a href="https://doi.org/10.1007/3-540-44541-2_8"><em>A Linear Time Implementation of SPQR-Trees.</em></a> Graph Drawing, LNCS 1984, 77–90.</li>
+</ol>
+<p class="small-note">SPQR-Rust is available under the <a href="https://github.com/algbio/spqr-rust#license">MIT license</a>.</p>
+</section>
+</main>
+<aside aria-label="Project resources" class="sidebar"><section><h2>SPQR-Rust</h2><ul>
+<li><a href="https://github.com/algbio/spqr-rust">Source repository</a></li>
+<li><a href="spqr-rust-api.html#rust">Rust API</a></li>
+<li><a href="https://github.com/algbio/spqr-rust/tree/main/include">C/C++ headers</a></li>
+<li><a href="https://github.com/algbio/spqr-rust/issues">Report an issue</a></li>
+</ul></section>
+<section><h2>On this page</h2><nav aria-label="On this page"><ul>
+<li><a href="#spqr-introduction">Introduction</a></li>
+<li><a href="#decompositions">Decompositions</a></li><li><a href="#documentation">Documentation</a></li>
+<li><a href="#bubblefinder">Use in BubbleFinder</a></li>
+<li><a href="#spqr-references">References</a></li>
+</ul></nav></section>
+<section><h2>Related</h2><ul><li><a href="index.html">BubbleFinder</a></li></ul></section></aside>
+</div>
+<footer class="site-footer"><a href="https://github.com/algbio/spqr-rust">SPQR-Rust</a> · MIT</footer>
+</div>
+</body>
+</html>
